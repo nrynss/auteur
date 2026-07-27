@@ -70,12 +70,36 @@ vision_model = "gemini-2.5-flash"
 localization_model = "fal-ai/marlin/find"
 default_vlm = "gemini-2.5-flash"
 
+# Free-tier rate limits, as shown in Google AI Studio. `requests_per_day` is
+# the binding constraint for FoleyFlow, not RPM: 20/day is a handful of
+# debugging runs. Flash Lite trades some capability for 25x the daily budget,
+# which is why it is the development default. These figures are quota
+# accounting, not pricing — see foleyflow.quota.
 [models."gemini-2.5-flash"]
 adapter = "google"
 role = "analysis"
 # Free tier at time of writing; a nonzero estimate keeps the run visible in
 # the ledger rather than implying analysis is uncounted.
 cost_per_call_usd = 0.005
+requests_per_minute = 5
+requests_per_day = 20
+tokens_per_minute = 250000
+
+[models."gemini-3.5-flash"]
+adapter = "google"
+role = "analysis"
+cost_per_call_usd = 0.005
+requests_per_minute = 5
+requests_per_day = 20
+tokens_per_minute = 250000
+
+[models."gemini-3.5-flash-lite"]
+adapter = "google"
+role = "analysis"
+cost_per_call_usd = 0.005
+requests_per_minute = 15
+requests_per_day = 500
+tokens_per_minute = 250000
 
 # Retired fal analysis routes. Kept so historical ledger rows and any pinned
 # --model argument still resolve; nothing routes here by default.
