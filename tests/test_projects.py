@@ -220,3 +220,30 @@ def test_export_moves_the_project_to_ready(store, project):
 def test_state_is_json_serializable_for_the_ui(store, project):
     import json
     json.dumps(store.get_state(project.id).to_dict())
+
+
+# -- scenes -----------------------------------------------------------------
+
+def test_scenes_round_trip_and_log_completion(store, project):
+    from foleyflow.projects import EVENT_ANALYSIS_COMPLETED
+    from foleyflow.scenes import Scene, SceneStats
+
+    scenes = [
+        Scene(id="scene_01", index=1, start_s=0.0, end_s=3.67,
+              stats=SceneStats(mean_luma=133.1, mean_rgb=[136.6, 133.9, 120.1],
+                               luma_stddev=1.9, sample_count=7)),
+        Scene(id="scene_02", index=2, start_s=3.67, end_s=6.67,
+              stats=SceneStats(mean_luma=122.5, mean_rgb=[125.3, 123.7, 108.8],
+                               luma_stddev=36.8, sample_count=6)),
+    ]
+    store.save_scenes(project.id, scenes)
+
+    loaded = store.load_scenes(project.id)
+    assert [s["id"] for s in loaded] == ["scene_01", "scene_02"]
+    assert loaded[0]["stats"]["mean_luma"] == 133.1
+    assert loaded[1]["end_s"] == 6.67
+    assert EVENT_ANALYSIS_COMPLETED in [e.type for e in store.list_events(project.id)]
+
+
+def test_load_scenes_before_analysis_is_empty_not_an_error(store, project):
+    assert store.load_scenes(project.id) == []

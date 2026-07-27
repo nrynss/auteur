@@ -188,6 +188,12 @@ class ProjectStore:
     def latest_export_key(self, project_id: str) -> str:
         return f"{self._root(project_id)}/exports/latest.json"
 
+    def scenes_key(self, project_id: str) -> str:
+        return f"{self._root(project_id)}/scenes/scenes.json"
+
+    def scene_thumbnail_key(self, project_id: str, scene_id: str) -> str:
+        return f"{self._root(project_id)}/scenes/{scene_id}/thumbnail.jpg"
+
     # -- JSON helpers -----------------------------------------------------
 
     def _put_json(self, key: str, payload: dict) -> str:
@@ -377,6 +383,50 @@ class ProjectStore:
                 except ValueError:
                     continue
         return sorted(versions)
+
+    # -- scenes -----------------------------------------------------------
+
+    def save_scenes(self, project_id: str, scenes: list, *,
+                    video_path: Optional[str] = None,
+                    run_id: Optional[str] = None, actor: str = "system") -> list:
+        """Store the scene breakdown, and a thumbnail per scene when the video
+        is available locally.
+
+        Scene detection is deterministic, so re-running it on the same source
+        yields the same breakdown — this is written with the ordinary (not
+        immutable) put so a re-analysis can refresh it without tripping the
+        overwrite guard on an artifact that carries no history.
+        """
+        from foleyflow.scenes import extract_thumbnail
+
+        payload = [s.to_dict() for s in scenes]
+
+        if video_path and os.path.exists(video_path):
+            for scene in scenes:
+                dest = os.path.join(self.work_dir, f"{project_id}_{scene.id}.jpg")
+                try:
+                    extract_thumbnail(video_path, scene, dest)
+                except RuntimeError as e:
+                    # A missing thumbnail degrades the rail; it must not fail
+                    # the analysis run that produced a valid breakdown.
+                    print(f"[projects] WARNING: {e}")
+                    continue
+                key = self.scene_thumbnail_key(project_id, scene.id)
+                self.backend.put(key, dest, content_type="image/jpeg")
+                for entry in payload:
+                    if entry["id"] == scene.id:
+                        entry["thumbnail_key"] = key
+
+        self._put_json(self.scenes_key(project_id), {"scenes": payload})
+        self.append_event(project_id, EVENT_ANALYSIS_COMPLETED, actor=actor,
+                          run_id=run_id, payload={"scene_count": len(scenes)})
+        return payload
+
+    def load_scenes(self, project_id: str) -> list:
+        key = self.scenes_key(project_id)
+        if not self.backend.exists(key):
+            return []
+        return self._get_json(key).get("scenes", [])
 
     # -- exports ----------------------------------------------------------
 
