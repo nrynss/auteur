@@ -78,12 +78,23 @@ def test_unknown_model_raises_keyerror():
 # -- analysis config --
 
 def test_analysis_config():
+    """Analysis routes to Google directly; fal's gateway was only a proxy in
+    front of the same Gemini model."""
     config = load_config(TOML_PATH)
     analysis = get_analysis_config(_config=config)
-    assert analysis["video_model"] == "openrouter/router/video"
-    assert analysis["vision_model"] == "openrouter/router/vision"
-    assert analysis["localization_model"] == "fal-ai/marlin/find"
-    assert analysis["default_vlm"] == "google/gemini-2.5-flash"
+    assert analysis["video_model"] == "gemini-2.5-flash"
+    assert analysis["vision_model"] == "gemini-2.5-flash"
+    assert analysis["default_vlm"] == "gemini-2.5-flash"
+
+
+def test_every_analysis_model_is_declared_and_routable():
+    """A typo in [analysis] would otherwise surface as a KeyError mid-run,
+    after the clip has already been uploaded."""
+    config = load_config(TOML_PATH)
+    analysis = get_analysis_config(_config=config)
+    for role in ("video_model", "vision_model", "localization_model", "default_vlm"):
+        spec = get_model_spec(analysis[role], _config=config)
+        assert spec.adapter, f"{role} -> {analysis[role]} declares no adapter"
 
 
 # -- routing config --

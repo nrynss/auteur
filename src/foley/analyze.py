@@ -4,7 +4,7 @@ import re
 import tempfile
 import subprocess
 import base64
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from dotenv import load_dotenv
 
 # Load env variables (for FAL_KEY)
@@ -23,13 +23,26 @@ DEFAULT_MODEL = get_analysis_config().get("default_vlm", "google/gemini-2.5-flas
 # analyzed by several models (direct runs + Marlin refinement).
 _upload_cache: dict = {}
 
-def upload_video(path: str) -> str:
+def upload_video(path: str, model_id: Optional[str] = None) -> str:
+    """Make `path` reachable by the analysis provider, returning its URI.
+
+    The adapter is resolved from the model that will consume the upload, not
+    hardcoded: an uploaded file is provider-scoped, so a Gemini Files API URI
+    is meaningless to fal and vice versa. Cached per (path, adapter) for the
+    process — the same clip is uploaded once even when several models analyze
+    it, but switching provider re-uploads rather than handing over a URI the
+    new provider cannot read.
+    """
     from foleyflow.providers import get_adapter
-    key = os.path.abspath(path)
+    from foleyflow.providers.config import get_analysis_config, get_model_spec
+
+    model_id = model_id or get_analysis_config()["video_model"]
+    adapter_name = get_model_spec(model_id).adapter
+
+    key = (os.path.abspath(path), adapter_name)
     if key not in _upload_cache:
-        print(f"Uploading {os.path.basename(path)} to fal CDN...")
-        adapter = get_adapter("fal")
-        _upload_cache[key] = adapter.upload(path)
+        print(f"Uploading {os.path.basename(path)} via the {adapter_name} adapter...")
+        _upload_cache[key] = get_adapter(adapter_name).upload(path)
     return _upload_cache[key]
 
 TIMELINE_PROMPT = """You are a professional Foley artist analyzing a silent video.

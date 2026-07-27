@@ -14,6 +14,7 @@ from foley import cli, direct
 from foley.models import Event, Timeline
 from foley.pipeline import FoleyResult
 from foley.timeline_io import save_timeline
+from foleyflow.providers.config import get_analysis_config
 
 
 def _timeline() -> Timeline:
@@ -46,7 +47,9 @@ def test_apply_notes_prompt_includes_notes_and_serialized_timeline(monkeypatch):
 
     direct.apply_notes(_timeline(), notes, model="test/model")
 
-    assert captured["endpoint"] == "openrouter/router/vision"
+    # Whichever model [analysis] designates — asserting the literal would just
+    # re-encode config, and this test is about the prompt, not the routing.
+    assert captured["endpoint"] == get_analysis_config()["vision_model"]
     assert captured["arguments"]["image_urls"] == []       # text-only call
     assert captured["arguments"]["model"] == "test/model"
     prompt = captured["arguments"]["prompt"]

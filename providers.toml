@@ -7,6 +7,10 @@ module = "foleyflow.providers.fal:FalAdapter"
 api_key_env = "FAL_KEY"
 method = "subscribe"          # fal_client.subscribe | run | submit
 
+[adapters.google]
+module = "foleyflow.providers.google:GoogleAdapter"
+api_key_env = "GOOGLE_API_KEY"
+
 [adapters.local]
 module = "foleyflow.providers.local:LocalAdapter"
 enabled = false
@@ -56,12 +60,25 @@ duration_type = "float"
 # output_format = "wav"
 
 # --------------------------------------------------------------- analysis --
+# Analysis runs against Google directly. fal's OpenRouter gateway was only a
+# proxy in front of the same gemini-2.5-flash, so this is the identical model
+# minus a middleman and a credit balance — the tuned TIMELINE_PROMPT and its
+# validated event timings are unaffected.
 [analysis]
-video_model = "openrouter/router/video"
-vision_model = "openrouter/router/vision"
+video_model = "gemini-2.5-flash"
+vision_model = "gemini-2.5-flash"
 localization_model = "fal-ai/marlin/find"
-default_vlm = "google/gemini-2.5-flash"
+default_vlm = "gemini-2.5-flash"
 
+[models."gemini-2.5-flash"]
+adapter = "google"
+role = "analysis"
+# Free tier at time of writing; a nonzero estimate keeps the run visible in
+# the ledger rather than implying analysis is uncounted.
+cost_per_call_usd = 0.005
+
+# Retired fal analysis routes. Kept so historical ledger rows and any pinned
+# --model argument still resolve; nothing routes here by default.
 [models."openrouter/router/video"]
 adapter = "fal"
 role = "analysis"
