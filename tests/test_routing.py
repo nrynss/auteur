@@ -1,7 +1,7 @@
 from foley.models import Event
 from foley.routing import (
-    DURATION_LIMITS,
     RHYTHMIC_LOOP_S,
+    _get_duration_limits,
     route_ambience,
     route_event,
 )
@@ -116,7 +116,7 @@ def test_route_ambience_returns_full_duration_plus_headroom():
 # -- Clamping --
 
 def test_clamping_fires_and_warns_on_absurd_durations(capsys):
-    lo, hi = DURATION_LIMITS[MMAUDIO]
+    lo, hi = _get_duration_limits(MMAUDIO)
 
     # Way over max: a huge continuous event.
     req = route_event(_ev("glass on wooden table rolling", kind="continuous", duration=999.0))

@@ -1,22 +1,16 @@
 """Event/ambience -> SfxRequest routing.
 
-Data-driven via routing.yaml (repo root) so routes are editable without code.
-Zero API calls here — this module never imports fal_client; it only decides
-*where* and *what* to ask for. T2 (sfx.py) does the asking.
+Data-driven via providers.toml [routing] section so routes are editable
+without code. Zero API calls here — this module never imports fal_client;
+it only decides *where* and *what* to ask for. T2 (sfx.py) does the asking.
 """
 
 import os
 from dataclasses import dataclass
 from functools import lru_cache
 
-import yaml
-
 from foley.keywords import has_word
 from foley.models import Event
-
-ROUTING_YAML_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "routing.yaml")
-)
 
 # Numeric defaults (locked) — build_spec.md "Intensity -> prompt qualifier".
 INTENSITY_QUALIFIERS = {
@@ -32,24 +26,6 @@ HEADROOM_S = 0.5
 # not the full interval — the assembler (T3) tiles it. Picked mid-range.
 RHYTHMIC_LOOP_S = 1.75
 
-# Per-endpoint min/max, verified against the fal API docs at T2
-# (https://fal.ai/models/<endpoint>/api). Clamping prints a warning and
-# returns the clamped value; never raises.
-DURATION_LIMITS = {
-    # docs: integer seconds, required; page prose "generates high-quality SFX
-    # up to 30 seconds long" (example shows duration: 30). Schema states no
-    # formal minimum. # unverified: lower bound (guessed 1s, integer >= 1).
-    "cassetteai/sound-effects-generator": (1.0, 30.0),
-    # docs: "Duration in seconds (0.5-22). If None, optimal duration will be
-    # determined from prompt." — explicit range in the Input Schema.
-    "fal-ai/elevenlabs/sound-effects/v2": (0.5, 22.0),
-    # docs: duration is an optional float, default 8; no min/max documented
-    # anywhere on the page. # unverified: conservative guess matching the
-    # other two endpoints' order of magnitude.
-    "fal-ai/mmaudio-v2/text-to-audio": (1.0, 30.0),
-}
-DEFAULT_DURATION_LIMITS = (1.0, 22.0)
-
 
 @dataclass
 class SfxRequest:
@@ -59,15 +35,31 @@ class SfxRequest:
     category: str  # for logging/demo output
 
 
-@lru_cache(maxsize=1)
 def _load_routes() -> dict:
-    with open(ROUTING_YAML_PATH, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    """Load routes from providers.toml [routing] section."""
+    from foleyflow.providers.config import get_routing_config
+    return get_routing_config()
+
+
+def _get_duration_limits(endpoint: str) -> tuple:
+    """Read duration bounds from providers.toml for the given endpoint.
+    Falls back to [defaults] if the endpoint is unknown or has no bounds."""
+    from foleyflow.providers.config import get_defaults, get_model_spec
+    try:
+        spec = get_model_spec(endpoint)
+        lo = spec.duration_min_s
+        hi = spec.duration_max_s
+        if lo is not None and hi is not None:
+            return (lo, hi)
+    except KeyError:
+        pass
+    defaults = get_defaults()
+    return (defaults.get("duration_min_s", 1.0), defaults.get("duration_max_s", 22.0))
 
 
 def _categorize(name: str) -> tuple:
-    """First keyword-matching category wins (ordered list in routing.yaml);
-    falls back to the yaml `default` entry."""
+    """First keyword-matching category wins (ordered list in providers.toml);
+    falls back to the 'default' entry."""
     routes = _load_routes()
     name_l = name.lower()
     for cat in routes["categories"]:
@@ -84,7 +76,7 @@ def _apply_intensity(prompt: str, intensity: str) -> str:
 
 
 def _clamp_duration(endpoint: str, duration_s: float) -> float:
-    lo, hi = DURATION_LIMITS.get(endpoint, DEFAULT_DURATION_LIMITS)
+    lo, hi = _get_duration_limits(endpoint)
     if duration_s < lo:
         print(f"[routing] WARNING: {endpoint} duration {duration_s:.2f}s below min "
               f"{lo}s — clamping up.")
@@ -112,7 +104,14 @@ def route_event(event: Event) -> SfxRequest:
 
 def route_ambience(ambience: str, clip_duration: float) -> SfxRequest:
     routes = _load_routes()
-    ambience_cat = next(c for c in routes["categories"] if c["name"] == "ambience")
+    ambience_cat = next(
+        (c for c in routes["categories"] if c["name"] == "ambience"),
+        None,
+    )
+    if ambience_cat is None:
+        raise ValueError(
+            "providers.toml: routing categories must include an 'ambience' category"
+        )
     endpoint = ambience_cat["endpoint"]
     duration_s = _clamp_duration(endpoint, clip_duration + HEADROOM_S)
     return SfxRequest(endpoint=endpoint, prompt=ambience, duration_s=duration_s, category="ambience")

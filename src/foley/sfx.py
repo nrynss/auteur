@@ -38,32 +38,39 @@ CANONICAL_CHANNELS = 2
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DEFAULT_CACHE_DIR = "sfx_cache"
 
-# Per-endpoint argument shapes — known-working from scratch/run_spike.py.
-# New endpoints are one entry here.
-_ARG_BUILDERS = {
-    "fal-ai/elevenlabs/sound-effects/v2": lambda prompt, duration_s: {
-        "text": prompt,
-        "duration_seconds": duration_s,  # float; docs allow 0.5-22
-    },
-    "cassetteai/sound-effects-generator": lambda prompt, duration_s: {
-        "prompt": prompt,
-        "duration": int(round(duration_s)),  # docs: integer seconds
-    },
-    "fal-ai/mmaudio-v2/text-to-audio": lambda prompt, duration_s: {
-        "prompt": prompt,
-        "duration": duration_s,  # float; docs default 8
-    },
-}
-
 
 def build_arguments(request: SfxRequest) -> dict:
-    """Per-endpoint argument dict for execute_with_ledger. Falls back to the
-    prompt/duration shape (cassetteai/mmaudio's) for any endpoint not yet
-    special-cased above."""
-    builder = _ARG_BUILDERS.get(request.endpoint)
-    if builder is not None:
-        return builder(request.prompt, request.duration_s)
-    return {"prompt": request.prompt, "duration": request.duration_s}
+    """Config-driven argument dict for execute_with_ledger.
+
+    Reads ``prompt_field``, ``duration_field``, ``duration_type``, and
+    ``extra_arguments`` from providers.toml for the request's endpoint.
+    Falls back to the prompt/duration shape for any endpoint not declared
+    in config.
+    """
+    from foleyflow.providers.config import get_model_spec
+
+    try:
+        spec = get_model_spec(request.endpoint)
+    except KeyError:
+        # Unknown endpoint: fall back to the generic shape
+        return {"prompt": request.prompt, "duration": request.duration_s}
+
+    prompt_field = spec.prompt_field or "prompt"
+    duration_field = spec.duration_field or "duration"
+    duration_type = spec.duration_type or "float"
+
+    if duration_type == "int":
+        duration_val = int(round(request.duration_s))
+    else:
+        duration_val = request.duration_s
+
+    args = {prompt_field: request.prompt, duration_field: duration_val}
+
+    # Merge any static extra_arguments from config
+    if spec.extra_arguments:
+        args.update(spec.extra_arguments)
+
+    return args
 
 
 def cache_key(endpoint: str, prompt: str, duration_s: float) -> str:
@@ -84,13 +91,15 @@ def _resolve_cache_dir(cache_dir: str) -> str:
 def extract_audio_url(result) -> str:
     """Tolerant extraction: result['audio'] or result['audio_file'] (dict
     with 'url'), else result['url']. Raises with the raw result if no URL
-    can be found — surfaces the actual fal response shape for debugging."""
-    if isinstance(result, dict):
-        audio_info = result.get("audio") or result.get("audio_file")
-        if isinstance(audio_info, dict) and audio_info.get("url"):
-            return audio_info["url"]
-        if result.get("url"):
-            return result["url"]
+    can be found — surfaces the actual fal response shape for debugging.
+
+    This is a thin wrapper over the adapter's extraction for backward
+    compatibility with callers (sfx_cache.py, tests).
+    """
+    from foleyflow.providers.fal import extract_audio_url as _extract
+    url = _extract(result)
+    if url is not None:
+        return url
     raise ValueError(f"sfx.py: no audio URL found in fal response: {result!r}")
 
 

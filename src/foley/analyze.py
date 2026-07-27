@@ -12,21 +12,24 @@ load_dotenv()
 
 from foley.models import Event, Timeline
 from foley.ledger import execute_with_ledger
+from foleyflow.providers.config import get_analysis_config
 
+# Default VLM model — read from providers.toml [analysis] section.
 # Any video-capable model behind fal's OpenRouter gateway works here, e.g.
 # "google/gemini-2.5-flash", "google/gemini-3-flash-preview", "qwen/qwen3.6-flash".
-DEFAULT_MODEL = "google/gemini-2.5-flash"
+DEFAULT_MODEL = get_analysis_config().get("default_vlm", "google/gemini-2.5-flash")
 
 # Cache CDN URLs so the same clip is uploaded once per process even when
 # analyzed by several models (direct runs + Marlin refinement).
 _upload_cache: dict = {}
 
 def upload_video(path: str) -> str:
-    import fal_client
+    from foleyflow.providers import get_adapter
     key = os.path.abspath(path)
     if key not in _upload_cache:
         print(f"Uploading {os.path.basename(path)} to fal CDN...")
-        _upload_cache[key] = fal_client.upload_file(path)
+        adapter = get_adapter("fal")
+        _upload_cache[key] = adapter.upload(path)
     return _upload_cache[key]
 
 TIMELINE_PROMPT = """You are a professional Foley artist analyzing a silent video.
@@ -109,27 +112,24 @@ def clean_json_text(text: str) -> str:
 
 def repair_json_with_vlm(broken_json: str, error_msg: str) -> str:
     """Use Gemini via OpenRouter to repair broken JSON."""
+    analysis = get_analysis_config()
+    vision_model = analysis["vision_model"]
+
     repair_prompt = f"""Here is a string that was supposed to be valid JSON matching the schema, but failed to parse with the error: {error_msg}.
 Please correct the JSON and output ONLY the valid JSON, with no markdown fences or other text.
 
 JSON:
 {broken_json}"""
 
-    # We call the OpenRouter text gateway via the generic video/vision completions format or a chat completion.
-    # Since we only have 'openrouter/router/vision' or 'openrouter/router/video' in the client,
-    # we can use 'openrouter/router/vision' with no images, or call OpenRouter directly.
-    # Let's check: openrouter/router/vision accepts empty list for image_urls.
     try:
         response = execute_with_ledger(
-            "openrouter/router/vision",
+            vision_model,
             arguments={
                 "image_urls": [],
                 "prompt": repair_prompt,
                 "model": "google/gemini-2.5-flash"
             }
         )
-        # The response structure from fal for openrouter/router/vision:
-        # It usually contains an 'output' or 'text' field.
         return clean_json_text(response.get("output") or response.get("text") or "")
     except Exception as e:
         # If repair fails, just raise original parsing error
@@ -214,8 +214,11 @@ def parse_timeline_json(text: str, clip_duration: float | None = None) -> Timeli
 
 def analyze_video_direct(path: str, model: str = DEFAULT_MODEL, extra_args: dict = None) -> Timeline:
     """Primary path: Send the video file directly to a video-capable VLM via
-    fal's openrouter/router/video. extra_args lets callers pass gateway options
-    (e.g. {"reasoning": True} — mandatory for the Gemini Pro models)."""
+    the configured video analysis gateway. extra_args lets callers pass gateway
+    options (e.g. {"reasoning": True} — mandatory for the Gemini Pro models)."""
+    analysis = get_analysis_config()
+    video_model = analysis["video_model"]
+
     duration = get_video_duration(path)
     video_url = upload_video(path)
 
@@ -230,7 +233,7 @@ def analyze_video_direct(path: str, model: str = DEFAULT_MODEL, extra_args: dict
     }
     if extra_args:
         arguments.update(extra_args)
-    response = execute_with_ledger("openrouter/router/video", arguments=arguments)
+    response = execute_with_ledger(video_model, arguments=arguments)
 
     response_text = response.get("output") or response.get("text") or ""
     timeline = parse_timeline_json(response_text, clip_duration=duration)
@@ -239,8 +242,7 @@ def analyze_video_direct(path: str, model: str = DEFAULT_MODEL, extra_args: dict
 
 def analyze_video_fal(path: str, endpoint: str, extra_args: dict = None) -> Timeline:
     """Run the timeline prompt against a native fal video endpoint with the
-    common {video_url, prompt} -> {output} shape, e.g.
-    nvidia/nemotron-3-nano-omni/video or fal-ai/sa2va/8b/video."""
+    common {video_url, prompt} -> {output} shape."""
     duration = get_video_duration(path)
     video_url = upload_video(path)
     prompt = TIMELINE_PROMPT + f"\nNote: The video duration is exactly {duration:.3f} seconds."
@@ -254,15 +256,18 @@ def analyze_video_fal(path: str, endpoint: str, extra_args: dict = None) -> Time
     return timeline
 
 def find_event_span(video_path_or_url: str, query: str):
-    """Temporal localization via fal-ai/marlin/find — a 2B video VLM tuned for
-    'what happened and when'. Returns (start, end) in seconds, or None if the
-    event was not found. Intended as a refinement pass: the timeline VLM names
-    the events, Marlin pins each discrete event's moment.
+    """Temporal localization via the localization model — a 2B video VLM tuned
+    for 'what happened and when'. Returns (start, end) in seconds, or None if
+    the event was not found. Intended as a refinement pass: the timeline VLM
+    names the events, the localizer pins each discrete event's moment.
     """
+    analysis = get_analysis_config()
+    localization_model = analysis["localization_model"]
+
     video_url = (video_path_or_url if video_path_or_url.startswith("http")
                  else upload_video(video_path_or_url))
     response = execute_with_ledger(
-        "fal-ai/marlin/find",
+        localization_model,
         arguments={"video_url": video_url, "prompt": query}
     )
     span = response.get("span")
@@ -274,7 +279,10 @@ def find_event_span(video_path_or_url: str, query: str):
     return None
 
 def analyze_video_sampled(path: str, model: str = DEFAULT_MODEL) -> Timeline:
-    """Fallback path: Extract frames at 2 fps and send to openrouter/router/vision."""
+    """Fallback path: Extract frames at 2 fps and send to the vision gateway."""
+    analysis = get_analysis_config()
+    vision_model = analysis["vision_model"]
+
     # 1. Get video duration
     duration = get_video_duration(path)
     
@@ -290,7 +298,7 @@ def analyze_video_sampled(path: str, model: str = DEFAULT_MODEL) -> Timeline:
             image_uris.append(image_to_base64_data_uri(frame_path))
             timestamps_desc.append(f"- Image {idx+1}: timestamp = {ts:.2f} seconds")
             
-        print(f"Extracted {len(frames)} frames. Sending to openrouter/router/vision...")
+        print(f"Extracted {len(frames)} frames. Sending to {vision_model}...")
         
         # Construct detailed frame prompt
         time_desc_str = "\n".join(timestamps_desc)
@@ -304,7 +312,7 @@ Video duration is exactly {duration:.3f} seconds.
 {TIMELINE_PROMPT}"""
 
         response = execute_with_ledger(
-            "openrouter/router/vision",
+            vision_model,
             arguments={
                 "image_urls": image_uris,
                 "prompt": prompt,

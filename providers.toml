@@ -1,0 +1,152 @@
+[meta]
+version = 1
+
+# ---------------------------------------------------------------- adapters --
+[adapters.fal]
+module = "foleyflow.providers.fal:FalAdapter"
+api_key_env = "FAL_KEY"
+method = "subscribe"          # fal_client.subscribe | run | submit
+
+[adapters.local]
+module = "foleyflow.providers.local:LocalAdapter"
+enabled = false
+
+# ------------------------------------------------------------------ models --
+# NOTE: the table key is the canonical model ID and is part of the SFX cache
+# key. Renaming one orphans every cached clip generated under the old name.
+# See cleanup.md §4.1 before editing any key here.
+
+[models."cassetteai/sound-effects-generator"]
+adapter = "fal"
+role = "sfx"
+cost_per_call_usd = 0.02
+# docs: integer seconds, required; prose says up to 30s.
+# unverified: lower bound (guessed 1s, integer >= 1).
+duration_min_s = 1.0
+duration_max_s = 30.0
+prompt_field = "prompt"
+duration_field = "duration"
+duration_type = "int"
+
+[models."fal-ai/elevenlabs/sound-effects/v2"]
+adapter = "fal"
+role = "sfx"
+cost_per_call_usd = 0.05
+# docs: "Duration in seconds (0.5-22)" — explicit range in the Input Schema.
+duration_min_s = 0.5
+duration_max_s = 22.0
+prompt_field = "text"
+duration_field = "duration_seconds"
+duration_type = "float"
+
+[models."fal-ai/mmaudio-v2/text-to-audio"]
+adapter = "fal"
+role = "sfx"
+cost_per_call_usd = 0.03
+# docs: optional float, default 8; no min/max documented.
+# unverified: conservative guess matching the other two endpoints.
+duration_min_s = 1.0
+duration_max_s = 30.0
+prompt_field = "prompt"
+duration_field = "duration"
+duration_type = "float"
+
+# Static extra arguments, if a model ever needs them:
+# [models."some/model".extra_arguments]
+# output_format = "wav"
+
+# --------------------------------------------------------------- analysis --
+[analysis]
+video_model = "openrouter/router/video"
+vision_model = "openrouter/router/vision"
+localization_model = "fal-ai/marlin/find"
+default_vlm = "google/gemini-2.5-flash"
+
+[models."openrouter/router/video"]
+adapter = "fal"
+role = "analysis"
+cost_per_call_usd = 0.01
+
+[models."openrouter/router/vision"]
+adapter = "fal"
+role = "analysis"
+cost_per_call_usd = 0.005
+
+[models."fal-ai/marlin/find"]
+adapter = "fal"
+role = "analysis"
+cost_per_call_usd = 0.01
+
+# Video-generation models (retired hero-clip scripts, not used by FoleyFlow).
+# Kept for ledger compatibility; cost is per-second, not per-call.
+[models."fal-ai/ltx-2.3/text-to-video"]
+adapter = "fal"
+role = "video"
+cost_per_second_usd = 0.06
+
+[models."fal-ai/ltx-2.3/image-to-video"]
+adapter = "fal"
+role = "video"
+cost_per_second_usd = 0.06
+
+[models."fal-ai/kling-video/v3/pro/text-to-video"]
+adapter = "fal"
+role = "video"
+cost_per_second_usd = 0.168
+
+[models."beatoven/sound-effect-generation"]
+adapter = "fal"
+role = "sfx"
+cost_per_call_usd = 0.02
+
+[models."nvidia/nemotron-3-nano-omni/video"]
+adapter = "fal"
+role = "analysis"
+cost_per_call_usd = 0.02
+
+[models."fal-ai/sa2va/8b/video"]
+adapter = "fal"
+role = "analysis"
+cost_per_call_usd = 0.02
+
+# ---------------------------------------------------------------- routing --
+# Ordered list — the first category whose keyword list has a word-boundary
+# match (foley.keywords.has_word) against the lowercased event name wins.
+#
+# Keyword notes:
+# - has_word does a PREFIX match at a left word boundary ("wood" matches
+#   "wooden"; "door" matches "doorway"). Keep keywords specific enough to
+#   avoid false positives — e.g. "match" was deliberately left out of
+#   impact_strike because it would prefix-match "matchbox" in "paper tearing
+#   from matchbox", which must stay in the default category. "strike" alone
+#   already covers "match strike".
+
+[[routing.categories]]
+name = "ambience"
+endpoint = "cassetteai/sound-effects-generator"
+keywords = ["wind"]
+
+[[routing.categories]]
+name = "footsteps"
+endpoint = "cassetteai/sound-effects-generator"
+keywords = ["footstep", "walking", "tread", "boot"]
+
+[[routing.categories]]
+name = "door_creak"
+endpoint = "fal-ai/elevenlabs/sound-effects/v2"
+keywords = ["door", "gate", "latch", "hinge", "creak", "squeak"]
+
+[[routing.categories]]
+name = "impact_strike"
+endpoint = "fal-ai/mmaudio-v2/text-to-audio"
+keywords = ["strike", "ignite", "glass", "shatter", "impact", "break"]
+
+[routing.default]
+name = "default"
+endpoint = "cassetteai/sound-effects-generator"
+
+# ---------------------------------------------------------------- defaults --
+[defaults]
+cost_per_call_usd = 0.01      # was ledger.py's bare `return 0.01`
+duration_min_s = 1.0
+duration_max_s = 22.0

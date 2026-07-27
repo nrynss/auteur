@@ -3,25 +3,11 @@ import json
 import time
 import hashlib
 from typing import Any, Dict, Optional
-import fal_client
+
+from foleyflow.providers.config import get_defaults, get_model_spec
 
 LEDGER_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "ledger.jsonl"))
 
-# Default cost estimation per second or per run if API doesn't report it
-COST_ESTIMATES = {
-    "fal-ai/ltx-2.3/text-to-video": 0.36,         # ~$0.36 per 6s clip ($0.06/s)
-    "fal-ai/ltx-2.3/image-to-video": 0.36,        # ~$0.36 per 6s clip
-    "openrouter/router/video": 0.01,              # Gemini 2.5 Flash video analysis
-    "openrouter/router/vision": 0.005,            # Gemini 2.5 Flash image analysis
-    "fal-ai/elevenlabs/sound-effects/v2": 0.05,  # Estimate per SFX gen
-    "cassetteai/sound-effects-generator": 0.02,
-    "beatoven/sound-effect-generation": 0.02,
-    "fal-ai/mmaudio-v2/text-to-audio": 0.03,
-    "fal-ai/marlin/find": 0.01,                   # $0.015/1K tokens; short clips ≈ well under 1K
-    "nvidia/nemotron-3-nano-omni/video": 0.02,    # pricing unpublished; rough guess
-    "fal-ai/sa2va/8b/video": 0.02,                # pricing unpublished; rough guess
-    "fal-ai/kling-video/v3/pro/text-to-video": 0.168,  # per-second: $0.112/s audio-off, $0.168/s audio-on
-}
 
 def get_params_hash(arguments: Dict[str, Any]) -> str:
     """Generate a stable hash for input arguments."""
@@ -29,18 +15,27 @@ def get_params_hash(arguments: Dict[str, Any]) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 def estimate_cost(endpoint: str, arguments: Dict[str, Any]) -> float:
-    """Estimate cost for an API call based on endpoint and params."""
-    if endpoint in COST_ESTIMATES:
-        # Handle duration-based costs
-        if "ltx-2.3" in endpoint:
-            duration = arguments.get("duration", 6)
-            return float(duration) * 0.06
-        if "kling" in endpoint:
-            duration = float(arguments.get("duration", 5))
-            rate = 0.168 if arguments.get("generate_audio", True) else 0.112
-            return duration * rate
-        return COST_ESTIMATES[endpoint]
-    return 0.01  # Default fallback cost
+    """Estimate cost for an API call based on endpoint and params.
+
+    Reads pricing from providers.toml. If the model declares
+    ``cost_per_second_usd``, cost is ``duration * rate``; otherwise
+    ``cost_per_call_usd``. Falls back to ``defaults.cost_per_call_usd``
+    for unknown endpoints.
+    """
+    try:
+        spec = get_model_spec(endpoint)
+    except KeyError:
+        return get_defaults().get("cost_per_call_usd", 0.01)
+
+    if spec.cost_per_second_usd is not None:
+        # Duration-based pricing (video models, etc.)
+        duration = float(arguments.get("duration", 0) or 0)
+        return duration * spec.cost_per_second_usd
+
+    if spec.cost_per_call_usd is not None:
+        return spec.cost_per_call_usd
+
+    return get_defaults().get("cost_per_call_usd", 0.01)
 
 def log_transaction(endpoint: str, params_hash: str, cost: float, success: bool,
                     error: Optional[str] = None, cost_source: str = "estimate"):
@@ -82,37 +77,53 @@ def get_actual_cost(result: Any) -> Optional[float]:
                 pass
     return None
 
-def execute_with_ledger(endpoint: str, arguments: Dict[str, Any], method: str = "subscribe", **kwargs) -> Any:
-    """
-    Wrap fal_client calls to log their cost and inputs to ledger.jsonl.
-    method can be 'subscribe', 'run', or 'submit'.
+def execute_with_ledger(endpoint: str, arguments: Dict[str, Any],
+                        method: str = "subscribe", adapter=None, **kwargs) -> Any:
+    """Wrap provider calls to log their cost and inputs to ledger.jsonl.
+
+    ``adapter`` is an optional Adapter instance; when omitted, the adapter
+    configured for this endpoint in providers.toml is used. method can be
+    'subscribe', 'run', or 'submit'.
     """
     params_hash = get_params_hash(arguments)
     estimated = estimate_cost(endpoint, arguments)
-    
+
+    # Resolve adapter
+    if adapter is None:
+        from foleyflow.providers import get_adapter
+        try:
+            spec = get_model_spec(endpoint)
+            adapter = get_adapter(spec.adapter)
+        except KeyError:
+            # Fallback for unknown endpoints: use fal
+            from foleyflow.providers import get_adapter
+            adapter = get_adapter("fal")
+            from foleyflow.providers.base import ModelSpec
+            spec = ModelSpec(model_id=endpoint, adapter="fal", role="unknown")
+    else:
+        try:
+            spec = get_model_spec(endpoint)
+        except KeyError:
+            from foleyflow.providers.base import ModelSpec
+            spec = ModelSpec(model_id=endpoint, adapter="fal", role="unknown")
+
     try:
-        if method == "subscribe":
-            result = fal_client.subscribe(endpoint, arguments, **kwargs)
-        elif method == "run":
-            result = fal_client.run(endpoint, arguments, **kwargs)
-        elif method == "submit":
-            # For submit, it returns a request handle.
-            # NOTE: submit-path accounting is known-imprecise (logs success +
-            # estimate at handle creation, before the job completes). The path
-            # is unused today — fix before any async batching of SFX.
-            handler = fal_client.submit(endpoint, arguments, **kwargs)
+        result = adapter.generate(spec, arguments, method=method, **kwargs)
+
+        if method == "submit":
+            # submit returns a handle — log estimate at creation time
             log_transaction(endpoint, params_hash, estimated, success=True)
-            return handler
-        else:
-            raise ValueError(f"Unknown fal_client method: {method}")
-        
+            return result.raw_response
+
         # Check if actual cost is available in response
-        actual_cost = get_actual_cost(result)
+        actual_cost = result.actual_cost_usd
+        if actual_cost is None:
+            actual_cost = get_actual_cost(result.raw_response)
         final_cost = actual_cost if actual_cost is not None else estimated
         source = "actual" if actual_cost is not None else "estimate"
 
         log_transaction(endpoint, params_hash, final_cost, success=True, cost_source=source)
-        return result
+        return result.raw_response
     except Exception as e:
         log_transaction(endpoint, params_hash, estimated, success=False, error=str(e))
         raise e

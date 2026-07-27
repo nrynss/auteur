@@ -131,11 +131,11 @@ def run(clip_path: str, out_path: Optional[str] = None, tier: str = "full",
             return k == "discrete"
         return True
 
-    from foley.ledger import COST_ESTIMATES
+    from foley.ledger import estimate_cost as _est_cost
 
     amb_req = route_ambience(timeline.ambience, duration)
     amb_cached = _is_cached(cache_dir, amb_req.endpoint, amb_req.prompt, amb_req.duration_s)
-    amb_cost_est = COST_ESTIMATES.get(amb_req.endpoint, 0.01)
+    amb_cost_est = _est_cost(amb_req.endpoint, {})
     
     if amb_cached:
         amb_status = "cached · $0"
@@ -168,7 +168,7 @@ def run(clip_path: str, out_path: Optional[str] = None, tier: str = "full",
     for ev in timeline.events:
         req = route_event(ev)
         cached = _is_cached(cache_dir, req.endpoint, req.prompt, req.duration_s)
-        cost_est = COST_ESTIMATES.get(req.endpoint, 0.01)
+        cost_est = _est_cost(req.endpoint, {})
         
         active = _is_active(ev.kind)
         if not active:

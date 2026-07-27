@@ -7,7 +7,7 @@ Timeline by an LLM edit, then run through the SAME `parse_timeline_json`
 validation/clamping analyze.py uses for a fresh analysis -- a hallucinated
 edit is neutralized the same way a hallucinated analysis is.
 
-The call is TEXT-ONLY: it reuses analyze.py's `openrouter/router/vision`
+The call is TEXT-ONLY: it reuses the configured vision model gateway
 call with an empty `image_urls` list, the same trick `repair_json_with_vlm`
 uses to get a plain text completion out of the vision gateway. No video or
 image is uploaded, so this is a cheap (~$0.001) call regardless of clip
@@ -66,8 +66,12 @@ def apply_notes(timeline: Timeline, notes: str, model: str = DEFAULT_MODEL,
         f"Director's notes:\n{notes}\n"
     )
 
+    from foleyflow.providers.config import get_analysis_config
+    analysis = get_analysis_config()
+    vision_model = analysis["vision_model"]
+
     response = execute_with_ledger(
-        "openrouter/router/vision",
+        vision_model,
         arguments={"image_urls": [], "prompt": prompt, "model": model},
     )
     response_text = response.get("output") or response.get("text") or ""
