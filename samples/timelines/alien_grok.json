@@ -1,0 +1,34 @@
+{
+  "duration": 10.041667,
+  "ambience": "subtle hum of distant machinery and a gentle breeze",
+  "events": [
+    {
+      "name": "alien feet on kitchen floor",
+      "start_time": 3.42,
+      "duration": 0.5,
+      "intensity": "low",
+      "kind": "rhythmic"
+    },
+    {
+      "name": "ceramic mug on kitchen counter",
+      "start_time": 4.6,
+      "duration": 0.2,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "kitchen cabinet opening",
+      "start_time": 7.9,
+      "duration": 0.5,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "kitchen cabinet closing",
+      "start_time": 9.4,
+      "duration": 0.5,
+      "intensity": "low",
+      "kind": "discrete"
+    }
+  ]
+}

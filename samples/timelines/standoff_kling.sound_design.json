@@ -1,0 +1,63 @@
+{
+  "duration": 15.041667,
+  "ambience": "desert dusty frontier town, soft dry wind, distant heat-haze hush, low under all action",
+  "events": [
+    {
+      "name": "male boot step on dry gravel and packed dirt",
+      "start_time": 0.09,
+      "duration": 0.12,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "male boot weight shift on dry gravel",
+      "start_time": 1.85,
+      "duration": 0.12,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "rhythmic church bell tolling, a deep resonant bronze church bell striking steadily over and over, classic slow western church bell peal with long decay",
+      "start_time": 6.65,
+      "duration": 8.39,
+      "intensity": "med",
+      "kind": "rhythmic"
+    },
+    {
+      "name": "leather holster draw, gun belt leather creak and revolver leaving holster",
+      "start_time": 9.35,
+      "duration": 0.35,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "close POV single loud revolver gunshot, sharp powerful crack with long desert canyon echo",
+      "start_time": 9.88,
+      "duration": 0.9,
+      "intensity": "high",
+      "kind": "discrete"
+    },
+    {
+      "name": "left gunman single loud revolver gunshot, sharp powerful crack with long desert echo, slightly closer and brighter",
+      "start_time": 10.95,
+      "duration": 0.85,
+      "intensity": "high",
+      "kind": "discrete"
+    },
+    {
+      "name": "right gunman single loud revolver gunshot, sharp powerful crack with longer desert echo, slightly more distant and darker",
+      "start_time": 11.18,
+      "duration": 0.9,
+      "intensity": "high",
+      "kind": "discrete"
+    }
+  ],
+  "history": [
+    {
+      "when": "2026-07-19T20:30:00+00:00",
+      "model": "sound-designer-approved",
+      "notes": "Craft pass authorized by Aravind Vijayakumar (award-winning Sound Designer / Sound Editor / ADR Editor / ADR Mixer / Foley Supervisor, Mumbai; ~20 years; 300+ films, series, shorts, campaigns). ~5 minutes of expert feedback on the standoff pass — items 1-9 — re-rendered as audio only with picture locked. (1-2) Directed timeline as ground truth vs raw VLM. (3) Frame-checked gunshots: 9.88 / 10.95 / 11.18; no fire on bell tower. (4) Rhythmic bronze peal 6.65s to end. (5) Zero gun events on bell cut. (6) Leather holster draw @ 9.35s. (7) Second gravel boot @ 1.85s. (8) Differentiated revolver character L/R/POV. (9) Post-shot tail = wind + bell decay only.",
+      "changes": "SOUND DESIGNER APPROVED — Aravind Vijayakumar (~5 min review) · standoff_kling audio only"
+    }
+  ]
+}

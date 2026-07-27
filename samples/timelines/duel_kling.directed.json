@@ -1,0 +1,42 @@
+{
+  "duration": 15.041667,
+  "ambience": "desert wind blowing with an occasional tumbleweed rolling by, faint distant sounds of a western town",
+  "events": [
+    {
+      "name": "tumbleweed rolling on sand",
+      "start_time": 8.016,
+      "duration": 2.203,
+      "intensity": "low",
+      "kind": "continuous"
+    },
+    {
+      "name": "leather glove pulling gun from holster",
+      "start_time": 12.012,
+      "duration": 0.4,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "gun cocking sound",
+      "start_time": 13.918,
+      "duration": 0.15,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "revolver gunshot impact",
+      "start_time": 14.2,
+      "duration": 0.8,
+      "intensity": "high",
+      "kind": "discrete"
+    }
+  ],
+  "history": [
+    {
+      "when": "2026-07-18T18:00:58.044517+00:00",
+      "model": "google/gemini-2.5-flash",
+      "notes": "add a loud revolver gunshot impact event at 14.2s with high intensity and duration 0.8s",
+      "changes": "  ADDED: 'revolver gunshot impact' @ 14.2s (discrete, high)"
+    }
+  ]
+}

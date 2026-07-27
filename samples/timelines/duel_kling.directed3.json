@@ -1,0 +1,70 @@
+{
+  "duration": 15.041667,
+  "ambience": "hot dry desert wind, distant creaking wood, total silence of a frontier ghost town at high noon",
+  "events": [
+    {
+      "name": "tumbleweed rolling on sand",
+      "start_time": 6.81,
+      "duration": 0.8,
+      "intensity": "low",
+      "kind": "continuous"
+    },
+    {
+      "name": "leather pistol being drawn from holster",
+      "start_time": 9.15,
+      "duration": 0.4,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "gunshot",
+      "start_time": 13.9,
+      "duration": 0.1,
+      "intensity": "high",
+      "kind": "discrete"
+    },
+    {
+      "name": "gunshot",
+      "start_time": 14.1,
+      "duration": 0.1,
+      "intensity": "high",
+      "kind": "discrete"
+    },
+    {
+      "name": "slow tense heartbeat",
+      "start_time": 0.0,
+      "duration": 11.0,
+      "intensity": "low",
+      "kind": "rhythmic"
+    },
+    {
+      "name": "slow tense breathing",
+      "start_time": 0.0,
+      "duration": 13.0,
+      "intensity": "low",
+      "kind": "continuous"
+    },
+    {
+      "name": "leather holster creak",
+      "start_time": 8.5,
+      "duration": 0.3,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "dry desert wind gust",
+      "start_time": 5.0,
+      "duration": 2.0,
+      "intensity": "low",
+      "kind": "discrete"
+    }
+  ],
+  "history": [
+    {
+      "when": "2026-07-18T18:11:03.985500+00:00",
+      "model": "google/gemini-2.5-flash",
+      "notes": "add a slow tense heartbeat rhythmic event at 0s with duration 11s and low intensity; add slow tense breathing continuous event at 0s with duration 13s and low intensity; add leather holster creak discrete event at 8.5s with duration 0.3s and low intensity; add dry desert wind gust discrete event at 5s with duration 2s and low intensity; change the ambience to hot dry desert wind, distant creaking wood, total silence of a frontier ghost town at high noon",
+      "changes": "  EDITED: ambience: 'desert wind' -> 'hot dry desert wind, distant creaking wood, total silence of a frontier ghost town at high noon'\n  ADDED: 'slow tense heartbeat' @ 0.0s (rhythmic, low)\n  ADDED: 'slow tense breathing' @ 0.0s (continuous, low)\n  ADDED: 'leather holster creak' @ 8.5s (discrete, low)\n  ADDED: 'dry desert wind gust' @ 5.0s (discrete, low)"
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "duration": 6.12,
+  "ambience": "light wind rustling dry leaves and distant bird chirps",
+  "events": [
+    {
+      "name": "footsteps on gravel",
+      "start_time": 0.0,
+      "duration": 1.7,
+      "intensity": "med",
+      "kind": "rhythmic"
+    },
+    {
+      "name": "fabric rustling from jacket",
+      "start_time": 2.8,
+      "duration": 0.5,
+      "intensity": "low",
+      "kind": "continuous"
+    },
+    {
+      "name": "wooden box handling",
+      "start_time": 3.4,
+      "duration": 0.8,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "paper tearing from matchbox",
+      "start_time": 4.9,
+      "duration": 0.4,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "match strike",
+      "start_time": 5.4,
+      "duration": 0.2,
+      "intensity": "low",
+      "kind": "discrete"
+    }
+  ]
+}

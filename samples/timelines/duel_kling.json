@@ -1,0 +1,41 @@
+{
+  "duration": 15.041667,
+  "ambience": "desert wind blowing with an occasional distant bird call",
+  "events": [
+    {
+      "name": "dry tumbleweed rolling",
+      "start_time": 6.87,
+      "duration": 0.4,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "leather holster and metal gun drawing",
+      "start_time": 8.78,
+      "duration": 0.2,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "dry tumbleweed rolling",
+      "start_time": 9.77,
+      "duration": 0.4,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "metal gun cocking",
+      "start_time": 11.23,
+      "duration": 0.1,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "metal gun cocking",
+      "start_time": 11.26,
+      "duration": 0.1,
+      "intensity": "med",
+      "kind": "discrete"
+    }
+  ]
+}

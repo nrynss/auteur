@@ -1,0 +1,34 @@
+{
+  "duration": 6.12,
+  "ambience": "distant wind with sparse bird chirps in a cold, snowy rural area",
+  "events": [
+    {
+      "name": "footsteps on snow",
+      "start_time": 0.08,
+      "duration": 1.6,
+      "intensity": "low",
+      "kind": "rhythmic"
+    },
+    {
+      "name": "footsteps on snow",
+      "start_time": 1.68,
+      "duration": 1.7,
+      "intensity": "med",
+      "kind": "rhythmic"
+    },
+    {
+      "name": "metal gate squeak",
+      "start_time": 3.42,
+      "duration": 0.6,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "footsteps on snow",
+      "start_time": 4.1,
+      "duration": 1.9,
+      "intensity": "med",
+      "kind": "rhythmic"
+    }
+  ]
+}

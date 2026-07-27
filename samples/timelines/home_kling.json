@@ -1,0 +1,91 @@
+{
+  "_comment": "Hand-authored ground-truth timeline for the 15s 'Coming Home' hero clip. This is the foley artist's interpretation as data: same walk, four surfaces, dynamics arc quiet -> accent -> near-silence. Compare the VLM's timeline against this, and use it for the director's-notes demo.",
+  "duration": 15.0,
+  "ambience": "quiet night exterior after rain, sparse distant water drips, very low; perceptibly warmer and near-silent once indoors after 11s",
+  "events": [
+    {
+      "name": "slow heavy footsteps on wet gravel, distant perspective",
+      "start_time": 0.0,
+      "duration": 4.8,
+      "intensity": "low",
+      "kind": "rhythmic"
+    },
+    {
+      "name": "wool coat cloth movement",
+      "start_time": 0.0,
+      "duration": 14.0,
+      "intensity": "low",
+      "kind": "continuous"
+    },
+    {
+      "name": "boot step on hollow wooden porch stair, damp creak",
+      "start_time": 5.2,
+      "duration": 0.5,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "boot step on hollow wooden porch stair, damp creak",
+      "start_time": 6.0,
+      "duration": 0.5,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "boot step on hollow wooden porch stair, damp creak",
+      "start_time": 6.8,
+      "duration": 0.5,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "keyring pulled from coat pocket, soft metallic jingle",
+      "start_time": 8.0,
+      "duration": 0.8,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "key sliding into door lock",
+      "start_time": 9.3,
+      "duration": 0.3,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "lock latch click, sharp and close",
+      "start_time": 9.8,
+      "duration": 0.2,
+      "intensity": "high",
+      "kind": "discrete"
+    },
+    {
+      "name": "heavy wooden door swinging open, low slow creak",
+      "start_time": 10.2,
+      "duration": 1.0,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "muffled soft footsteps on woven rug, barely audible",
+      "start_time": 11.3,
+      "duration": 2.0,
+      "intensity": "low",
+      "kind": "rhythmic"
+    },
+    {
+      "name": "keys dropped into small ceramic dish, bright clatter",
+      "start_time": 13.4,
+      "duration": 0.4,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "soft relieved exhale",
+      "start_time": 14.2,
+      "duration": 0.6,
+      "intensity": "low",
+      "kind": "discrete"
+    }
+  ]
+}

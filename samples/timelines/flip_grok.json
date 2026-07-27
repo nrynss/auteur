@@ -1,0 +1,76 @@
+{
+  "duration": 10.041667,
+  "ambience": "general background noise of a kitchen environment on the left and a quiet room on the right",
+  "events": [
+    {
+      "name": "water splashing against metal pot",
+      "start_time": 0.0,
+      "duration": 4.0,
+      "intensity": "low",
+      "kind": "continuous"
+    },
+    {
+      "name": "ceramic cup lifting from saucer",
+      "start_time": 1.7,
+      "duration": 0.5,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "metal pot scraping against metal sink",
+      "start_time": 3.4,
+      "duration": 0.8,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "ceramic cup returning to saucer",
+      "start_time": 4.0,
+      "duration": 0.3,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "fabric rubbing against ceramic counter",
+      "start_time": 4.2,
+      "duration": 1.0,
+      "intensity": "low",
+      "kind": "rhythmic"
+    },
+    {
+      "name": "ceramic cup lifting from saucer",
+      "start_time": 4.7,
+      "duration": 0.5,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "ceramic plates clanking",
+      "start_time": 6.3,
+      "duration": 0.5,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "ceramic cup returning to saucer",
+      "start_time": 7.0,
+      "duration": 0.3,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "flower stem rubbing against ceramic vase",
+      "start_time": 7.3,
+      "duration": 0.5,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "fabric rubbing against skin",
+      "start_time": 8.1,
+      "duration": 0.5,
+      "intensity": "low",
+      "kind": "discrete"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+.env
+
+# Local artifact scratch — canonical artifacts live in B2.
+work/
+sfx_cache/
+ledger.jsonl

@@ -1,0 +1,91 @@
+{
+  "duration": 15.041667,
+  "ambience": "hot dry desert wind, distant creaking wood, total silence of a frontier ghost town at high noon",
+  "events": [
+    {
+      "name": "slow tense heartbeat",
+      "start_time": 0.0,
+      "duration": 11.0,
+      "intensity": "low",
+      "kind": "rhythmic"
+    },
+    {
+      "name": "slow tense deep breathing",
+      "start_time": 0.0,
+      "duration": 12.5,
+      "intensity": "low",
+      "kind": "continuous"
+    },
+    {
+      "name": "dry desert wind gust",
+      "start_time": 5.0,
+      "duration": 2.0,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "dry tumbleweed rolling",
+      "start_time": 6.87,
+      "duration": 0.4,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "leather holster creak",
+      "start_time": 8.5,
+      "duration": 0.5,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "leather holster and metal gun drawing",
+      "start_time": 8.78,
+      "duration": 0.2,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "dry tumbleweed rolling",
+      "start_time": 9.77,
+      "duration": 0.4,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "metal gun cocking",
+      "start_time": 11.23,
+      "duration": 0.1,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "metal gun cocking",
+      "start_time": 11.26,
+      "duration": 0.1,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "revolver gunshot impact",
+      "start_time": 12.6,
+      "duration": 1.0,
+      "intensity": "high",
+      "kind": "discrete"
+    },
+    {
+      "name": "revolver gunshot impact",
+      "start_time": 12.8,
+      "duration": 1.0,
+      "intensity": "high",
+      "kind": "discrete"
+    }
+  ],
+  "history": [
+    {
+      "when": "2026-07-18T18:34:12.577982+00:00",
+      "model": "google/gemini-2.5-flash",
+      "notes": "add a slow tense heartbeat rhythmic event at 0s with duration 11s and low intensity; add a slow tense deep breathing continuous event at 0s with duration 12.5s and low intensity; add a dry desert wind gust discrete event at 5.0s with duration 2.0s and low intensity; add a leather holster creak discrete event at 8.5s with duration 0.5s and low intensity; add a high intensity discrete event named 'revolver gunshot impact' at 12.6s with duration 1.0s; add a high intensity discrete event named 'revolver gunshot impact' at 12.8s with duration 1.0s; change the ambience to 'hot dry desert wind, distant creaking wood, total silence of a frontier ghost town at high noon'",
+      "changes": "  EDITED: ambience: 'desert wind blowing with an occasional distant bird call' -> 'hot dry desert wind, distant creaking wood, total silence of a frontier ghost town at high noon'\n  ADDED: 'slow tense heartbeat' @ 0.0s (rhythmic, low)\n  ADDED: 'slow tense deep breathing' @ 0.0s (continuous, low)\n  ADDED: 'dry desert wind gust' @ 5.0s (discrete, low)\n  ADDED: 'leather holster creak' @ 8.5s (discrete, low)\n  ADDED: 'revolver gunshot impact' @ 12.6s (discrete, high)\n  ADDED: 'revolver gunshot impact' @ 12.8s (discrete, high)"
+    }
+  ]
+}

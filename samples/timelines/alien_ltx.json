@@ -1,0 +1,56 @@
+{
+  "duration": 10.28,
+  "ambience": "subtle hum of futuristic kitchen machinery and human presence",
+  "events": [
+    {
+      "name": "ceramic cup clink on metal table",
+      "start_time": 0.589,
+      "duration": 0.15,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "ceramic cup clink on metal table",
+      "start_time": 0.824,
+      "duration": 0.15,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "footsteps on mud/slime",
+      "start_time": 0.5,
+      "duration": 3.0,
+      "intensity": "med",
+      "kind": "rhythmic"
+    },
+    {
+      "name": "ceramic cup clink",
+      "start_time": 4.5,
+      "duration": 0.1,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "button click",
+      "start_time": 7.0,
+      "duration": 0.05,
+      "intensity": "low",
+      "kind": "discrete"
+    },
+    {
+      "name": "cabinet door closing",
+      "start_time": 9.0,
+      "duration": 0.5,
+      "intensity": "med",
+      "kind": "discrete"
+    }
+  ],
+  "history": [
+    {
+      "when": "2026-07-18T13:20:51.951748+00:00",
+      "model": "google/gemini-2.5-flash",
+      "notes": "add footsteps on mud/slime from 0.5s to 3.5s, add a ceramic cup clink at 4.5s, add a button click at 7.0s, and add a cabinet door closing at 9.0s",
+      "changes": "  ADDED: 'footsteps on mud/slime' @ 0.5s (rhythmic, med)\n  ADDED: 'ceramic cup clink' @ 4.5s (discrete, low)\n  ADDED: 'button click' @ 7.0s (discrete, low)\n  ADDED: 'cabinet door closing' @ 9.0s (discrete, med)"
+    }
+  ]
+}

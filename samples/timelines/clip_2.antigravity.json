@@ -1,0 +1,34 @@
+{
+  "duration": 6.12,
+  "ambience": "distant sounds of a quiet old house, faint chirping of birds",
+  "events": [
+    {
+      "name": "wooden door creaking",
+      "start_time": 0.0,
+      "duration": 4.1,
+      "intensity": "low",
+      "kind": "continuous"
+    },
+    {
+      "name": "wooden door closing",
+      "start_time": 4.1,
+      "duration": 0.25,
+      "intensity": "med",
+      "kind": "discrete"
+    },
+    {
+      "name": "glass on wooden table rolling",
+      "start_time": 4.1,
+      "duration": 1.1,
+      "intensity": "low",
+      "kind": "continuous"
+    },
+    {
+      "name": "glass on wooden table stopping",
+      "start_time": 5.5,
+      "duration": 0.2,
+      "intensity": "low",
+      "kind": "discrete"
+    }
+  ]
+}
