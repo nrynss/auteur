@@ -60,5 +60,23 @@ class LocalBackend:
             raise StorageError(f"no object at {key!r}")
         return "file:///" + path.replace(os.sep, "/").lstrip("/")
 
+    def list_keys(self, prefix: str):
+        """Walk the directory tree under `prefix` and return storage keys.
+
+        Emits keys, not filesystem paths, so callers cannot tell which backend
+        they are on. Sorted for the same reason as B2's listing: ULID-named
+        objects then arrive in creation order.
+        """
+        base = os.path.join(self.root, *[p for p in prefix.split("/") if p])
+        if not os.path.isdir(base):
+            return []
+        keys = []
+        for dirpath, _dirnames, filenames in os.walk(base):
+            for filename in filenames:
+                full = os.path.join(dirpath, filename)
+                rel = os.path.relpath(full, self.root).replace(os.sep, "/")
+                keys.append(rel)
+        return sorted(keys)
+
     def __repr__(self) -> str:
         return f"LocalBackend(root={self.root!r})"

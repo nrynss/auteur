@@ -86,6 +86,26 @@ class B2Backend:
             raise StorageError(f"upload failed for {key!r}: {e}") from e
         return key
 
+    def list_keys(self, prefix: str):
+        """Paginated listing, returned as prefix-relative-free storage keys.
+
+        The bucket prefix is stripped so callers see the same key space they
+        pass to get()/put(), and never learn which bucket or root prefix the
+        backend is using.
+        """
+        from botocore.exceptions import ClientError
+        full_prefix = self._key(prefix)
+        strip = len(self.prefix) + 1 if self.prefix else 0
+        keys = []
+        try:
+            paginator = self._client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=full_prefix):
+                for obj in page.get("Contents", []):
+                    keys.append(obj["Key"][strip:])
+        except ClientError as e:
+            raise StorageError(f"list failed for {prefix!r}: {e}") from e
+        return sorted(keys)
+
     def signed_url(self, key: str, expires_s: int = 3600) -> str:
         from botocore.exceptions import ClientError
         try:

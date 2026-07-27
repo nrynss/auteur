@@ -6,7 +6,7 @@ Keys are POSIX-style, slash-separated, and never absolute — e.g.
 The backend owns any bucket/prefix concerns; callers never see them.
 """
 
-from typing import Optional, Protocol, runtime_checkable
+from typing import List, Optional, Protocol, runtime_checkable
 
 
 class StorageError(RuntimeError):
@@ -39,4 +39,15 @@ class Backend(Protocol):
     def signed_url(self, key: str, expires_s: int = 3600) -> str:
         """A short-lived URL the browser can fetch directly. Local backends may
         return a `file://` URL — only the B2 backend produces a real signed URL."""
+        ...
+
+    def list_keys(self, prefix: str) -> List[str]:
+        """Every key under `prefix`, lexicographically sorted.
+
+        Sorted because ULID-named objects then come back in creation order,
+        which is how the project store finds the latest run and replays an
+        event log without opening anything. Returns [] for an empty prefix
+        rather than raising — an absent prefix is an empty collection, not an
+        error.
+        """
         ...
