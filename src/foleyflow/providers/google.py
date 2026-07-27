@@ -34,13 +34,25 @@ import os
 import time
 from typing import Any, Optional
 
+from dotenv import load_dotenv
+
 from foleyflow.providers.base import GenerationResult, ModelSpec
+
+# Loaded here rather than relying on some other module having done it first:
+# an adapter that reads credentials must not depend on import order to find
+# them. load_dotenv never overrides an already-set variable, so a real
+# environment (Cloud Run, CI) still wins over a stray .env file.
+load_dotenv()
 
 # Files API: how long to wait for an uploaded video to become ACTIVE.
 UPLOAD_POLL_INTERVAL_S = 1.0
 UPLOAD_TIMEOUT_S = 300.0
 
-DEFAULT_API_KEY_ENV = "GOOGLE_API_KEY"
+# Both names are in circulation: AI Studio labels the key GEMINI_API_KEY, most
+# Google Cloud material says GOOGLE_API_KEY, and the google-genai SDK itself
+# accepts either. Accepting both costs one line and saves a confusing failure
+# on a key that is, in fact, correctly configured.
+DEFAULT_API_KEY_ENV = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
 
 
 class GoogleAdapter:
@@ -49,18 +61,24 @@ class GoogleAdapter:
     name: str = "google"
 
     def __init__(self, api_key: Optional[str] = None,
-                 api_key_env: str = DEFAULT_API_KEY_ENV):
+                 api_key_env: "str | tuple[str, ...] | list[str]" = DEFAULT_API_KEY_ENV):
         self._api_key = api_key
-        self._api_key_env = api_key_env
+        self._api_key_env = (api_key_env,) if isinstance(api_key_env, str) else tuple(api_key_env)
         self._client = None
 
     def _get_client(self):
         if self._client is not None:
             return self._client
-        key = self._api_key or os.environ.get(self._api_key_env)
+        key = self._api_key
         if not key:
+            for name in self._api_key_env:
+                key = os.environ.get(name)
+                if key:
+                    break
+        if not key:
+            names = " or ".join(self._api_key_env)
             raise RuntimeError(
-                f"{self._api_key_env} is unset — create a key at "
+                f"{names} is unset — create a key at "
                 "https://aistudio.google.com/apikey and add it to .env"
             )
         from google import genai

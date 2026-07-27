@@ -230,10 +230,17 @@ def analyze_video_direct(path: str, model: str = DEFAULT_MODEL, extra_args: dict
     the configured video analysis gateway. extra_args lets callers pass gateway
     options (e.g. {"reasoning": True} — mandatory for the Gemini Pro models)."""
     analysis = get_analysis_config()
-    video_model = analysis["video_model"]
+    # The model the caller asked for IS the endpoint to bill and count against.
+    # Under fal's gateway these were genuinely different — the endpoint was the
+    # router, `model` selected what sat behind it — but calling Google directly
+    # collapses them. Passing the configured default here while actually
+    # invoking `model` would file every request under the wrong model, and the
+    # quota panel would then report the wrong budget as spent. On 20/day that
+    # is not a cosmetic error.
+    effective_model = model or analysis["video_model"]
 
     duration = get_video_duration(path)
-    video_url = upload_video(path)
+    video_url = upload_video(path, model_id=effective_model)
 
     prompt = TIMELINE_PROMPT + f"\nNote: The video duration is exactly {duration:.3f} seconds."
 
@@ -242,11 +249,11 @@ def analyze_video_direct(path: str, model: str = DEFAULT_MODEL, extra_args: dict
     arguments = {
         "video_urls": [video_url],
         "prompt": prompt,
-        "model": model
+        "model": effective_model
     }
     if extra_args:
         arguments.update(extra_args)
-    response = execute_with_ledger(video_model, arguments=arguments)
+    response = execute_with_ledger(effective_model, arguments=arguments)
 
     response_text = response.get("output") or response.get("text") or ""
     timeline = parse_timeline_json(response_text, clip_duration=duration)

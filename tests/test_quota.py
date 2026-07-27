@@ -142,3 +142,29 @@ def test_to_dict_is_json_serializable(tmp_path, noon):
     assert payload["status"] == "ok"
     assert payload["per_day"]["remaining"] == 20
     assert payload["resets_at"]
+
+
+def test_ledger_attributes_usage_to_the_model_actually_called(tmp_path, monkeypatch):
+    """Regression: analyze_video_direct logged the configured default endpoint
+    while invoking whatever `model` the caller passed. Every Flash-Lite run was
+    counted against the 20/day Flash budget — the quota panel would report the
+    wrong model as exhausted while the real one silently drained.
+    """
+    from foley import analyze
+
+    captured = {}
+
+    def fake_execute(endpoint, arguments, **kwargs):
+        captured["endpoint"] = endpoint
+        captured["model_arg"] = arguments.get("model")
+        return {"output": '{"duration": 15.0, "ambience": "wind", "events": []}'}
+
+    monkeypatch.setattr(analyze, "execute_with_ledger", fake_execute)
+    monkeypatch.setattr(analyze, "upload_video", lambda p, model_id=None: "files/fake")
+    monkeypatch.setattr(analyze, "get_video_duration", lambda p: 15.0)
+
+    analyze.analyze_video_direct("clip.mp4", model="gemini-3.5-flash-lite")
+
+    assert captured["endpoint"] == "gemini-3.5-flash-lite", \
+        "the ledger endpoint must be the model actually invoked"
+    assert captured["model_arg"] == "gemini-3.5-flash-lite"

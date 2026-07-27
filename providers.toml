@@ -9,7 +9,7 @@ method = "subscribe"          # fal_client.subscribe | run | submit
 
 [adapters.google]
 module = "foleyflow.providers.google:GoogleAdapter"
-api_key_env = "GOOGLE_API_KEY"
+api_key_env = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
 
 [adapters.local]
 module = "foleyflow.providers.local:LocalAdapter"
