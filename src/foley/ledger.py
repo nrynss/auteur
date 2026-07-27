@@ -14,6 +14,25 @@ def get_params_hash(arguments: Dict[str, Any]) -> str:
     serialized = json.dumps(arguments, sort_keys=True, default=str)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
+def _resolve_duration(spec, arguments: Dict[str, Any]) -> Optional[float]:
+    """Find the duration in `arguments` for a per-second-priced model.
+
+    The argument's field name is per-model config (`duration_field`), so this
+    cannot assume "duration": ElevenLabs calls it `duration_seconds`. Looking
+    only for the literal "duration" would miss it and price the call at $0.
+    Falls back to the literal name for models that declare no duration_field.
+    """
+    for key in (spec.duration_field, "duration"):
+        if key and key in arguments:
+            try:
+                value = float(arguments[key])
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+    return spec.default_duration_s
+
+
 def estimate_cost(endpoint: str, arguments: Dict[str, Any]) -> float:
     """Estimate cost for an API call based on endpoint and params.
 
@@ -21,21 +40,34 @@ def estimate_cost(endpoint: str, arguments: Dict[str, Any]) -> float:
     ``cost_per_second_usd``, cost is ``duration * rate``; otherwise
     ``cost_per_call_usd``. Falls back to ``defaults.cost_per_call_usd``
     for unknown endpoints.
+
+    A per-second model whose duration cannot be resolved warns and falls back
+    rather than returning 0 — this figure guards spend and is shown to users
+    before a billable regeneration (SPEC.md §9.4), so silently reporting $0
+    is the one outcome worse than reporting the wrong number.
     """
+    default_cost = get_defaults().get("cost_per_call_usd", 0.01)
+
     try:
         spec = get_model_spec(endpoint)
     except KeyError:
-        return get_defaults().get("cost_per_call_usd", 0.01)
+        return default_cost
 
     if spec.cost_per_second_usd is not None:
-        # Duration-based pricing (video models, etc.)
-        duration = float(arguments.get("duration", 0) or 0)
-        return duration * spec.cost_per_second_usd
+        duration = _resolve_duration(spec, arguments)
+        if duration is not None:
+            return duration * spec.cost_per_second_usd
+        fallback = spec.cost_per_call_usd or default_cost
+        print(f"[ledger] WARNING: {endpoint} is priced per second but the call "
+              f"carries no usable duration (looked for "
+              f"{spec.duration_field or 'duration'!r}) and declares no "
+              f"default_duration_s — estimating ${fallback:.4f} instead of $0.")
+        return fallback
 
     if spec.cost_per_call_usd is not None:
         return spec.cost_per_call_usd
 
-    return get_defaults().get("cost_per_call_usd", 0.01)
+    return default_cost
 
 def log_transaction(endpoint: str, params_hash: str, cost: float, success: bool,
                     error: Optional[str] = None, cost_source: str = "estimate"):

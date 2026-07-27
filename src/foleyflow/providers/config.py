@@ -106,6 +106,7 @@ def get_model_spec(model_id: str, *, _config: Optional[dict] = None) -> ModelSpe
         role=raw["role"],
         cost_per_call_usd=raw.get("cost_per_call_usd"),
         cost_per_second_usd=raw.get("cost_per_second_usd"),
+        default_duration_s=raw.get("default_duration_s"),
         duration_min_s=raw.get("duration_min_s"),
         duration_max_s=raw.get("duration_max_s"),
         prompt_field=raw.get("prompt_field"),

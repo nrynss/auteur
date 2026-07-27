@@ -77,22 +77,35 @@ adapter = "fal"
 role = "analysis"
 cost_per_call_usd = 0.01
 
-# Video-generation models (retired hero-clip scripts, not used by FoleyFlow).
-# Kept for ledger compatibility; cost is per-second, not per-call.
+# Video-generation models — used by the retired hero-clip scripts, not by
+# FoleyFlow itself. Priced per second, so each declares the duration to assume
+# when a call omits one; without that, estimate_cost would report $0.
+# (These are NOT needed to read historical ledger.jsonl rows: summarize_ledger
+# sums the cost recorded on each row and never consults this file.)
 [models."fal-ai/ltx-2.3/text-to-video"]
 adapter = "fal"
 role = "video"
 cost_per_second_usd = 0.06
+default_duration_s = 6.0
+duration_field = "duration"
 
 [models."fal-ai/ltx-2.3/image-to-video"]
 adapter = "fal"
 role = "video"
 cost_per_second_usd = 0.06
+default_duration_s = 6.0
+duration_field = "duration"
 
 [models."fal-ai/kling-video/v3/pro/text-to-video"]
 adapter = "fal"
 role = "video"
+# $0.168/s with generated audio, $0.112/s without. We declare the audio-on
+# rate: the pre-refactor code branched on a `generate_audio` argument, but a
+# spend guard should over-estimate rather than under-estimate, and no caller
+# in this repo sets the flag.
 cost_per_second_usd = 0.168
+default_duration_s = 5.0
+duration_field = "duration"
 
 [models."beatoven/sound-effect-generation"]
 adapter = "fal"

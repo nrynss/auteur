@@ -47,6 +47,10 @@ class ModelSpec:
     role: str
     cost_per_call_usd: Optional[float] = None
     cost_per_second_usd: Optional[float] = None
+    # Assumed duration when a per-second-priced call carries no duration
+    # argument. Without it, such a call would estimate $0 — see
+    # foley.ledger.estimate_cost.
+    default_duration_s: Optional[float] = None
     duration_min_s: Optional[float] = None
     duration_max_s: Optional[float] = None
     prompt_field: Optional[str] = None
