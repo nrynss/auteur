@@ -32,7 +32,7 @@ import subprocess
 from dataclasses import asdict, dataclass, field
 from typing import List, Optional, Sequence
 
-from foley.models import Timeline
+from foleyflow.models import Timeline
 
 # Frame-difference score above which a cut is called. ffmpeg's `scene` value is
 # 0..1; 0.3 is the conventional starting point and errs toward reporting a cut,
@@ -231,7 +231,7 @@ def assign_scene_ids(timeline: Timeline, scenes: Sequence[Scene]) -> List[Option
     at 0.0s and again at 4.0s), and a name-keyed mapping silently drops all but
     the last occurrence, filing earlier events against the wrong shot.
 
-    Not mutated onto the events themselves: foley.models.Event belongs to the
+    Not mutated onto the events themselves: foleyflow.models.Event belongs to the
     ported media core and has no scene field, and widening it would push a
     FoleyFlow concern into the pipeline.
     """

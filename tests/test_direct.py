@@ -1,19 +1,18 @@
-"""Offline unit tests for src/foley/direct.py and the `foley direct` CLI
-subcommand (T5b). NO fal API calls anywhere: execute_with_ledger and
+"""Offline unit tests for src/foleyflow/direct.py and the `foleyflow direct` CLI
+subcommand. NO fal API calls anywhere: execute_with_ledger and
 apply_notes are monkeypatched throughout -- same policy as
 tests/test_pipeline.py's analyze_video guard.
 """
 
 import json
 import os
-import sys
 
 import pytest
 
-from foley import cli, direct
-from foley.models import Event, Timeline
-from foley.pipeline import FoleyResult
-from foley.timeline_io import save_timeline
+from foleyflow import cli, direct
+from foleyflow.models import Event, Timeline
+from foleyflow.timeline_io import save_timeline
+from foleyflow.cli import main as foleyflow_main
 from foleyflow.providers.config import get_analysis_config
 
 
@@ -222,12 +221,11 @@ def test_cli_direct_writes_default_output_and_prints_diff(monkeypatch, tmp_path,
         return edited
 
     monkeypatch.setattr(cli, "apply_notes", fake_apply_notes)
-    monkeypatch.setattr(sys, "argv", [
-        "foley", "direct", str(in_path),
-        "--notes", "strike 200ms later, high intensity; drop paper tear",
-    ])
 
-    code = cli.main()
+    code = foleyflow_main([
+        "direct", str(in_path),
+        "--notes", "strike 200ms later, high intensity; drop paper tear",
+    ], client=None)
     out = capsys.readouterr().out
 
     assert code == 0
@@ -255,12 +253,11 @@ def test_cli_direct_respects_explicit_out_and_clip(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "apply_notes", fake_apply_notes)
     monkeypatch.setattr(cli, "get_video_duration", fake_get_video_duration)
-    monkeypatch.setattr(sys, "argv", [
-        "foley", "direct", str(in_path), "--notes", "x",
-        "-o", str(out_path), "--clip", "video.mp4",
-    ])
 
-    assert cli.main() == 0
+    assert foleyflow_main([
+        "direct", str(in_path), "--notes", "x",
+        "-o", str(out_path), "--clip", "video.mp4",
+    ], client=None) == 0
     assert os.path.exists(out_path)
 
 
@@ -272,13 +269,14 @@ def test_cli_direct_refuses_to_overwrite_input(monkeypatch, tmp_path, capsys):
         raise AssertionError("apply_notes must not run when output would overwrite the input")
 
     monkeypatch.setattr(cli, "apply_notes", fake_apply_notes)
-    monkeypatch.setattr(sys, "argv", [
-        "foley", "direct", str(in_path), "--notes", "x", "-o", str(in_path),
-    ])
 
-    code = cli.main()
+    code = foleyflow_main([
+        "direct", str(in_path), "--notes", "x", "-o", str(in_path),
+    ], client=None)
     assert code == 1
-    assert "overwrite" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "overwrite" in err
+    assert "foleyflow direct:" in err
 
 
 def test_cli_direct_default_naming_bumps_for_already_directed_input(monkeypatch, tmp_path):
@@ -286,9 +284,8 @@ def test_cli_direct_default_naming_bumps_for_already_directed_input(monkeypatch,
     save_timeline(_timeline(), str(in_path))
 
     monkeypatch.setattr(cli, "apply_notes", lambda timeline, notes, **k: timeline)
-    monkeypatch.setattr(sys, "argv", ["foley", "direct", str(in_path), "--notes", "x"])
 
-    assert cli.main() == 0
+    assert foleyflow_main(["direct", str(in_path), "--notes", "x"], client=None) == 0
     assert os.path.exists(tmp_path / "clip_1.directed2.json")
 
 
@@ -300,37 +297,18 @@ def test_cli_direct_error_from_apply_notes_exits_1(monkeypatch, tmp_path, capsys
         raise RuntimeError("boom")
 
     monkeypatch.setattr(cli, "apply_notes", failing_apply_notes)
-    monkeypatch.setattr(sys, "argv", ["foley", "direct", str(in_path), "--notes", "x"])
 
-    assert cli.main() == 1
-    assert "boom" in capsys.readouterr().err
+    assert foleyflow_main(["direct", str(in_path), "--notes", "x"], client=None) == 1
+    err = capsys.readouterr().err
+    assert "boom" in err
+    assert "foleyflow direct:" in err
 
 
 def test_cli_direct_requires_notes_flag(monkeypatch, tmp_path):
     in_path = tmp_path / "clip_1.json"
     save_timeline(_timeline(), str(in_path))
-    monkeypatch.setattr(sys, "argv", ["foley", "direct", str(in_path)])
     with pytest.raises(SystemExit):
-        cli.main()
-
-
-def test_cli_render_path_unaffected_by_direct_subcommand(monkeypatch):
-    """Backward compatibility: a bare `foley <clip> ...` call (first token
-    not literally "direct") must still dispatch to the original render
-    flow, exactly as the README documents."""
-    called = {}
-
-    def fake_run(clip_path, **kwargs):
-        called["clip_path"] = clip_path
-        called.update(kwargs)
-        return FoleyResult(out_path="x", timeline_path="y", mix_path="z")
-
-    monkeypatch.setattr(cli, "run", fake_run)
-    monkeypatch.setattr(sys, "argv", ["foley", "clip.mp4", "--tier", "ambience"])
-
-    assert cli.main() == 0
-    assert called["clip_path"] == "clip.mp4"
-    assert called["tier"] == "ambience"
+        foleyflow_main(["direct", str(in_path)], client=None)
 
 
 def test_apply_notes_appends_to_history(monkeypatch):

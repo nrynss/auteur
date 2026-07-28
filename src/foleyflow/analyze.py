@@ -11,8 +11,8 @@ from dotenv import load_dotenv
 # Load env variables (for FAL_KEY)
 load_dotenv()
 
-from foley.models import Event, Timeline
-from foley.ledger import execute_with_ledger
+from foleyflow.models import Event, Timeline
+from foleyflow.ledger import execute_with_ledger
 from foleyflow.providers.config import get_analysis_config
 
 # Default VLM model — read from providers.toml [analysis] section.

@@ -1,4 +1,4 @@
-"""Offline unit tests for src/foley/sfx.py. NO network / fal API calls here —
+"""Offline unit tests for src/foleyflow/sfx.py. NO network / fal API calls here —
 execute_with_ledger and net.download are monkeypatched wherever exercised.
 ffmpeg/ffprobe are local binaries (no network) and are used directly, same
 as tests/test_analyze.py's use of ffprobe via get_video_duration.
@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from foley import net, sfx
-from foley.routing import SfxRequest
+from foleyflow import net, sfx
+from foleyflow.routing import SfxRequest
 
 CASSETTEAI = "cassetteai/sound-effects-generator"
 ELEVENLABS = "fal-ai/elevenlabs/sound-effects/v2"

@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from foley.models import Event, Timeline
+from foleyflow.models import Event, Timeline
 from foleyflow import timeline_cache as tc
 from foleyflow.storage import LocalBackend
 

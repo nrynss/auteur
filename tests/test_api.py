@@ -39,7 +39,7 @@ def project(store):
 
 
 def _timeline():
-    from foley.models import Event, Timeline
+    from foleyflow.models import Event, Timeline
     return Timeline(duration=15.04, ambience="desert wind", events=[
         Event(name="holster creak", start_time=0.0, duration=1.0,
               intensity="low", kind="continuous"),

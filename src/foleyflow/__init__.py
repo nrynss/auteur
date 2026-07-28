@@ -1,1 +1,1 @@
-"""FoleyFlow: B2-backed post-production layer over the foley media core."""
+"""FoleyFlow — AI post-production copilot (analysis, Foley, QA, B2 provenance)."""

@@ -53,7 +53,7 @@ def extract_audio_url(result) -> str | None:
     with 'url'), else result['url']. Returns None if no URL can be found
     (callers that need it should raise).
 
-    Moved here from foley/sfx.py — response envelope parsing is adapter
+    Moved here from foleyflow/sfx.py — response envelope parsing is adapter
     logic (cleanup.md §4.5).
     """
     if isinstance(result, dict):

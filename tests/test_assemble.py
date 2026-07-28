@@ -1,4 +1,4 @@
-"""Offline unit tests for src/foley/assemble.py. NO network / fal API calls —
+"""Offline unit tests for src/foleyflow/assemble.py. NO network / fal API calls —
 assemble_timeline always gets an injected fake sfx_fn that writes synthetic
 48 kHz stereo WAVs; the pure helpers get numpy arrays directly.
 """
@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from foley import assemble
-from foley.models import Event, Timeline
+from foleyflow import assemble
+from foleyflow.models import Event, Timeline
 
 SR = assemble.SR  # 48000
 

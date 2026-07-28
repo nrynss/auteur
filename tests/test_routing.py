@@ -1,5 +1,5 @@
-from foley.models import Event
-from foley.routing import (
+from foleyflow.models import Event
+from foleyflow.routing import (
     RHYTHMIC_LOOP_S,
     _get_duration_limits,
     route_ambience,

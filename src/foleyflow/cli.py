@@ -1,22 +1,20 @@
-"""`foleyflow` — a command-line client for the HTTP API.
+"""`foleyflow` — the single FoleyFlow command.
 
-Talks to the API over HTTP rather than importing the domain packages. That is
-the point: a second client written only against `docs/api.md` is the test of
-whether the contract is actually complete, and anything the CLI cannot do is a
-gap in the API rather than a gap in the CLI.
-
-Distinct from `foley`, which is the ported media core's local renderer and
-speaks to no server at all.
+Project verbs talk to the HTTP API (the contract test against `docs/api.md`).
+File verbs (`render`, `direct`) call the media core directly — no server, no
+`Client`.
 
     foleyflow health
     foleyflow create clip.mp4 --title "Western standoff" --analyze --wait
     foleyflow show proj_01K…
     foleyflow timeline proj_01K… --json
+    foleyflow render clip.mp4 --from-timeline samples/timelines/clip_1.json
+    foleyflow direct timeline.json --notes "…"
 
 ## Exit codes
 
     0  success
-    1  the API returned an error
+    1  the API returned an error (or a file-verb failure)
     2  usage error, or the API is unreachable
     3  quota exhausted — distinct so a scheduled job can back off until the
        reset rather than retrying into a wall
@@ -33,6 +31,13 @@ import time
 from typing import Any, Optional
 
 import httpx
+from dotenv import load_dotenv
+
+from foleyflow.analyze import DEFAULT_MODEL, get_video_duration
+from foleyflow.direct import apply_notes, default_output_path, diff_timelines
+from foleyflow.pipeline import run
+from foleyflow.sfx import DEFAULT_CACHE_DIR
+from foleyflow.timeline_io import load_timeline, save_timeline
 
 DEFAULT_BASE_URL = os.environ.get("FOLEYFLOW_API", "http://127.0.0.1:8000")
 API_PREFIX = "/api/v1"
@@ -349,13 +354,138 @@ def cmd_run(client: Client, args) -> int:
     return _report_run(run) if run["status"] != "running" else EXIT_OK
 
 
+def run_render(args: argparse.Namespace) -> int:
+    load_dotenv()
+    try:
+        run(
+            args.clip,
+            out_path=args.out,
+            tier=args.tier,
+            model=args.model,
+            timeline_json=args.from_timeline,
+            save_timeline_to=args.timeline_out,
+            cache_dir=args.cache_dir,
+        )
+    except Exception as e:
+        print(f"foleyflow render: error: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def run_direct(args: argparse.Namespace) -> int:
+    load_dotenv()
+    out_path = args.out or default_output_path(args.timeline)
+    if os.path.normcase(os.path.abspath(out_path)) == os.path.normcase(
+            os.path.abspath(args.timeline)):
+        print(f"foleyflow direct: error: refusing to overwrite the input "
+              f"timeline ({args.timeline!r}); pass a different -o.",
+              file=sys.stderr)
+        return 1
+
+    try:
+        old_timeline = load_timeline(args.timeline)
+        clip_duration = get_video_duration(args.clip) if args.clip else None
+        new_timeline = apply_notes(
+            old_timeline, args.notes, model=args.model,
+            clip_duration=clip_duration,
+        )
+        save_timeline(new_timeline, out_path)
+    except Exception as e:
+        print(f"foleyflow direct: error: {e}", file=sys.stderr)
+        return 1
+
+    print(f"[direct] notes applied via {args.model}")
+    print(diff_timelines(old_timeline, new_timeline))
+    print(f"\nAPPLIED — saved to {out_path}")
+    return 0
+
+
+def cmd_render(args) -> int:
+    return run_render(args)
+
+
+def cmd_direct(args) -> int:
+    return run_direct(args)
+
+
 # -- parser -----------------------------------------------------------------
+
+def _build_render_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="foleyflow render",
+        description="AI Foley: silent AI video -> VLM event timeline -> "
+                     "per-event generated SFX -> synced soundtrack.",
+        add_help=add_help,
+    )
+    parser.add_argument("clip", help="Path to a silent input video clip (e.g. clip.mp4).")
+    parser.add_argument(
+        "-o", "--out", default=None,
+        help="Output mp4 path (default: <clip stem>.foley.mp4 next to the clip).",
+    )
+    parser.add_argument(
+        "--tier", choices=["ambience", "discrete", "full"], default="full",
+        help="Degradation-ladder render tier (default: full).",
+    )
+    parser.add_argument(
+        "--model", default=DEFAULT_MODEL,
+        help="VLM model id for analysis. Ignored when --from-timeline is "
+             "given, since analysis is skipped.",
+    )
+    parser.add_argument(
+        "--timeline", dest="timeline_out", default=None,
+        help="Save the resulting timeline JSON to this path "
+             "(default: alongside the output, <out stem>.timeline.json).",
+    )
+    parser.add_argument(
+        "--from-timeline", dest="from_timeline", default=None,
+        help="Skip analysis (no paid VLM call) and load the timeline from "
+             "this JSON file instead.",
+    )
+    parser.add_argument(
+        "--cache-dir", default=DEFAULT_CACHE_DIR,
+        help=f"SFX cache directory (default: {DEFAULT_CACHE_DIR}).",
+    )
+    return parser
+
+
+def _build_direct_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="foleyflow direct",
+        description="Apply plain-language director's notes to an existing "
+                     "timeline JSON via a text-only LLM edit.",
+        add_help=add_help,
+    )
+    parser.add_argument(
+        "timeline",
+        help="Path to an existing timeline JSON (e.g. samples/timelines/clip_1.json).",
+    )
+    parser.add_argument(
+        "--notes", required=True,
+        help='Director\'s notes in plain language, e.g. '
+             '"move the match strike 200ms later and make it high intensity".',
+    )
+    parser.add_argument(
+        "-o", "--out", default=None,
+        help="Output timeline JSON path (default: <in stem>.directed.json "
+             "next to the input; the input is NEVER overwritten).",
+    )
+    parser.add_argument(
+        "--model", default=DEFAULT_MODEL,
+        help="LLM model id for the edit.",
+    )
+    parser.add_argument(
+        "--clip", default=None,
+        help="Optional source video — supplies ffprobe duration so the "
+             "edited timeline is clamped against it.",
+    )
+    return parser
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="foleyflow",
-        description="Command-line client for the FoleyFlow API. "
-                    "Use `foley` instead for local rendering.")
+        description="FoleyFlow CLI: project verbs talk to the API; "
+                    "render and direct run locally with no server.")
     parser.add_argument("--api", default=DEFAULT_BASE_URL,
                         help=f"API base URL (default {DEFAULT_BASE_URL}, "
                              "or $FOLEYFLOW_API)")
@@ -412,14 +542,30 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--wait", action="store_true")
     p.set_defaults(func=cmd_run)
 
+    p = sub.add_parser(
+        "render",
+        parents=[_build_render_parser(add_help=False)],
+        help="render a clip locally (no server)",
+    )
+    p.set_defaults(func=cmd_render, needs_client=False)
+
+    p = sub.add_parser(
+        "direct",
+        parents=[_build_direct_parser(add_help=False)],
+        help="apply director's notes to a timeline JSON (no server)",
+    )
+    p.set_defaults(func=cmd_direct, needs_client=False)
+
     return parser
 
 
 def main(argv: Optional[list] = None, client: Optional[Client] = None) -> int:
     args = build_parser().parse_args(argv)
-    client = client or Client(args.api)
     try:
-        return args.func(client, args)
+        if getattr(args, "needs_client", True):
+            client = client or Client(args.api)
+            return args.func(client, args)
+        return args.func(args)
     except ApiError as e:
         if e.code == "quota_exhausted":
             resets = e.detail.get("resets_at")

@@ -12,7 +12,7 @@ import subprocess
 
 import pytest
 
-from foley.models import Event, Timeline
+from foleyflow.models import Event, Timeline
 from foleyflow import scenes as sc
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None

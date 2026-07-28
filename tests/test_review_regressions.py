@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from foley.models import Event as FoleyEvent, Timeline
+from foleyflow.models import Event as FoleyEvent, Timeline
 from foleyflow import ids
 from foleyflow.projects import (
     EVENT_RUN_FAILED_AFTER_COMPLETION,
@@ -267,7 +267,7 @@ def test_scene_detection_raises_on_a_broken_file(tmp_path):
 # -- #4 truncated cache entries ---------------------------------------------
 
 def test_zero_length_local_file_is_not_treated_as_a_cache_hit(tmp_path):
-    from foley.routing import SfxRequest
+    from foleyflow.routing import SfxRequest
     from foleyflow import sfx_cache
 
     backend = LocalBackend(str(tmp_path / "b2"))

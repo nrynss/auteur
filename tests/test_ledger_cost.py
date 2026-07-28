@@ -1,4 +1,4 @@
-"""Cost-estimation tests for foley.ledger.
+"""Cost-estimation tests for foleyflow.ledger.
 
 The estimate produced here is shown to users before a billable regeneration
 (SPEC.md §9.4) and is what the ledger records when a provider reports no actual
@@ -8,7 +8,7 @@ that an unresolvable duration does NOT collapse to $0.
 
 import pytest
 
-from foley.ledger import estimate_cost
+from foleyflow.ledger import estimate_cost
 from foleyflow.providers.base import ModelSpec
 from foleyflow.providers.config import get_model_spec
 
@@ -58,7 +58,7 @@ def test_duration_is_read_from_the_configured_field_name(monkeypatch):
         cost_per_second_usd=0.001,
         duration_field="duration_seconds",
     )
-    monkeypatch.setattr("foley.ledger.get_model_spec", lambda _id: spec)
+    monkeypatch.setattr("foleyflow.ledger.get_model_spec", lambda _id: spec)
 
     cost = estimate_cost("vendor/per-second-sfx", {"text": "door", "duration_seconds": 15})
     assert cost == pytest.approx(0.015), "duration_seconds must be found"
@@ -73,7 +73,7 @@ def test_unresolvable_duration_warns_and_never_reports_zero(monkeypatch, capsys)
         cost_per_second_usd=0.001,
         duration_field="duration_seconds",
     )
-    monkeypatch.setattr("foley.ledger.get_model_spec", lambda _id: spec)
+    monkeypatch.setattr("foleyflow.ledger.get_model_spec", lambda _id: spec)
 
     cost = estimate_cost("vendor/per-second-sfx", {"text": "door"})
     assert cost > 0, "a spend guard must never silently estimate $0"
@@ -89,7 +89,7 @@ def test_zero_and_garbage_durations_do_not_produce_zero(monkeypatch):
         cost_per_call_usd=0.25,
         duration_field="duration",
     )
-    monkeypatch.setattr("foley.ledger.get_model_spec", lambda _id: spec)
+    monkeypatch.setattr("foleyflow.ledger.get_model_spec", lambda _id: spec)
 
     for arguments in ({"duration": 0}, {"duration": None}, {"duration": "abc"}):
         assert estimate_cost("vendor/per-second", arguments) == 0.25

@@ -1,4 +1,4 @@
-from foley.keywords import ACTIONS, MATERIALS, has_word
+from foleyflow.keywords import ACTIONS, MATERIALS, has_word
 
 def test_has_word_prefix_match_at_boundary():
     assert has_word("wooden door closing", "wood")

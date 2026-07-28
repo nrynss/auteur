@@ -172,7 +172,7 @@ def test_ledger_attributes_usage_to_the_model_actually_called(tmp_path, monkeypa
     counted against the 20/day Flash budget — the quota panel would report the
     wrong model as exhausted while the real one silently drained.
     """
-    from foley import analyze
+    from foleyflow import analyze
 
     captured = {}
 

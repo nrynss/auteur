@@ -2,7 +2,7 @@
 
 `assemble_timeline(..., sfx_fn=...)` already takes injected SFX acquisition, so
 FoleyFlow swaps in shared, B2-backed, content-addressed caching without editing
-a line of mix math. `foley.sfx.get_sfx` remains the standalone-CLI path.
+a line of mix math. `foleyflow.sfx.get_sfx` remains the standalone-CLI path.
 
 ## The variant nonce
 
@@ -26,10 +26,10 @@ import shutil
 import tempfile
 from typing import Callable, Optional
 
-from foley import net
-from foley.ledger import execute_with_ledger
-from foley.routing import SfxRequest
-from foley.sfx import (
+from foleyflow import net
+from foleyflow.ledger import execute_with_ledger
+from foleyflow.routing import SfxRequest
+from foleyflow.sfx import (
     build_arguments,
     convert_to_canonical,
     extract_audio_url,
@@ -43,7 +43,7 @@ CACHE_PREFIX = "cache"
 def cache_key(endpoint: str, prompt: str, duration_s: float, variant: str = "") -> str:
     """sha256 over 'endpoint|prompt|duration', first 16 hex chars.
 
-    With variant="" this is identical to foley.sfx.cache_key — the salt segment
+    With variant="" this is identical to foleyflow.sfx.cache_key — the salt segment
     is appended only when a variant is actually requested, so existing cache
     objects keep resolving. Do not "tidy" this by always appending the segment.
     """

@@ -1,7 +1,7 @@
 import json
 import pytest
-from foley.models import Event, Timeline
-from foley.analyze import parse_timeline_json
+from foleyflow.models import Event, Timeline
+from foleyflow.analyze import parse_timeline_json
 
 def test_parse_timeline_json_valid():
     raw_json = """

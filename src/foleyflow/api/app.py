@@ -444,7 +444,7 @@ def _scene_ids_for(store: ProjectStore, project_id: str, timeline) -> List[Optio
 
 
 def _estimate(model: str) -> float:
-    from foley.ledger import estimate_cost
+    from foleyflow.ledger import estimate_cost
     return estimate_cost(model, {})
 
 
@@ -508,7 +508,7 @@ def _fetch_source(store: ProjectStore, project_id: str) -> str:
 def _ingest_work(store: ProjectStore, project_id: str):
     """Verify and record the uploaded source: hash, size, true duration."""
     def work(run):
-        from foley.analyze import get_video_duration
+        from foleyflow.analyze import get_video_duration
         from foleyflow.timeline_cache import file_sha256
 
         staged = _fetch_source(store, project_id)
@@ -527,7 +527,7 @@ def _analysis_work(store: ProjectStore, project_id: str, model: str, force: bool
     """The analysis job body. Returned as a closure so the route stays thin and
     this stays unit-testable without HTTP."""
     def work(run):
-        from foley.analyze import TIMELINE_PROMPT, analyze_video_direct
+        from foleyflow.analyze import TIMELINE_PROMPT, analyze_video_direct
         from foleyflow.scenes import detect_scenes
         from foleyflow.timeline_cache import get_or_analyze
 

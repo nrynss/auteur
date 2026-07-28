@@ -1,4 +1,4 @@
-"""Offline unit tests for src/foley/pipeline.py, cli.py, and mux.py.
+"""Offline unit tests for src/foleyflow/pipeline.py, cli.py, and mux.py.
 
 NO fal API calls anywhere: analyze_video is monkeypatched to RAISE if the
 orchestrator ever touches it on the --from-timeline path, and sfx/assemble/mux
@@ -9,14 +9,14 @@ and local ffmpeg/ffprobe binaries -- $0, same policy as tests/test_sfx.py.
 import json
 import os
 import subprocess
-import sys
 
 import numpy as np
 import pytest
 
-from foley import cli, pipeline
-from foley.mux import mux
-from foley.pipeline import FoleyResult, run
+from foleyflow import cli, pipeline
+from foleyflow.mux import mux
+from foleyflow.pipeline import FoleyResult, run
+from foleyflow.cli import main as foleyflow_main
 
 CLIP_1 = os.path.join("scratch", "output", "clip_1.mp4")
 RENDER_1 = os.path.join("scratch", "output", "render_clip1_ambience.wav")
@@ -146,8 +146,7 @@ def _capture_cli(monkeypatch, argv):
         return FoleyResult(out_path="x", timeline_path="y", mix_path="z")
 
     monkeypatch.setattr(cli, "run", fake_run)
-    monkeypatch.setattr(sys, "argv", ["foley"] + argv)
-    exit_code = cli.main()
+    exit_code = foleyflow_main(["render"] + argv, client=None)
     return exit_code, captured
 
 
@@ -188,9 +187,10 @@ def test_cli_error_exits_1(monkeypatch, capsys):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(cli, "run", failing_run)
-    monkeypatch.setattr(sys, "argv", ["foley", "clip.mp4"])
-    assert cli.main() == 1
-    assert "boom" in capsys.readouterr().err
+    assert foleyflow_main(["render", "clip.mp4"], client=None) == 1
+    err = capsys.readouterr().err
+    assert "boom" in err
+    assert "foleyflow render:" in err
 
 
 # -- mux(): one REAL local-ffmpeg test ($0, no network) --

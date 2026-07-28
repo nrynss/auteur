@@ -9,8 +9,8 @@ import os
 
 import pytest
 
-from foley import sfx as core_sfx
-from foley.routing import SfxRequest
+from foleyflow import sfx as core_sfx
+from foleyflow.routing import SfxRequest
 from foleyflow import sfx_cache
 from foleyflow.storage import LocalBackend
 

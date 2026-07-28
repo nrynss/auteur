@@ -1,5 +1,5 @@
-from foley.models import Event, Timeline
-from foley.timeline_io import (
+from foleyflow.models import Event, Timeline
+from foleyflow.timeline_io import (
     dict_to_timeline,
     load_timeline,
     save_timeline,

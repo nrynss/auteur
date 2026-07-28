@@ -6,7 +6,7 @@ passing here behaves the same in the bucket.
 
 import pytest
 
-from foley.models import Event as FoleyEvent, Timeline
+from foleyflow.models import Event as FoleyEvent, Timeline
 from foleyflow import ids
 from foleyflow.projects import (
     EVENT_INPUT_RECORDED,

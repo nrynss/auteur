@@ -25,14 +25,14 @@ product, and a reader needs to know which parts of it exist. Updated
 | Genblaze integration | **Partial** | Ingest + hash-verified manifest only; generation not yet orchestrated |
 | HTTP API | **Partial** | Read paths, project creation, analyze; see §14 |
 | Throwaway dashboard | **Built** | One static file; the §6.1 control room replaces it |
-| Command-line client | **Built, to be consolidated** | Two commands exist (`foley`, `foleyflow`); §14.1 collapses them to one |
+| Command-line client | **Built** | Single command `foleyflow` — project verbs over HTTP; `render` / `direct` file-scoped (§14.1) |
 | Foley generation (stems) | **Not built** | Blocked on the self-hosted SFX worker — see §9 |
 | Mix / export / dossier | **Not built** | |
 | QA (loudness, true peak, continuity) | **Not built** | Scene stats exist; the comparison does not |
 | Targeted repair | **Not built** | The cache's variant nonce exists and is tested |
 | Deployment | **Not built** | Required by §16 |
 
-Test suite: 315 passing, 1 skipped, fully offline.
+Test suite: 318 passing, 1 skipped, fully offline.
 
 ---
 
@@ -193,21 +193,20 @@ flowchart TD
 
 ### 8.1 Implementation
 
-The media core is a Python Foley pipeline ported from a prior project, kept
-intact: deterministic mixing calibrated by ear is the highest-risk thing to
-rewrite and the least visible to a judge. FoleyFlow wraps it rather than
-replacing it.
+One Python package. The Foley pipeline (analysis, routing, mix, mux) was ported
+from a prior project and kept intact — deterministic mixing calibrated by ear is
+the highest-risk thing to rewrite and the least visible to a judge. Storage,
+projects, API, and provenance live alongside it under `src/foleyflow/`.
 
 As built:
 
 ```text
-src/foley/                    media core, ported — analysis, routing, mix, mux
+src/foleyflow/
   analyze.py                  video → event timeline (VLM)
   routing.py  sfx.py          event → provider request; generation + cache
   assemble.py mux.py          deterministic mix; picture-locked mux
   ledger.py                   per-call cost accounting
-
-src/foleyflow/                everything new
+  direct.py  pipeline.py      director's notes; local render orchestration
   storage/                    Backend protocol; LocalBackend + B2Backend
   projects.py                 projects, runs, versions, event log, derived state
   ids.py                      monotonic ULIDs (sort order is the log's order)
@@ -728,47 +727,32 @@ Video bytes never pass through the API: the client PUTs straight to B2.
 ### 14.1 Command-line client
 
 **Decision (2026-07-28): FoleyFlow ships exactly one command, `foleyflow`.**
-Not yet implemented — see §17.
 
-Two commands exist today. `foley` came across with the ported media core and
-renders a file locally; `foleyflow` is the API client. Both work, and that is
-the problem.
-
-**Why one.** Two entry points with overlapping verbs is a liability in the three
-places that decide this submission:
-
-- §16 requires setup and run instructions a judge can follow without help. "Use
-  `foley` for this and `foleyflow` for that" is the kind of instruction people
-  get wrong on the first try, and a judge only gets one try.
-- The §15 demo has to pick one and stick to it. Switching commands mid-demo
-  invites exactly the question we do not want to spend thirty seconds
-  answering.
-- `foley render` and `foleyflow analyze` reach the same VLM by different paths.
-  Anyone reading the repo has to work out which one is real. Both being real is
-  the worst answer.
-
-**The shape it consolidates to.** The distinction worth keeping is not local
-versus remote — it is *project-scoped* versus *file-scoped*:
+The distinction worth keeping is not local versus remote — it is *project-scoped*
+versus *file-scoped*:
 
 | Scope | Commands | Path |
 |---|---|---|
 | Project — needs the record system, versions, and provenance | `create`, `show`, `list`, `analyze`, `timeline`, `scenes`, `runs`, `events`, `qa`, `regenerate`, `export`, `dossier` | HTTP to the API |
-| File — "render this clip, now, with no server" | `render` | The media core directly |
+| File — "render / edit this clip, now, with no server" | `render`, `direct` | The media core directly |
 
 `render` is not a duplicate of `analyze`; it is the offline, deterministic,
 zero-cost path that renders a clip from a saved timeline and needs no server, no
 credentials, and no project. It is how the mix gets tuned, and it is worth
 keeping as a first-class verb rather than hiding behind a flag.
 
+`direct` is the second file-scoped verb: apply plain-language director's notes to
+an existing timeline JSON (text-only LLM edit) without a project or server —
+same offline tuning lane as `render`.
+
 Everything else goes through the API. A CLI that reached into the domain
 packages for project operations would be a second implementation of the rules
 the API enforces — quota gates, readiness preconditions, immutability — and the
 two would drift.
 
-**What changes:** the `foley` console script is withdrawn; `foley.cli` becomes
-an internal module that `foleyflow render` calls. `src/foley/` keeps its name as
-a package — it is the ported media core and renaming it would orphan nothing but
-buy nothing.
+`render` and `direct` are implemented in `foleyflow.cli` itself and call the
+pipeline modules in the same package. There is no separate `foley` package or
+console script.
 
 **Migration note.** Existing invocations of `foley render <clip>
 --from-timeline <json>` become `foleyflow render <clip> --from-timeline <json>`.
@@ -797,7 +781,7 @@ The demo must use the real deployed app, a real B2-backed project, and a real Ge
 ## 16. Submission requirements checklist
 
 - [ ] Public working app URL that a judge can open without local dependencies
-- [ ] Public GitHub repository with setup, environment variables, and local run instructions — **the repo has no remote yet**, and the instructions should document one command, not two (§14.1)
+- [ ] Public GitHub repository with setup, environment variables, and local run instructions — **the repo has no remote yet**
 - [x] Exact providers and model IDs listed — `providers.toml` is authoritative; mirror it into the README
 - [x] Clear B2 explanation: object layout (§10), signed upload/download, manifests
 - [~] Clear Genblaze explanation: §8.2 documents what is integrated and what is not
@@ -880,9 +864,7 @@ repository instructions.
 
 In order, with the parallel track called out:
 
-1. **Collapse the two CLIs into `foleyflow`** (§14.1). Small, and it gets
-   cheaper the sooner it happens — every day it waits is another day of README,
-   demo notes, and habit built on the wrong command name.
+1. **Collapse the two CLIs into `foleyflow`** (§14.1) — **done**.
 2. **QA module** (loudness + true peak, then continuity). Self-contained, inputs
    already exist, gates nothing else.
 3. **Deployment skeleton.** Early, for the reasons above.

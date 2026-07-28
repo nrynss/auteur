@@ -39,8 +39,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from foley.models import Timeline
-from foley.timeline_io import dict_to_timeline, timeline_to_dict
+from foleyflow.models import Timeline
+from foleyflow.timeline_io import dict_to_timeline, timeline_to_dict
 from foleyflow.ids import is_valid, new_event_id, new_project_id, new_run_id
 from foleyflow.storage.base import (
     Backend,

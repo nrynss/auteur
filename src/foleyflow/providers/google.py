@@ -23,7 +23,7 @@ Files API specifics that matter:
 ## Response shape
 
 `generate()` returns `{"output": <text>}` in `raw_response` because that is
-what `foley.analyze.parse_timeline_json` already reads (it checks `output`
+what `foleyflow.analyze.parse_timeline_json` already reads (it checks `output`
 then `text`). Keeping the envelope identical to fal's means analyze.py needed
 no changes to swap providers — the point of the adapter layer.
 """

@@ -44,7 +44,7 @@ def project(store):
 
 
 def _timeline():
-    from foley.models import Event, Timeline
+    from foleyflow.models import Event, Timeline
     return Timeline(duration=15.04, ambience="desert wind", events=[
         Event(name="holster creak", start_time=0.0, duration=1.0,
               intensity="low", kind="continuous"),
@@ -210,3 +210,50 @@ def test_a_failed_run_is_a_nonzero_exit(client, store, project, capsys, monkeypa
 def test_create_rejects_a_missing_file(client, capsys):
     assert run(client, "create", "does/not/exist.mp4") == 2
     assert "no such file" in capsys.readouterr().err
+
+
+# -- file verbs (render / direct; no HTTP) -----------------------------------
+
+def test_render_help_works(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        main(["render", "--help"])
+    assert excinfo.value.code == 0
+    assert "clip" in capsys.readouterr().out.lower()
+
+
+def test_render_does_not_touch_http(monkeypatch, capsys):
+    """File verbs must not construct a Client or hit the API."""
+    from foleyflow import cli as foley_cli
+    from foleyflow.pipeline import FoleyResult
+
+    called = {}
+
+    def fake_run(clip_path, **kwargs):
+        called["clip_path"] = clip_path
+        return FoleyResult(out_path="x", timeline_path="y", mix_path="z")
+
+    def boom_client(*a, **k):
+        raise AssertionError("Client must not be constructed for render")
+
+    monkeypatch.setattr(foley_cli, "run", fake_run)
+    monkeypatch.setattr("foleyflow.cli.Client", boom_client)
+
+    assert main(["render", "clip.mp4", "--tier", "ambience"], client=None) == 0
+    assert called["clip_path"] == "clip.mp4"
+
+
+def test_render_missing_clip_exits_nonzero(monkeypatch, capsys):
+    from foleyflow import cli as foley_cli
+
+    def failing_run(clip_path, **kwargs):
+        raise FileNotFoundError(f"no such file: {clip_path}")
+
+    monkeypatch.setattr(foley_cli, "run", failing_run)
+    assert main(["render", "does/not/exist.mp4"], client=None) == 1
+    assert "foleyflow render:" in capsys.readouterr().err
+
+
+def test_render_unknown_flag_exits_nonzero():
+    with pytest.raises(SystemExit) as excinfo:
+        main(["render", "clip.mp4", "--not-a-real-flag"])
+    assert excinfo.value.code != 0
