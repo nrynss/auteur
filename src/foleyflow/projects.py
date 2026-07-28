@@ -26,6 +26,7 @@ cannot clobber each other, and ULID names make a sorted listing an ordered log.
       events/{evt_ulid}.json        append-only lifecycle log
       timelines/timeline.v{n}.json  immutable versions
       runs/{run_id}/run.json        immutable, written at terminal state
+      scenes/scenes.json            deterministic, refreshable
       exports/latest.json           the single mutable pointer (§10)
 """
 
@@ -35,17 +36,23 @@ import json
 import os
 import tempfile
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from foley.models import Timeline
 from foley.timeline_io import dict_to_timeline, timeline_to_dict
 from foleyflow.ids import is_valid, new_event_id, new_project_id, new_run_id
-from foleyflow.storage.base import Backend, StorageError
+from foleyflow.storage.base import (
+    Backend,
+    ObjectNotFound,
+    PreconditionFailed,
+    StorageError,
+)
 
 # Lifecycle event types — SPEC.md §8.4's domain-neutral names. Deliberately not
 # incident-domain terms inherited from Mosaic.
 EVENT_PROJECT_CREATED = "postproduction.project.created"
+EVENT_INPUT_RECORDED = "postproduction.input.recorded"
 EVENT_ANALYSIS_COMPLETED = "postproduction.analysis.completed"
 EVENT_PLAN_PROPOSED = "postproduction.foley.plan.proposed"
 EVENT_REPAIR_APPROVED = "postproduction.repair.approved"
@@ -55,16 +62,35 @@ EVENT_EXPORT_APPROVED = "postproduction.export.approved"
 EVENT_RUN_STARTED = "postproduction.run.started"
 EVENT_RUN_COMPLETED = "postproduction.run.completed"
 EVENT_RUN_FAILED = "postproduction.run.failed"
+EVENT_RUN_FAILED_AFTER_COMPLETION = "postproduction.run.failed_after_completion"
 
 STATUS_NEW = "new"
+STATUS_AWAITING_UPLOAD = "awaiting_upload"
 STATUS_ANALYZING = "analyzing"
 STATUS_NEEDS_REVIEW = "needs_review"
 STATUS_READY = "ready"
 STATUS_FAILED = "failed"
 
+# A run whose start event is older than this, with no terminal record, is
+# treated as dead. Cloud Run SIGTERMs containers on deploy, so a crashed run is
+# an expected outcome rather than an exotic one — without this a redeploy
+# strands every in-flight project in `analyzing` permanently.
+RUN_LEASE_S = 15 * 60
+
+# Version allocation retries when a concurrent writer claims the number first.
+_VERSION_RACE_RETRIES = 25
+
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso(value: str) -> Optional[datetime]:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -117,6 +143,7 @@ class Run:
     parent_run_id: Optional[str] = None
     genblaze_run_id: Optional[str] = None
     error: Optional[str] = None
+    error_code: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -139,16 +166,26 @@ class ProjectState:
     timeline_version: Optional[int]
     event_count: int
     has_export: bool
+    source_sha256: Optional[str] = None
+    duration_s: Optional[float] = None
+    stale_run_ids: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return {
+        payload = {
             **self.project.to_dict(),
             "status": self.status,
             "latest_run_id": self.latest_run_id,
             "timeline_version": self.timeline_version,
             "event_count": self.event_count,
             "has_export": self.has_export,
+            "stale_run_ids": self.stale_run_ids,
         }
+        # The event log wins over the frozen identity record: sha256 and
+        # duration are only known after the upload is confirmed, which happens
+        # long after the project record is written.
+        payload["source_sha256"] = self.source_sha256 or self.project.source_sha256
+        payload["duration_s"] = self.duration_s or self.project.duration_s
+        return payload
 
 
 class ProjectStore:
@@ -163,15 +200,26 @@ class ProjectStore:
     # -- key helpers ------------------------------------------------------
 
     @staticmethod
-    def _check_id(project_id: str) -> str:
-        """A project id becomes part of an object key, so a malformed one is a
-        traversal risk, not merely bad data."""
-        if not is_valid(project_id, "proj"):
-            raise ValueError(f"not a valid project id: {project_id!r}")
-        return project_id
+    def _check_id(identifier: str, prefix: str) -> str:
+        """Validate any id that becomes part of an object key.
+
+        Applied to run and scene ids too, not just project ids: they are
+        interpolated into keys exactly the same way, and relying on one
+        backend's path handling to catch a bad one made safety depend on which
+        backend was configured.
+        """
+        if not is_valid(identifier, prefix):
+            raise ValueError(f"not a valid {prefix} id: {identifier!r}")
+        return identifier
+
+    @staticmethod
+    def _check_scene_id(scene_id: str) -> str:
+        if not scene_id.startswith("scene_") or not scene_id[6:].isdigit():
+            raise ValueError(f"not a valid scene id: {scene_id!r}")
+        return scene_id
 
     def _root(self, project_id: str) -> str:
-        return f"projects/{self._check_id(project_id)}"
+        return f"projects/{self._check_id(project_id, 'proj')}"
 
     def project_key(self, project_id: str) -> str:
         return f"{self._root(project_id)}/project.json"
@@ -180,10 +228,12 @@ class ProjectStore:
         return f"{self._root(project_id)}/events/"
 
     def timeline_key(self, project_id: str, version: int) -> str:
+        if not isinstance(version, int) or version < 1:
+            raise ValueError(f"timeline version must be a positive integer: {version!r}")
         return f"{self._root(project_id)}/timelines/timeline.v{version}.json"
 
     def run_key(self, project_id: str, run_id: str) -> str:
-        return f"{self._root(project_id)}/runs/{run_id}/run.json"
+        return f"{self._root(project_id)}/runs/{self._check_id(run_id, 'run')}/run.json"
 
     def latest_export_key(self, project_id: str) -> str:
         return f"{self._root(project_id)}/exports/latest.json"
@@ -192,34 +242,43 @@ class ProjectStore:
         return f"{self._root(project_id)}/scenes/scenes.json"
 
     def scene_thumbnail_key(self, project_id: str, scene_id: str) -> str:
-        return f"{self._root(project_id)}/scenes/{scene_id}/thumbnail.jpg"
+        return (f"{self._root(project_id)}/scenes/"
+                f"{self._check_scene_id(scene_id)}/thumbnail.jpg")
 
     # -- JSON helpers -----------------------------------------------------
 
     def _put_json(self, key: str, payload: dict) -> str:
-        path = os.path.join(self.work_dir, key.replace("/", "_"))
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, sort_keys=True)
-        self.backend.put(key, path, content_type="application/json")
+        """Serialise and upload directly.
+
+        No scratch file: staging every record through one shared, key-derived
+        temp path meant two threads touching the same key raced on the same
+        file — producing JSONDecodeErrors at best, and at worst uploading one
+        writer's bytes under another writer's key.
+        """
+        self.backend.put_bytes(
+            key, json.dumps(payload, indent=2, sort_keys=True).encode("utf-8"),
+            content_type="application/json")
         return key
 
     def _get_json(self, key: str) -> dict:
-        path = os.path.join(self.work_dir, key.replace("/", "_"))
-        self.backend.get(key, path)
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        return json.loads(self.backend.get_bytes(key).decode("utf-8"))
 
     def _put_json_immutable(self, key: str, payload: dict) -> str:
-        """Write only if absent. The guard is best-effort — object storage
-        offers no atomic create — but it turns the common accident (a retry
-        rewriting a completed artifact) into a loud error instead of silent
-        history loss."""
-        if self.backend.exists(key):
+        """Write only if absent, atomically.
+
+        `put_if_absent` is a single conditional operation. The previous
+        exists()-then-put() was two, and two writers racing between them both
+        believed they had won — one artifact silently destroyed the other.
+        """
+        try:
+            self.backend.put_if_absent(
+                key, json.dumps(payload, indent=2, sort_keys=True).encode("utf-8"),
+                content_type="application/json")
+        except PreconditionFailed as e:
             raise StorageError(
                 f"refusing to overwrite immutable object {key!r} — "
-                "completed artifacts are never rewritten (SPEC.md §10)"
-            )
-        return self._put_json(key, payload)
+                "completed artifacts are never rewritten (SPEC.md §10)") from e
+        return key
 
     # -- projects ---------------------------------------------------------
 
@@ -237,8 +296,27 @@ class ProjectStore:
         )
         self._put_json_immutable(self.project_key(project.id), project.to_dict())
         self.append_event(project.id, EVENT_PROJECT_CREATED, actor=actor,
-                          payload={"title": title, "source_sha256": source_sha256})
+                          payload={"title": title})
+        if source_sha256:
+            self.record_input(project.id, sha256=source_sha256,
+                              duration_s=duration_s, actor=actor)
         return project
+
+    def record_input(self, project_id: str, *, sha256: str,
+                     duration_s: Optional[float] = None,
+                     size_bytes: Optional[int] = None,
+                     actor: str = "system") -> Event:
+        """Record that the source bytes are present and verified.
+
+        Separate from creation because the project record is written before the
+        upload happens — the hash and duration are not knowable until after.
+        `Project` is frozen, so this is where those values actually live, and
+        `get_state` reads them from here.
+        """
+        return self.append_event(
+            project_id, EVENT_INPUT_RECORDED, actor=actor,
+            payload={"sha256": sha256, "duration_s": duration_s,
+                     "size_bytes": size_bytes})
 
     def get_project(self, project_id: str) -> Project:
         return Project.from_dict(self._get_json(self.project_key(project_id)))
@@ -258,7 +336,7 @@ class ProjectStore:
                      payload: Optional[dict] = None) -> Event:
         event = Event(
             id=new_event_id(),
-            project_id=self._check_id(project_id),
+            project_id=self._check_id(project_id, "proj"),
             type=event_type,
             created_at=_utcnow(),
             actor=actor,
@@ -285,10 +363,11 @@ class ProjectStore:
         """Open a run. The record is not written yet — a run object appears in
         storage only once it reaches a terminal state, so storage never holds a
         run claiming to be 'running' after the process that owned it died. The
-        started event is in the log immediately, so nothing is lost."""
+        started event is in the log immediately, so nothing is lost, and
+        `RUN_LEASE_S` bounds how long such a run reads as live."""
         run = Run(
             id=new_run_id(),
-            project_id=self._check_id(project_id),
+            project_id=self._check_id(project_id, "proj"),
             kind=kind,
             created_at=_utcnow(),
             status="running",
@@ -317,19 +396,37 @@ class ProjectStore:
                           run_id=run.id, payload={"kind": run.kind})
         return finished
 
-    def fail_run(self, run: Run, error: str, *, actor: str = "system") -> Run:
+    def fail_run(self, run: Run, error: str, *, error_code: str = "run_failed",
+                 actor: str = "system") -> Run:
+        """Record a run as failed.
+
+        If the run already reached a terminal state — work raised *after*
+        `complete_run` succeeded — the immutable record is left alone and a
+        distinct event is appended instead. Attempting the write would raise
+        from inside the error handler, and the run would stay recorded as
+        `completed`: SPEC.md §12's "never a silently incomplete complete
+        project", exactly inverted.
+        """
         failed = Run(
             id=run.id, project_id=run.project_id, kind=run.kind,
             created_at=run.created_at, status="failed",
             timeline_version=run.timeline_version,
             parent_run_id=run.parent_run_id,
             genblaze_run_id=run.genblaze_run_id,
-            error=error, metadata=run.metadata,
+            error=error, error_code=error_code, metadata=run.metadata,
         )
-        self._put_json_immutable(self.run_key(run.project_id, run.id),
-                                 failed.to_dict())
+        try:
+            self._put_json_immutable(self.run_key(run.project_id, run.id),
+                                     failed.to_dict())
+        except StorageError:
+            self.append_event(run.project_id, EVENT_RUN_FAILED_AFTER_COMPLETION,
+                              actor=actor, run_id=run.id,
+                              payload={"kind": run.kind, "error_code": error_code,
+                                       "error": error})
+            return failed
         self.append_event(run.project_id, EVENT_RUN_FAILED, actor=actor,
-                          run_id=run.id, payload={"error": error})
+                          run_id=run.id,
+                          payload={"error_code": error_code, "kind": run.kind})
         return failed
 
     def get_run(self, project_id: str, run_id: str) -> Run:
@@ -347,13 +444,33 @@ class ProjectStore:
                       run_id: Optional[str] = None, actor: str = "system") -> int:
         """Store the next timeline version and return its number.
 
-        Versions are never reused: a repair produces v2 alongside v1 rather
-        than replacing it, which is what makes the history in §6.3 real and
-        what lets a user go back to an earlier plan.
+        Allocation retries on collision. Computing `latest + 1` and then writing
+        is not atomic: two writers both read v1, both write v2, and one plan is
+        destroyed with no error while the log records two `plan.proposed` events
+        claiming the same version. The conditional write makes the loser lose
+        loudly, so it simply takes the next number.
+
+        Versions are never reused: a repair produces v2 alongside v1 rather than
+        replacing it, which is what makes the history in §6.3 real and what lets
+        a user go back to an earlier plan.
         """
+        payload = json.dumps(timeline_to_dict(timeline), indent=2,
+                             sort_keys=True).encode("utf-8")
         version = (self.latest_timeline_version(project_id) or 0) + 1
-        self._put_json_immutable(self.timeline_key(project_id, version),
-                                 timeline_to_dict(timeline))
+
+        for _ in range(_VERSION_RACE_RETRIES):
+            try:
+                self.backend.put_if_absent(
+                    self.timeline_key(project_id, version), payload,
+                    content_type="application/json")
+                break
+            except PreconditionFailed:
+                version += 1
+        else:
+            raise StorageError(
+                f"could not allocate a timeline version for {project_id} after "
+                f"{_VERSION_RACE_RETRIES} attempts")
+
         self.append_event(project_id, EVENT_PLAN_PROPOSED, actor=actor,
                           run_id=run_id,
                           payload={"timeline_version": version,
@@ -363,7 +480,7 @@ class ProjectStore:
     def load_timeline(self, project_id: str, version: Optional[int] = None) -> Timeline:
         version = version or self.latest_timeline_version(project_id)
         if not version:
-            raise StorageError(f"project {project_id} has no timeline yet")
+            raise ObjectNotFound(f"project {project_id} has no timeline yet")
         return dict_to_timeline(self._get_json(self.timeline_key(project_id, version)))
 
     def latest_timeline_version(self, project_id: str) -> Optional[int]:
@@ -393,9 +510,9 @@ class ProjectStore:
         is available locally.
 
         Scene detection is deterministic, so re-running it on the same source
-        yields the same breakdown — this is written with the ordinary (not
-        immutable) put so a re-analysis can refresh it without tripping the
-        overwrite guard on an artifact that carries no history.
+        yields the same breakdown — written with the ordinary (not immutable)
+        put so a re-analysis can refresh it without tripping the overwrite guard
+        on an artifact that carries no history.
         """
         from foleyflow.scenes import extract_thumbnail
 
@@ -403,16 +520,22 @@ class ProjectStore:
 
         if video_path and os.path.exists(video_path):
             for scene in scenes:
-                dest = os.path.join(self.work_dir, f"{project_id}_{scene.id}.jpg")
+                # Unique scratch name per thumbnail: a fixed one is shared by
+                # every concurrent run on the box.
+                fd, dest = tempfile.mkstemp(suffix=".jpg", dir=self.work_dir)
+                os.close(fd)
                 try:
                     extract_thumbnail(video_path, scene, dest)
-                except RuntimeError as e:
+                    key = self.scene_thumbnail_key(project_id, scene.id)
+                    self.backend.put(key, dest, content_type="image/jpeg")
+                except (RuntimeError, StorageError) as e:
                     # A missing thumbnail degrades the rail; it must not fail
                     # the analysis run that produced a valid breakdown.
-                    print(f"[projects] WARNING: {e}")
+                    print(f"[projects] WARNING: thumbnail for {scene.id}: {e}")
                     continue
-                key = self.scene_thumbnail_key(project_id, scene.id)
-                self.backend.put(key, dest, content_type="image/jpeg")
+                finally:
+                    if os.path.exists(dest):
+                        os.unlink(dest)
                 for entry in payload:
                     if entry["id"] == scene.id:
                         entry["thumbnail_key"] = key
@@ -423,10 +546,10 @@ class ProjectStore:
         return payload
 
     def load_scenes(self, project_id: str) -> list:
-        key = self.scenes_key(project_id)
-        if not self.backend.exists(key):
+        try:
+            return self._get_json(self.scenes_key(project_id)).get("scenes", [])
+        except ObjectNotFound:
             return []
-        return self._get_json(key).get("scenes", [])
 
     # -- exports ----------------------------------------------------------
 
@@ -450,40 +573,74 @@ class ProjectStore:
         return payload
 
     def get_latest_export(self, project_id: str) -> Optional[dict]:
-        key = self.latest_export_key(project_id)
-        if not self.backend.exists(key):
+        try:
+            return self._get_json(self.latest_export_key(project_id))
+        except ObjectNotFound:
             return None
-        return self._get_json(key)
 
     # -- derived state ----------------------------------------------------
 
-    def get_state(self, project_id: str) -> ProjectState:
-        """Fold the event log into the project's current state."""
+    def get_state(self, project_id: str, *,
+                  now: Optional[datetime] = None) -> ProjectState:
+        """Fold the event log into the project's current state.
+
+        Folded per run, then reduced — not by letting whichever event happened
+        to be written last set the status. Under concurrent runs the last event
+        is not the last outcome, and treating every `run.started` as
+        "analyzing" made a published export regress to `analyzing` the moment a
+        user clicked Regenerate, with no path back to `ready`.
+        """
         project = self.get_project(project_id)
         events = self.list_events(project_id)
+        now = now or datetime.now(timezone.utc)
 
-        status = STATUS_NEW
-        latest_run_id = None
+        runs: Dict[str, Dict[str, Any]] = {}
         timeline_version = None
         has_export = False
+        source_sha256 = None
+        duration_s = None
+        latest_run_id = None
+        qa_flagged = False
 
         for event in events:
             if event.run_id:
-                latest_run_id = event.run_id
-            if event.type == EVENT_RUN_STARTED:
-                status = STATUS_ANALYZING
-            elif event.type == EVENT_RUN_FAILED:
-                status = STATUS_FAILED
+                entry = runs.setdefault(event.run_id, {
+                    "kind": "unknown", "status": "running",
+                    "started_at": event.created_at})
+                if event.type == EVENT_RUN_STARTED:
+                    entry["kind"] = event.payload.get("kind", entry["kind"])
+                    entry["started_at"] = event.created_at
+                    latest_run_id = event.run_id
+                elif event.type == EVENT_RUN_COMPLETED:
+                    entry["status"] = "completed"
+                elif event.type in (EVENT_RUN_FAILED,
+                                    EVENT_RUN_FAILED_AFTER_COMPLETION):
+                    entry["status"] = "failed"
+
+            if event.type == EVENT_INPUT_RECORDED:
+                source_sha256 = event.payload.get("sha256") or source_sha256
+                duration_s = event.payload.get("duration_s") or duration_s
             elif event.type == EVENT_PLAN_PROPOSED:
-                timeline_version = event.payload.get("timeline_version", timeline_version)
-                status = STATUS_NEEDS_REVIEW
+                timeline_version = max(timeline_version or 0,
+                                       event.payload.get("timeline_version") or 0)
             elif event.type == EVENT_QA_FLAGGED:
-                status = STATUS_NEEDS_REVIEW
-            elif event.type == EVENT_RUN_COMPLETED and status == STATUS_ANALYZING:
-                status = STATUS_NEEDS_REVIEW
+                qa_flagged = True
             elif event.type == EVENT_EXPORT_APPROVED:
-                status = STATUS_READY
                 has_export = True
+
+        # A run still marked running past its lease had its process die; nothing
+        # will ever write its terminal record.
+        stale = []
+        for run_id, entry in runs.items():
+            if entry["status"] != "running":
+                continue
+            started = _parse_iso(entry["started_at"])
+            if started and now - started > timedelta(seconds=RUN_LEASE_S):
+                entry["status"] = "stale"
+                stale.append(run_id)
+
+        status = self._derive_status(project, runs, timeline_version,
+                                     has_export, qa_flagged, source_sha256)
 
         return ProjectState(
             project=project,
@@ -492,4 +649,35 @@ class ProjectStore:
             timeline_version=timeline_version,
             event_count=len(events),
             has_export=has_export,
+            source_sha256=source_sha256,
+            duration_s=duration_s,
+            stale_run_ids=sorted(stale),
         )
+
+    @staticmethod
+    def _derive_status(project, runs, timeline_version, has_export,
+                       qa_flagged, source_sha256) -> str:
+        """Project status from run outcomes and artifacts, in priority order.
+
+        A live run outranks a finished one because it is what the user is
+        waiting on; an approved export outranks everything else because it is
+        the terminal state of the whole workflow.
+        """
+        live = [r for r in runs.values() if r["status"] == "running"]
+        if live:
+            return STATUS_ANALYZING if any(r["kind"] == "analyze" for r in live) \
+                else STATUS_NEEDS_REVIEW if has_export or timeline_version \
+                else STATUS_ANALYZING
+
+        if has_export:
+            return STATUS_READY
+        if timeline_version or qa_flagged:
+            return STATUS_NEEDS_REVIEW
+
+        # No plan yet: a failed or stale run is the reason, and the user needs
+        # to see that rather than a project that looks merely unstarted.
+        if any(r["status"] in ("failed", "stale") for r in runs.values()):
+            return STATUS_FAILED
+        if not (source_sha256 or project.source_sha256):
+            return STATUS_AWAITING_UPLOAD
+        return STATUS_NEW

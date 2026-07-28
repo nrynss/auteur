@@ -8,9 +8,15 @@ is byte-for-byte the media core's existing cache directory, which is why the
 
 import os
 import shutil
+import tempfile
 from typing import Optional
 
-from foleyflow.storage.base import StorageError
+from foleyflow.storage.base import (
+    ObjectNotFound,
+    PreconditionFailed,
+    StorageError,
+    validate_key,
+)
 
 
 class LocalBackend:
@@ -20,17 +26,11 @@ class LocalBackend:
     def _path(self, key: str) -> str:
         """Resolve a storage key to a path under root.
 
-        Validation is spelled out rather than delegated to os.path.isabs: keys
-        are POSIX-style by contract, and isabs is platform-dependent — since
-        Python 3.13 ntpath.isabs("/etc/passwd") is False on Windows, so relying
-        on it would let a rooted key through on one OS and not the other.
+        Validation is shared with every other backend via `validate_key` rather
+        than relying on this one's native path handling — see base.validate_key
+        for why that matters.
         """
-        if not key or key.startswith(("/", "\\")):
-            raise StorageError(f"unsafe storage key: {key!r}")
-        parts = key.split("/")
-        if any(p in ("", ".", "..") for p in parts) or any("\\" in p or ":" in p for p in parts):
-            raise StorageError(f"unsafe storage key: {key!r}")
-        return os.path.join(self.root, *parts)
+        return os.path.join(self.root, *validate_key(key))
 
     def exists(self, key: str) -> bool:
         return os.path.exists(self._path(key))
@@ -38,26 +38,69 @@ class LocalBackend:
     def get(self, key: str, dest_path: str) -> str:
         src = self._path(key)
         if not os.path.exists(src):
-            raise StorageError(f"no object at {key!r} (looked in {src})")
+            # Names the key, not the resolved path: this message reaches API
+            # clients and permanent run records.
+            raise ObjectNotFound(f"no object at {key!r}")
         os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
         if os.path.abspath(src) != os.path.abspath(dest_path):
             shutil.copyfile(src, dest_path)
         return dest_path
 
+    def get_bytes(self, key: str) -> bytes:
+        src = self._path(key)
+        try:
+            with open(src, "rb") as f:
+                return f.read()
+        except FileNotFoundError as e:
+            raise ObjectNotFound(f"no object at {key!r}") from e
+        except OSError as e:
+            raise StorageError(f"could not read {key!r}: {e.strerror}") from e
+
     def put(self, key: str, src_path: str, content_type: Optional[str] = None) -> str:
+        with open(src_path, "rb") as f:
+            return self.put_bytes(key, f.read(), content_type)
+
+    def put_bytes(self, key: str, data: bytes,
+                  content_type: Optional[str] = None) -> str:
         dest = self._path(key)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        # shutil.move/copyfile rather than os.replace: src_path is often in the
-        # OS temp dir, which on Windows can sit on a different drive than the
-        # project — a plain rename raises a cross-device error there.
-        if os.path.abspath(src_path) != os.path.abspath(dest):
-            shutil.copyfile(src_path, dest)
+        # Written to a unique temp file in the destination directory and then
+        # renamed, so a crash mid-write cannot leave a truncated object that a
+        # later `exists()` reports as present.
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest), suffix=".part")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.replace(tmp, dest)
+        except OSError as e:
+            raise StorageError(f"could not write {key!r}: {e.strerror}") from e
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        return key
+
+    def put_if_absent(self, key: str, data: bytes,
+                      content_type: Optional[str] = None) -> str:
+        """Atomic create. `O_CREAT | O_EXCL` is the filesystem's own
+        test-and-set, so two threads racing here cannot both succeed."""
+        dest = self._path(key)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        try:
+            fd = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_BINARY
+                         if hasattr(os, "O_BINARY")
+                         else os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as e:
+            raise PreconditionFailed(f"object already exists at {key!r}") from e
+        except OSError as e:
+            raise StorageError(f"could not create {key!r}: {e.strerror}") from e
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
         return key
 
     def signed_url(self, key: str, expires_s: int = 3600) -> str:
         path = self._path(key)
         if not os.path.exists(path):
-            raise StorageError(f"no object at {key!r}")
+            raise ObjectNotFound(f"no object at {key!r}")
         return "file:///" + path.replace(os.sep, "/").lstrip("/")
 
     def list_keys(self, prefix: str):
@@ -73,6 +116,8 @@ class LocalBackend:
         keys = []
         for dirpath, _dirnames, filenames in os.walk(base):
             for filename in filenames:
+                if filename.endswith(".part"):
+                    continue        # an in-progress write is not an object
                 full = os.path.join(dirpath, filename)
                 rel = os.path.relpath(full, self.root).replace(os.sep, "/")
                 keys.append(rel)

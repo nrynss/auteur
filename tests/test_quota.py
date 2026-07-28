@@ -120,9 +120,31 @@ def test_truncated_final_line_is_skipped(tmp_path, noon):
     assert get_quota(MODEL, now=noon, ledger_path=str(p)).per_day.used == 1
 
 
-def test_lite_has_a_far_larger_daily_budget():
-    """The reason Flash Lite is the development default."""
-    assert get_quota(LITE).per_day.limit > get_quota(MODEL).per_day.limit * 10
+def test_each_model_counts_against_its_own_declared_budget(tmp_path, noon):
+    """The previous version compared two constants from providers.toml and read
+    the real ledger — it tested the config file, not this module."""
+    # Spread across the day, not the last minute: both models would otherwise
+    # trip their per-minute limit and the daily comparison would prove nothing.
+    path = write_ledger(tmp_path / "l.jsonl",
+                        [(MODEL, noon.timestamp() - 3600 - i) for i in range(20)] +
+                        [(LITE, noon.timestamp() - 3600 - i) for i in range(20)])
+    flash = get_quota(MODEL, now=noon, ledger_path=path)
+    lite = get_quota(LITE, now=noon, ledger_path=path)
+
+    assert flash.per_day.used == 20 and lite.per_day.used == 20
+    # Same usage, different budgets: one is spent, the other has room.
+    assert flash.status == "blocked"
+    assert lite.status == "ok" and lite.per_day.remaining > 0
+
+
+def test_ledger_writability_is_reported(tmp_path):
+    """A read-only ledger makes every figure fiction: usage reads zero no
+    matter how much is actually spent."""
+    from foleyflow.quota import ledger_writable
+    assert ledger_writable(str(tmp_path / "fresh.jsonl")) is True
+    blocked = tmp_path / "not-a-dir"
+    blocked.write_text("i am a file, not a directory")
+    assert ledger_writable(str(blocked / "l.jsonl")) is False
 
 
 def test_all_quotas_sorted_worst_first(tmp_path, noon):

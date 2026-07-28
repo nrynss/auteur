@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from foleyflow.api.jobs import JobRunner
+from foleyflow.api.jobs import JobRunner, SlotTaken
 from foleyflow.projects import ProjectStore
 from foleyflow.storage import LocalBackend
 
@@ -34,9 +34,23 @@ def project(store):
 
 
 def _wait(runner, run_id, timeout=10.0):
+    """Block until `run_id` reaches a terminal state.
+
+    Falls back to polling storage: submit() sweeps finished entries, so a job
+    that already completed may no longer be in the runner's table. Storage is
+    the record; the table is only a cache.
+    """
     job = runner.get(run_id)
-    assert job is not None
-    job.future.result(timeout=timeout)
+    if job is not None and job.future is not None:
+        job.future.result(timeout=timeout)
+        return
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        active = runner.get(run_id)
+        if active is None or (active.future is not None and active.future.done()):
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"run {run_id} did not finish within {timeout}s")
 
 
 # -- the 202 contract -------------------------------------------------------
@@ -80,8 +94,12 @@ def test_raising_work_records_a_terminal_failure(runner, store, project):
 
     stored = store.get_run(project.id, run.id)
     assert stored.status == "failed"
-    assert "provider exploded" in stored.error
+    assert stored.error_code == "invalid_data"
     assert "ValueError" in stored.error
+    # The message must NOT survive: provider and storage exceptions embed
+    # presigned URLs, bucket names, and absolute server paths, and this record
+    # is immutable in B2 and served verbatim by GET /runs/{id}.
+    assert "provider exploded" not in stored.error
 
 
 def test_failure_to_record_a_failure_does_not_kill_the_worker(runner, store,
@@ -158,7 +176,8 @@ def test_concurrent_jobs_do_not_lose_events(runner, store):
     per event means no read-modify-write, so none may be lost."""
     project = store.create_project(title="C", input_key="k", source_sha256="c",
                                    source_filename="c.mp4")
-    runs = [runner.submit(project.id, "generate", lambda r: store.complete_run(r))
+    runs = [runner.submit(project.id, "generate", lambda r: store.complete_run(r),
+                          exclusive=False)
             for _ in range(8)]
     for r in runs:
         _wait(runner, r.id)
@@ -173,7 +192,74 @@ def test_concurrent_jobs_do_not_lose_events(runner, store):
 def test_run_ids_are_unique_under_concurrency(runner, store):
     project = store.create_project(title="U", input_key="k", source_sha256="u",
                                    source_filename="u.mp4")
-    runs = [runner.submit(project.id, "generate", lambda r: None) for _ in range(20)]
+    runs = [runner.submit(project.id, "generate", lambda r: None, exclusive=False)
+            for _ in range(20)]
     for r in runs:
         _wait(runner, r.id)
     assert len({r.id for r in runs}) == 20
+
+
+# -- the already_running race ----------------------------------------------
+
+def test_second_submit_is_refused_while_one_is_in_flight(runner, project):
+    gate = threading.Event()
+    first = runner.submit(project.id, "analyze", lambda r: gate.wait(5))
+
+    with pytest.raises(SlotTaken) as excinfo:
+        runner.submit(project.id, "analyze", lambda r: None)
+    assert excinfo.value.existing.run_id == first.id
+
+    gate.set()
+    _wait(runner, first.id)
+
+
+def test_simultaneous_submits_admit_exactly_one(runner, store, project):
+    """Regression: the guard used to check under the lock, release it, and then
+    submit. A double-click or a client retry landed two requests that both saw
+    no active job and both ran — two Gemini calls against a 20/day budget.
+    """
+    gate = threading.Event()
+    ready = threading.Barrier(8)
+    accepted, refused = [], []
+    lock = threading.Lock()
+
+    def attempt():
+        ready.wait(5)
+        try:
+            run = runner.submit(project.id, "analyze", lambda r: gate.wait(5))
+            with lock:
+                accepted.append(run.id)
+        except SlotTaken:
+            with lock:
+                refused.append(1)
+
+    threads = [threading.Thread(target=attempt) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+
+    assert len(accepted) == 1, f"exactly one may win, got {len(accepted)}"
+    assert len(refused) == 7
+
+    gate.set()
+    _wait(runner, accepted[0])
+
+    started = [e for e in store.list_events(project.id)
+               if e.type == "postproduction.run.started"]
+    assert len(started) == 1, "a refused submit must not write a start event"
+
+
+def test_slot_is_released_after_the_job_finishes(runner, store, project):
+    first = runner.submit(project.id, "analyze", lambda r: store.complete_run(r))
+    _wait(runner, first.id)
+    second = runner.submit(project.id, "analyze", lambda r: store.complete_run(r))
+    _wait(runner, second.id)
+    assert second.id != first.id
+
+
+def test_a_failed_job_releases_the_slot(runner, store, project):
+    """Otherwise one crash would wedge the project until restart."""
+    first = runner.submit(project.id, "analyze", lambda r: 1 / 0)
+    _wait(runner, first.id)
+    runner.submit(project.id, "analyze", lambda r: store.complete_run(r))

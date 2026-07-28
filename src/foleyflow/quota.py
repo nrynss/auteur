@@ -15,7 +15,12 @@ Local counting can drift from Google's accounting in at least three ways:
     here as a failure but consumed quota upstream;
   * the daily window is assumed to reset at midnight in `RESET_TZ` (Pacific,
     Google's convention for AI Studio free-tier quotas). A different reset
-    boundary shifts every daily figure.
+    boundary shifts every daily figure;
+  * the ledger may not be writable at all. `log_transaction` swallows write
+    failures, and LEDGER_PATH is derived from __file__ — in a container with a
+    read-only layer, every row is lost and this module then reports a full
+    budget while the real one drains. That failure is systematic rather than
+    noisy, so `ledger_writable()` exposes it and the API surfaces it.
 
 Treat the numbers as a guard rail — "you have roughly 6 analysis runs left
 today" — never as an authoritative balance. Label them as estimates wherever
@@ -104,6 +109,21 @@ class ModelQuota:
             payload[name]["exhausted"] = window.exhausted
         payload["status"] = self.status
         return payload
+
+
+def ledger_writable(path: str = LEDGER_PATH) -> bool:
+    """Whether quota counting can actually observe anything.
+
+    False means every figure here is fiction: no rows are being recorded, so
+    usage always reads zero no matter how much budget is spent.
+    """
+    try:
+        directory = os.path.dirname(path) or "."
+        os.makedirs(directory, exist_ok=True)
+        with open(path, "a", encoding="utf-8"):
+            return True
+    except OSError:
+        return False
 
 
 def _next_daily_reset(now: datetime) -> datetime:

@@ -4,6 +4,19 @@ Keys are POSIX-style, slash-separated, and never absolute — e.g.
 `cache/03f8c512074fd16b.wav` or
 `projects/proj_01J.../runs/run_01J.../stems/evt_armor_steps_01.wav`.
 The backend owns any bucket/prefix concerns; callers never see them.
+
+## Absent is not the same as broken
+
+`ObjectNotFound` exists so callers can tell "there is no such object" from
+"storage did not answer". Collapsing them is how a B2 outage becomes a
+convincing `404 project_not_found`, and how a permission error becomes a cache
+miss that silently re-bills every generation.
+
+## Error messages must not carry paths or credentials
+
+A `StorageError` reaches the client through an API error handler and is written
+into permanent run records. Messages here name the *key* — which the caller
+already knows — never the resolved local path, bucket, or provider URL.
 """
 
 from typing import List, Optional, Protocol, runtime_checkable
@@ -12,6 +25,41 @@ from typing import List, Optional, Protocol, runtime_checkable
 class StorageError(RuntimeError):
     """A backend operation failed. Raised instead of leaking boto3/OS errors so
     callers can treat every backend the same way."""
+
+
+class ObjectNotFound(StorageError):
+    """The object genuinely is not there.
+
+    A subclass of StorageError so existing `except StorageError` sites keep
+    working, but distinguishable by anything that needs to tell a missing
+    project from an unreachable bucket.
+    """
+
+
+class PreconditionFailed(StorageError):
+    """A conditional write lost the race — the key already exists.
+
+    Raised by `put_if_absent`. Callers retry with a new key rather than
+    treating it as a failure.
+    """
+
+
+def validate_key(key: str) -> List[str]:
+    """Check `key` against the key contract and return its segments.
+
+    Enforced by every backend, not just the one whose native path handling
+    happens to reject traversal. LocalBackend rejecting `../` while B2Backend
+    forwards it verbatim would mean the safety of an id depended on which
+    backend you were running — an accident, not a defence.
+    """
+    if not key or key.startswith(("/", "\\")):
+        raise StorageError(f"unsafe storage key: {key!r}")
+    parts = key.split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        raise StorageError(f"unsafe storage key: {key!r}")
+    if any("\\" in p or ":" in p or "\0" in p for p in parts):
+        raise StorageError(f"unsafe storage key: {key!r}")
+    return parts
 
 
 @runtime_checkable
@@ -24,16 +72,42 @@ class Backend(Protocol):
     """
 
     def exists(self, key: str) -> bool:
-        """True if an object is stored at `key`."""
+        """True if an object is stored at `key`.
+
+        Must raise rather than return False when the answer is unknown — a
+        permission or network failure is not evidence of absence, and callers
+        use this to guard immutable writes and cache lookups.
+        """
         ...
 
     def get(self, key: str, dest_path: str) -> str:
         """Download `key` to `dest_path`, creating parent directories.
-        Returns dest_path. Raises StorageError if the object is absent."""
+        Returns dest_path. Raises ObjectNotFound if the object is absent."""
+        ...
+
+    def get_bytes(self, key: str) -> bytes:
+        """Read `key` into memory. Preferred for small JSON records — writing
+        them through a shared scratch file is a data race."""
         ...
 
     def put(self, key: str, src_path: str, content_type: Optional[str] = None) -> str:
         """Upload the file at `src_path` to `key`. Returns the key."""
+        ...
+
+    def put_bytes(self, key: str, data: bytes,
+                  content_type: Optional[str] = None) -> str:
+        """Upload `data` directly, with no intermediate file."""
+        ...
+
+    def put_if_absent(self, key: str, data: bytes,
+                      content_type: Optional[str] = None) -> str:
+        """Atomically write `data` only if `key` does not exist.
+
+        Raises PreconditionFailed if it does. This is the primitive that makes
+        version allocation safe: an `exists()` check followed by a `put()` is
+        two operations, and two writers racing between them both believe they
+        won and one silently destroys the other's artifact.
+        """
         ...
 
     def signed_url(self, key: str, expires_s: int = 3600) -> str:

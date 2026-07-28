@@ -4,10 +4,10 @@ SPEC.md §8.3 makes B2 the "direct video upload destination through presigned
 URLs" — the client PUTs straight to the bucket and a 26 MB video never passes
 through the application server.
 
-TEMPORARY LOCATION: this belongs on the storage Backend next to `signed_url`,
-which is already the presigned-GET half of the same idea. It is here only to
-avoid editing `storage/b2.py` while an adversarial review is reading it; fold
-it in afterwards as `Backend.signed_upload_url`.
+The signing itself now lives on the backend as `B2Backend.signed_upload_url`,
+next to `signed_url` — the presigned-GET half of the same idea. What remains
+here is the key derivation, which is an API-layer concern because it depends on
+the untrusted filename a client supplied.
 """
 
 from __future__ import annotations
@@ -55,19 +55,6 @@ def create_upload_target(backend: Backend, key: str, content_type: str,
             "(set FOLEYFLOW_CACHE_BACKEND=b2)"
         )
 
-    from botocore.exceptions import ClientError
-    try:
-        url = backend._client.generate_presigned_url(
-            "put_object",
-            Params={
-                "Bucket": backend.bucket,
-                "Key": backend._key(key),
-                "ContentType": content_type,
-            },
-            ExpiresIn=expires_s,
-        )
-    except ClientError as e:
-        raise StorageError(f"could not presign upload for {key!r}: {e}") from e
-
+    url = backend.signed_upload_url(key, content_type, expires_s)
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=expires_s)).isoformat()
     return url, expires_at, {"Content-Type": content_type}

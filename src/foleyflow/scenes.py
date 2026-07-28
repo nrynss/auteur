@@ -85,8 +85,33 @@ class Scene:
         return payload
 
 
-def _run(cmd: List[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True)
+# ffmpeg on a corrupt or partially-downloaded file can block indefinitely.
+# Without a bound it pins a threadpool worker for the life of the process.
+FFMPEG_TIMEOUT_S = 120
+
+
+class SceneDetectionError(RuntimeError):
+    """ffmpeg failed. Distinct from "no cuts found" — see detect_cuts."""
+
+
+def _run(cmd: List[str], *, check: bool = True) -> subprocess.CompletedProcess:
+    """Run ffmpeg, failing loudly by default.
+
+    The exit code has to be checked. A failed probe produces no `pts_time:`
+    matches, which is indistinguishable from a genuine single-shot clip — so an
+    unreadable or truncated video silently became "one scene spanning the whole
+    duration", and save_scenes then recorded ANALYSIS_COMPLETED for a fabricated
+    breakdown that every scene_id and continuity warning was built on.
+    """
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=FFMPEG_TIMEOUT_S)
+    except subprocess.TimeoutExpired as e:
+        raise SceneDetectionError(
+            f"ffmpeg timed out after {FFMPEG_TIMEOUT_S}s") from e
+    if check and proc.returncode != 0:
+        tail = proc.stderr.decode("utf-8", errors="replace").strip()[-300:]
+        raise SceneDetectionError(f"ffmpeg failed (exit {proc.returncode}): {tail}")
+    return proc
 
 
 def detect_cuts(video_path: str, threshold: float = DEFAULT_THRESHOLD) -> List[float]:

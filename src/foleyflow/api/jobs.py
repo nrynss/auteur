@@ -44,16 +44,26 @@ logger = logging.getLogger("foleyflow.jobs")
 DEFAULT_MAX_WORKERS = 4
 
 
+class SlotTaken(RuntimeError):
+    """Another job for this project claimed the slot first."""
+
+    def __init__(self, existing: "ActiveJob"):
+        super().__init__(f"{existing.kind} run {existing.run_id} is already in flight")
+        self.existing = existing
+
+
 @dataclass
 class ActiveJob:
     run_id: str
     project_id: str
     kind: str
-    future: Future
+    future: Optional[Future] = None
 
     @property
     def running(self) -> bool:
-        return not self.future.done()
+        # A reserved slot has no future yet: it is claimed but not started, and
+        # must count as running or a second request could slip in behind it.
+        return self.future is None or not self.future.done()
 
 
 class JobRunner:
@@ -71,16 +81,24 @@ class JobRunner:
     def active_for_project(self, project_id: str, kind: Optional[str] = None) -> Optional[ActiveJob]:
         """The in-flight job for a project, if any.
 
-        Sweeps finished entries on the way past rather than in a background
-        timer: the table is only read here, so this is the natural point to
-        keep it from growing for the life of the process.
+        Read-only, for reporting. Callers must NOT use this to decide whether to
+        start work: checking here and submitting afterwards is check-then-act,
+        and two simultaneous requests both pass. Use `submit` and catch
+        `SlotTaken`, which makes the decision while holding the lock.
         """
         with self._lock:
-            for run_id in [rid for rid, job in self._active.items() if not job.running]:
-                self._active.pop(run_id, None)
-            for job in self._active.values():
-                if job.project_id == project_id and (kind is None or job.kind == kind):
-                    return job
+            self._sweep_locked()
+            return self._find_locked(project_id, kind)
+
+    def _sweep_locked(self) -> None:
+        """Drop finished entries. Caller holds the lock."""
+        for run_id in [rid for rid, job in self._active.items() if not job.running]:
+            self._active.pop(run_id, None)
+
+    def _find_locked(self, project_id: str, kind: Optional[str]) -> Optional[ActiveJob]:
+        for job in self._active.values():
+            if job.project_id == project_id and (kind is None or job.kind == kind):
+                return job
         return None
 
     def get(self, run_id: str) -> Optional[ActiveJob]:
@@ -91,20 +109,47 @@ class JobRunner:
 
     def submit(self, project_id: str, kind: str, work: Callable[[Run], None], *,
                parent_run_id: Optional[str] = None,
-               metadata: Optional[dict] = None, actor: str = "system") -> Run:
-        """Start a run and execute `work(run)` on a worker thread.
+               metadata: Optional[dict] = None, actor: str = "system",
+               exclusive: bool = True) -> Run:
+        """Claim the project's slot, open a run, and execute `work(run)`.
+
+        The slot check and the claim happen under a single lock hold. Doing them
+        separately — check, release, submit — is check-then-act: a double-click
+        or a client retry lands two requests that both see no active job and
+        both proceed, spending two of a 20/day budget and racing each other's
+        writes. Raises `SlotTaken` when another job already holds the slot.
 
         The run is opened — and its started event written — before the future is
         submitted, so a client that receives the 202 can immediately poll the
         run and find it. Doing it inside the worker would leave a window where
         the run id the client holds does not yet exist in storage.
         """
-        run = self.store.start_run(project_id, kind, parent_run_id=parent_run_id,
-                                   metadata=metadata, actor=actor)
-        future = self._pool.submit(self._execute, run, work)
+        # Reserve before touching storage. The placeholder has no future, so it
+        # already reads as running and refuses a second caller arriving while
+        # this one is still writing its start event.
+        placeholder = ActiveJob(run_id=f"pending-{id(work)}-{threading.get_ident()}",
+                                project_id=project_id, kind=kind)
         with self._lock:
-            self._active[run.id] = ActiveJob(run_id=run.id, project_id=project_id,
-                                             kind=kind, future=future)
+            self._sweep_locked()
+            if exclusive:
+                existing = self._find_locked(project_id, None)
+                if existing is not None:
+                    raise SlotTaken(existing)
+            self._active[placeholder.run_id] = placeholder
+
+        try:
+            run = self.store.start_run(project_id, kind, parent_run_id=parent_run_id,
+                                       metadata=metadata, actor=actor)
+        except Exception:
+            with self._lock:
+                self._active.pop(placeholder.run_id, None)
+            raise
+
+        job = ActiveJob(run_id=run.id, project_id=project_id, kind=kind)
+        with self._lock:
+            self._active.pop(placeholder.run_id, None)
+            self._active[run.id] = job
+        job.future = self._pool.submit(self._execute, run, work)
         return run
 
     def _execute(self, run: Run, work: Callable[[Run], None]) -> None:
@@ -120,7 +165,14 @@ class JobRunner:
         except Exception as exc:
             logger.exception("run %s (%s) failed", run.id, run.kind)
             try:
-                self.store.fail_run(run, f"{type(exc).__name__}: {exc}")
+                # Only the exception TYPE is persisted. The message routinely
+                # embeds a presigned URL (with its signature), a bucket name, or
+                # an absolute server path — and this string is written into an
+                # immutable B2 record and served verbatim by GET /runs/{id},
+                # bypassing the leak guard errors.py applies to unhandled
+                # exceptions. Full detail stays in the log above.
+                self.store.fail_run(run, _safe_error(exc),
+                                    error_code=_error_code(exc))
             except Exception:
                 # Storage failed while recording a failure. Nothing further can
                 # be done from here, but it must not be swallowed silently —
@@ -129,6 +181,29 @@ class JobRunner:
 
     def shutdown(self, wait: bool = True) -> None:
         self._pool.shutdown(wait=wait)
+
+
+_ERROR_CODES = {
+    "ObjectNotFound": "storage_object_missing",
+    "PreconditionFailed": "storage_conflict",
+    "StorageError": "storage_error",
+    "SceneDetectionError": "scene_detection_failed",
+    "TimeoutError": "timed_out",
+    "ValueError": "invalid_data",
+}
+
+
+def _error_code(exc: Exception) -> str:
+    """A stable machine-readable classification for a failed run."""
+    return _ERROR_CODES.get(type(exc).__name__, "internal_error")
+
+
+def _safe_error(exc: Exception) -> str:
+    """A summary safe to persist immutably and serve to a client.
+
+    Deliberately drops the exception message — see the call site for why.
+    """
+    return f"{type(exc).__name__} — see server logs for detail"
 
 
 def completion_of(runner: JobRunner, run: Run) -> Callable[[], None]:

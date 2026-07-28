@@ -22,6 +22,7 @@ itself reusable, and re-requesting v2 is free.
 
 import hashlib
 import os
+import shutil
 import tempfile
 from typing import Callable, Optional
 
@@ -68,11 +69,22 @@ def generate_canonical_wav(request: SfxRequest, dest_path: str) -> str:
     audio_url = extract_audio_url(result)
 
     os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+    # Every step happens on a temp path, and the finished file is moved into
+    # place only on success. Writing ffmpeg's output straight to dest_path
+    # means a failure part-way through leaves a truncated file at the canonical
+    # location — and `_sfx_fn`'s first cache test is os.path.exists, so every
+    # later render would treat that fragment as a hit and mix corrupt audio.
+    # foley/sfx.py (the code this was ported from) got this right; the rewrite
+    # dropped it.
     with tempfile.TemporaryDirectory() as tmp_dir:
         raw_path = os.path.join(tmp_dir, "raw_download")
         net.download(audio_url, raw_path)
-        convert_to_canonical(raw_path, dest_path)
-    rms_normalize(dest_path)
+        converted = os.path.join(tmp_dir, "converted.wav")
+        convert_to_canonical(raw_path, converted)
+        rms_normalize(converted)
+        # shutil.move, not os.replace: the temp dir and the work dir can sit on
+        # different Windows drives, where rename raises a cross-device error.
+        shutil.move(converted, dest_path)
     return dest_path
 
 
@@ -111,7 +123,8 @@ def backed_sfx_fn(
         local_path = os.path.join(work_dir, os.path.basename(key))
 
         # A previous event in this same render may already have pulled it.
-        if os.path.exists(local_path):
+        # Size-checked: a zero-length file is a failed write, not a cache entry.
+        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
             _notify({"key": key, "endpoint": request.endpoint,
                      "variant": variant, "cached": True})
             return local_path

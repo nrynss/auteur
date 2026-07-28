@@ -14,12 +14,21 @@ came last.
 from __future__ import annotations
 
 import os
+import threading
 import time
 
 # Crockford base32: no I, L, O, or U — avoids transcription ambiguity.
 _ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _ENCODED_LEN = 26
 _TIMESTAMP_LEN = 10
+_RANDOM_BITS = 80
+_MAX_RANDOM = (1 << _RANDOM_BITS) - 1
+
+# Guards the monotonic counter below. Events are appended from concurrent
+# worker threads, so the last-issued state has to be shared safely.
+_lock = threading.Lock()
+_last_ms = -1
+_last_random = 0
 
 
 def _encode(value: int, length: int) -> str:
@@ -31,9 +40,42 @@ def _encode(value: int, length: int) -> str:
 
 
 def new_ulid(timestamp_ms: int | None = None) -> str:
-    """A fresh ULID. Pass timestamp_ms only in tests that assert ordering."""
-    ts = timestamp_ms if timestamp_ms is not None else int(time.time() * 1000)
-    randomness = int.from_bytes(os.urandom(10), "big")
+    """A fresh, monotonically increasing ULID.
+
+    Monotonic within a millisecond, per the ULID spec's monotonic variant: when
+    the clock has not advanced, the random component is incremented rather than
+    redrawn.
+
+    This matters because sort order *is* the event log's order. Several events
+    are routinely appended inside one millisecond — a run that starts, proposes
+    a plan, and completes — and with independently random suffixes they would
+    come back shuffled, so the audit trail would show a run completing before it
+    started.
+
+    Pass timestamp_ms only in tests that assert ordering.
+    """
+    global _last_ms, _last_random
+
+    if timestamp_ms is not None:
+        randomness = int.from_bytes(os.urandom(10), "big")
+        return (_encode(timestamp_ms, _TIMESTAMP_LEN)
+                + _encode(randomness, _ENCODED_LEN - _TIMESTAMP_LEN))
+
+    with _lock:
+        now_ms = int(time.time() * 1000)
+        if now_ms == _last_ms and _last_random < _MAX_RANDOM:
+            _last_random += 1
+        elif now_ms > _last_ms:
+            _last_ms = now_ms
+            _last_random = int.from_bytes(os.urandom(10), "big") >> 1
+        else:
+            # Clock went backwards, or the counter saturated. Stay on the last
+            # timestamp and keep counting: a duplicate id would be far worse
+            # than a few milliseconds of drift.
+            _last_ms += 1
+            _last_random = int.from_bytes(os.urandom(10), "big") >> 1
+        ts, randomness = _last_ms, _last_random
+
     return _encode(ts, _TIMESTAMP_LEN) + _encode(randomness, _ENCODED_LEN - _TIMESTAMP_LEN)
 
 
@@ -71,7 +113,13 @@ def is_valid(identifier: str, prefix: str | None = None) -> bool:
     elif "_" in identifier:
         identifier = identifier.split("_", 1)[1]
 
+    # Case-sensitive on purpose. Crockford base32 decoding is case-insensitive
+    # for *parsing*, but this id is about to become an S3 key, and S3 keys are
+    # case-sensitive — accepting a lowercase variant lets a caller create a
+    # second project that shadows an existing one, with its own event log and
+    # a list ordering that no longer matches creation time. Windows'
+    # case-insensitive filesystem hides this locally; B2 does not.
     return (
         len(identifier) == _ENCODED_LEN
-        and all(c in _ALPHABET for c in identifier.upper())
+        and all(c in _ALPHABET for c in identifier)
     )

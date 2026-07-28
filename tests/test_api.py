@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from foleyflow.api.app import API_PREFIX, create_app
 from foleyflow.api.jobs import JobRunner
 from foleyflow.projects import ProjectStore
-from foleyflow.storage import LocalBackend
+from foleyflow.storage import LocalBackend, StorageError
 
 VALID_ID = "proj_01KYJD1RKETS3KTX5HA3H5JPDQ"
 
@@ -77,11 +77,16 @@ def test_validation_failures_are_not_fastapis_native_shape(client):
     assert "errors" in r.json()["error"]["detail"]
 
 
-def test_malformed_id_is_400_not_500(client):
-    r = client.get(f"{API_PREFIX}/projects/../../etc/passwd")
-    assert r.status_code in (400, 404)
-    if r.status_code == 400:
-        assert r.json()["error"]["code"] == "invalid_id"
+@pytest.mark.parametrize("bad_id", [
+    "not-an-id", "proj_short", "proj_" + "a" * 26, "proj_lowercase0123456789ab",
+])
+def test_malformed_id_is_a_400_from_the_handler(client, bad_id):
+    """Asserts 400 exactly. The previous version accepted 400-or-404, and the
+    URL it used was normalised by the client before routing — so it passed on
+    a router 404 without ever reaching the id check."""
+    r = client.get(f"{API_PREFIX}/projects/{bad_id}")
+    assert r.status_code == 400, r.text
+    assert r.json()["error"]["code"] == "invalid_id"
 
 
 def test_unknown_project_is_404_with_the_id_in_detail(client):
@@ -100,6 +105,22 @@ def test_health_reports_storage(client):
     assert body["version"]
 
 
+def test_health_reports_degraded_when_storage_is_broken(store):
+    """The previous version only exercised the healthy branch against a
+    LocalBackend that cannot fail, so it could not have caught a deployment
+    reporting `storage: ok` with dead credentials."""
+    class Broken:
+        def exists(self, key):
+            raise StorageError("credentials rejected")
+
+    store.backend = Broken()
+    app = create_app(store, JobRunner(store, max_workers=1))
+    with TestClient(app, raise_server_exceptions=False) as c:
+        body = c.get(f"{API_PREFIX}/health").json()
+    assert body["storage"] == "unavailable"
+    assert body["status"] == "degraded"
+
+
 # -- projects ---------------------------------------------------------------
 
 def test_create_rejects_a_path_separator_in_the_filename(client):
@@ -114,6 +135,65 @@ def test_create_rejects_an_unsupported_content_type(client):
                     json={"title": "T", "filename": "x.mp4",
                           "content_type": "application/zip"})
     assert r.status_code == 400
+
+
+def test_create_succeeds_and_returns_an_upload_target(store):
+    """The success path was untested — only its failure branch was."""
+    import foleyflow.api.app as app_mod
+    original = app_mod.create_upload_target
+    app_mod.create_upload_target = (
+        lambda backend, key, ct, expires_s=900: (
+            f"https://example-b2/{key}", "2026-07-28T12:00:00Z", {"Content-Type": ct}))
+    try:
+        app = create_app(store, JobRunner(store, max_workers=1))
+        with TestClient(app, raise_server_exceptions=False) as c:
+            r = c.post(f"{API_PREFIX}/projects",
+                       json={"title": "Standoff", "filename": "clip.mp4"})
+    finally:
+        app_mod.create_upload_target = original
+
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["project"]["status"] == "awaiting_upload"
+    assert body["upload"]["method"] == "PUT"
+    assert body["upload"]["headers"]["Content-Type"] == "video/mp4"
+    # The project record exists before its bytes do.
+    assert store.get_project(body["project"]["id"]).source_sha256 == ""
+
+
+def test_analyze_is_refused_before_the_upload_is_confirmed(client, store):
+    """Analysing a project whose PUT was abandoned used to fail deep inside a
+    worker; it now fails at the front door."""
+    p = store.create_project(title="T", input_key="k", source_sha256="",
+                             source_filename="f.mp4")
+    r = client.post(f"{API_PREFIX}/projects/{p.id}/analyze")
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "precondition_failed"
+
+
+def test_analyze_rejects_a_model_with_no_declared_budget(client, project):
+    """limit=None is "unknown", not "unlimited" — an undeclared model used to
+    sail past the quota gate and die inside the worker after the 202 had
+    already promised a cost estimate."""
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/analyze",
+                    json={"model": "totally/undeclared-model"})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_request"
+
+
+def test_storage_outage_is_503_not_404(store, project):
+    """A B2 outage reported "this project does not exist", which tells the user
+    their work is gone and stops the client retrying."""
+    class Flaky(LocalBackend):
+        def get_bytes(self, key):
+            raise StorageError("backend unreachable")
+
+    store.backend = Flaky(store.backend.root)
+    app = create_app(store, JobRunner(store, max_workers=1))
+    with TestClient(app, raise_server_exceptions=False) as c:
+        r = c.get(f"{API_PREFIX}/projects/{project.id}")
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "storage_unavailable"
 
 
 def test_create_requires_b2_and_says_so(client):

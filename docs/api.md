@@ -63,6 +63,10 @@ optional structured context. Clients branch on `code`, never on `message`.
 | 502 | `provider_error` | An upstream provider failed |
 | 503 | `storage_unavailable` | B2 unreachable |
 
+`404` means the object genuinely is not there. A backend that fails to answer
+is `503` — never `404`, which would tell a user their project no longer exists
+during what is actually an outage.
+
 `429` is a first-class case, not an afterthought: the Gemini free tier allows
 20 analysis requests per day, so a client must be able to distinguish "you are
 out of budget until tomorrow" from "something broke."
@@ -155,13 +159,25 @@ POST /api/v1/projects/{id}/analyze
 { "model": "gemini-2.5-flash", "force": false }
 ```
 
-`202` — `{"run_id": "run_01K…", "cached": false, "estimated_cost_usd": 0.005}`
+`202` — `{"run_id": "run_01K…", "kind": "analyze", "estimated_cost_usd": 0.005}`
 
-`409 already_running` if an analysis run is in flight.
-`429 quota_exhausted` if the model's daily budget is spent.
+| Status | When |
+|---|---|
+| `409 already_running` | Any run is in flight for this project |
+| `429 quota_exhausted` | The model's daily budget is spent |
+| `422 precondition_failed` | The upload has not been confirmed yet |
+| `400 invalid_request` | The named model declares no request budget |
 
-`force: true` bypasses the timeline cache. `cached: true` in the response means
-no provider request was spent and the run will complete almost immediately.
+`force: true` bypasses the timeline cache.
+
+The 202 carries **no** `cached` field: whether the timeline cache is hit is not
+known until the worker runs, so any value here would be a guess. The completed
+run's `metadata.cached` reports it once it is actually true.
+
+A model with no declared `requests_per_day` is refused rather than allowed. An
+undeclared budget means *unknown*, not *unlimited*, and treating it as the
+latter let a client route analysis past the quota gate to a provider whose
+credits are gone.
 
 ---
 
@@ -203,10 +219,19 @@ GET /api/v1/projects/{id}/runs/{run_id}
 ```
 
 `200` — run record with `status` (`running` | `completed` | `failed`), `kind`,
-`stages`, `parent_run_id`, and `genblaze_run_id`.
+`error_code`, `parent_run_id`, and `genblaze_run_id`.
 
 This is the polling target for every `202`. A running run is reported from the
 event log; a terminal run from its immutable record.
+
+`error` on a failed run is a **classification, not the exception text**.
+Provider and storage exceptions routinely embed presigned URLs, bucket names,
+and absolute server paths, and this field is both written immutably to B2 and
+served to clients. Branch on `error_code`; the detail is in the server log.
+
+A run whose process died leaves a start event and no terminal record. After
+`RUN_LEASE_S` it is reported as stale rather than running forever, and the
+project's `stale_run_ids` names it.
 
 ```
 GET /api/v1/projects/{id}/events
@@ -291,7 +316,12 @@ GET /api/v1/quota
 ```
 
 `200` — per-model usage and remaining budget with `ok` | `warn` | `blocked`
-status and the next reset time.
+status, the next reset time, and `ledger_writable`.
+
+`ledger_writable: false` means the figures are fiction rather than merely
+imprecise: nothing is being recorded, so usage reads zero no matter how much
+budget is actually spent. A UI seeing this must stop presenting the numbers at
+all.
 
 **These figures are estimates and the response says so** (`"estimate": true`).
 Google exposes no remaining-balance field, so they are counted from our own

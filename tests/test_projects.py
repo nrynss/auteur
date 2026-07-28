@@ -9,6 +9,7 @@ import pytest
 from foley.models import Event as FoleyEvent, Timeline
 from foleyflow import ids
 from foleyflow.projects import (
+    EVENT_INPUT_RECORDED,
     EVENT_PROJECT_CREATED,
     EVENT_QA_FLAGGED,
     STATUS_FAILED,
@@ -76,8 +77,12 @@ def test_create_and_read_back(store, project):
 
 def test_creation_is_recorded_in_the_event_log(store, project):
     events = store.list_events(project.id)
-    assert [e.type for e in events] == [EVENT_PROJECT_CREATED]
-    assert events[0].payload["source_sha256"] == project.source_sha256
+    assert events[0].type == EVENT_PROJECT_CREATED
+    # The hash arrives as a separate input.recorded event: the project record
+    # is written before the upload exists, so sha256 is not knowable at
+    # creation and Project is frozen. get_state reads it from the log.
+    recorded = [e for e in events if e.type == EVENT_INPUT_RECORDED]
+    assert recorded and recorded[0].payload["sha256"] == project.source_sha256
 
 
 def test_projects_list_newest_first(store):
@@ -98,19 +103,21 @@ def test_project_record_is_immutable(store, project):
 # -- event log --------------------------------------------------------------
 
 def test_events_are_returned_in_order(store, project):
+    before = len(store.list_events(project.id))
     for i in range(5):
         store.append_event(project.id, f"postproduction.test.{i}")
     types = [e.type for e in store.list_events(project.id)]
-    assert types[1:] == [f"postproduction.test.{i}" for i in range(5)]
+    assert types[before:] == [f"postproduction.test.{i}" for i in range(5)]
 
 
 def test_each_event_is_its_own_object(store, project):
     """One object per event: appending to a shared JSONL would need
     read-modify-write, and two concurrent writers would lose an event."""
+    before = len(store.backend.list_keys(store.events_prefix(project.id)))
     store.append_event(project.id, EVENT_QA_FLAGGED)
     keys = store.backend.list_keys(store.events_prefix(project.id))
-    assert len(keys) == 2
-    assert len(set(keys)) == 2
+    assert len(keys) == before + 1
+    assert len(set(keys)) == len(keys), "each event is a distinct object"
 
 
 # -- timelines --------------------------------------------------------------

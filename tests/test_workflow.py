@@ -14,13 +14,23 @@ import pytest
 from foleyflow import workflow
 
 
-def test_work_dir_is_under_the_system_temp_root():
-    """Genblaze only reads file:// inputs from below the temp dir, and the sink
-    exposes no way to widen that allowlist. If work_dir ever moves outside it,
-    every ingest fails with an opaque access-denied error."""
-    assert os.path.isdir(workflow.work_dir())
-    root = os.path.realpath(tempfile.gettempdir())
-    assert os.path.realpath(workflow.work_dir()).startswith(root)
+def test_work_dir_is_readable_by_genblaze():
+    """Genblaze only reads file:// inputs from below the temp dir and exposes no
+    way to widen that allowlist, so a work_dir outside it makes every ingest
+    fail with an opaque access-denied error.
+
+    Asserted against genblaze's own allowlist rather than against
+    tempfile.gettempdir() — work_dir is *built from* gettempdir, so comparing
+    the two could never fail.
+    """
+    from pathlib import Path
+
+    from genblaze_core._utils import ALLOWED_FILE_ROOTS
+
+    resolved = Path(workflow.work_dir()).resolve()
+    assert resolved.is_dir()
+    assert any(resolved.is_relative_to(root) for root in ALLOWED_FILE_ROOTS), (
+        f"{resolved} is outside genblaze's allowlist {ALLOWED_FILE_ROOTS}")
 
 
 def test_stage_copies_rather_than_moves(tmp_path):

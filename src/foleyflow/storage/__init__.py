@@ -17,8 +17,14 @@ decoupling, `foley` reads its model config from `foleyflow.providers`, so the
 media core is no longer independently pullable from upstream.
 """
 
-from foleyflow.storage.base import Backend, StorageError
+from foleyflow.storage.base import (
+    Backend,
+    ObjectNotFound,
+    PreconditionFailed,
+    StorageError,
+)
 from foleyflow.storage.local import LocalBackend
 from foleyflow.storage.factory import get_backend
 
-__all__ = ["Backend", "StorageError", "LocalBackend", "get_backend"]
+__all__ = ["Backend", "StorageError", "ObjectNotFound", "PreconditionFailed",
+           "LocalBackend", "get_backend"]

@@ -13,6 +13,7 @@ handlers in a threadpool, which is what this workload wants.
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from typing import List, Optional
 
 from fastapi import Body, FastAPI, Query
@@ -46,7 +47,7 @@ from foleyflow.api.uploads import create_upload_target, source_key
 from foleyflow.ids import is_valid
 from foleyflow.projects import ProjectStore
 from foleyflow.storage import get_backend
-from foleyflow.storage.base import StorageError
+from foleyflow.storage.base import ObjectNotFound, StorageError
 
 API_PREFIX = "/api/v1"
 VERSION = "0.1.0"
@@ -77,19 +78,32 @@ def create_app(store: Optional[ProjectStore] = None,
     can supply a LocalBackend-backed store, and so importing this module never
     reaches for credentials.
     """
+    if store is None:
+        store = ProjectStore(get_backend())
+    if runner is None:
+        runner = JobRunner(store)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        """Drain in-flight work on shutdown.
+
+        Cloud Run SIGTERMs the container on every deploy. Without this a run in
+        flight simply vanishes: its start event is in the log, no terminal
+        record is ever written, and the project reads `analyzing` until the
+        lease in projects.RUN_LEASE_S expires.
+        """
+        yield
+        runner.shutdown(wait=True)
+
     app = FastAPI(
         title="FoleyFlow",
         version=VERSION,
         description="AI post-production copilot. See docs/api.md for the contract.",
         docs_url="/docs",
         openapi_url=f"{API_PREFIX}/openapi.json",
+        lifespan=lifespan,
     )
     err.install_handlers(app)
-
-    if store is None:
-        store = ProjectStore(get_backend())
-    if runner is None:
-        runner = JobRunner(store)
 
     app.state.store = store
     app.state.runner = runner
@@ -101,6 +115,10 @@ def create_app(store: Optional[ProjectStore] = None,
         """Reports storage reachability too: an API that is up while B2 is not
         will serve empty reads and accept writes that fail later."""
         try:
+            # exists() raises rather than returning False when the answer is
+            # unknown, so a rotated or wrongly-scoped credential surfaces here
+            # instead of reporting a healthy service that silently misses every
+            # cache lookup.
             store.backend.exists("health/probe")
             storage = "ok"
         except Exception:
@@ -128,7 +146,10 @@ def create_app(store: Optional[ProjectStore] = None,
             url, expires_at, headers = create_upload_target(
                 store.backend, key, body.content_type)
         except StorageError as e:
-            raise err.StorageUnavailable(str(e)) from e
+            # Not str(e): StorageError messages are built from keys and boto3
+            # detail, and this one reaches the client verbatim.
+            raise err.StorageUnavailable(
+                "Could not create an upload target for this project") from e
 
         project = store.create_project(
             title=body.title, input_key=key, source_sha256="",
@@ -149,7 +170,13 @@ def create_app(store: Optional[ProjectStore] = None,
         cursor is a single comparison — an offset would re-list the whole
         prefix on every page.
         """
-        projects = store.list_projects()
+        try:
+            projects = store.list_projects()
+        except StorageError as e:
+            # Never render a list of plausible-looking projects with invented
+            # statuses during an outage; say the storage is down.
+            raise err.StorageUnavailable("Project storage is unreachable") from e
+
         if cursor:
             projects = [p for p in projects if p.id < cursor]
         page = projects[:limit]
@@ -168,7 +195,7 @@ def create_app(store: Optional[ProjectStore] = None,
         readiness = _readiness(state, scenes)
         return ProjectDetail(
             **_summary(state.project, state.status).model_dump(),
-            source_sha256=state.project.source_sha256 or None,
+            source_sha256=state.source_sha256 or state.project.source_sha256 or None,
             latest_run_id=state.latest_run_id,
             timeline_version=state.timeline_version,
             scene_count=len(scenes),
@@ -186,29 +213,75 @@ def create_app(store: Optional[ProjectStore] = None,
     def analyze(project_id: str,
                 body: AnalyzeRequest = Body(default=AnalyzeRequest())) -> RunAccepted:
         """Start analysis. Returns immediately with a run id to poll."""
+        from foleyflow.api.jobs import SlotTaken
         from foleyflow.providers.config import get_analysis_config
         from foleyflow.quota import get_quota
 
         _check_project_id(project_id)
-        _load_state(store, project_id)          # 404s before doing any work
-
-        active = runner.active_for_project(project_id)
-        if active:
-            raise err.AlreadyRunning(project_id, active.run_id, active.kind)
+        state = _load_state(store, project_id)          # 404s before doing any work
+        if not (state.source_sha256 or state.project.source_sha256):
+            raise err.PreconditionFailed(
+                "The source video has not been uploaded and confirmed yet",
+                detail={"project_id": project_id, "required": "POST /uploaded"})
 
         model = body.model or get_analysis_config()["video_model"]
+
         quota = get_quota(model)
+        # limit is None means "no declared budget", which is not the same as
+        # "unlimited" — an undeclared model would otherwise sail past this gate
+        # and die inside the worker with a KeyError, after the 202 already
+        # promised a cost estimate.
+        if quota.per_day.limit is None:
+            raise err.InvalidRequest(
+                f"Model {model!r} declares no request budget and cannot be used "
+                "for analysis", detail={"model": model})
         if quota.status == "blocked":
             raise err.QuotaExhausted(model, resets_at=quota.resets_at,
                                      used=quota.per_day.used,
                                      limit=quota.per_day.limit)
 
-        run = runner.submit(project_id, "analyze",
-                            _analysis_work(store, project_id, model, body.force),
-                            metadata={"model": model, "force": body.force},
-                            actor="user")
+        # The slot is claimed inside submit, under its lock. Checking here and
+        # submitting afterwards would let two simultaneous requests through.
+        try:
+            run = runner.submit(project_id, "analyze",
+                                _analysis_work(store, project_id, model, body.force),
+                                metadata={"model": model, "force": body.force},
+                                actor="user")
+        except SlotTaken as e:
+            raise err.AlreadyRunning(project_id, e.existing.run_id,
+                                     e.existing.kind) from e
+
         return RunAccepted(run_id=run.id, kind="analyze",
                            estimated_cost_usd=_estimate(model))
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/uploaded",
+              response_model=RunAccepted, status_code=202, tags=["projects"])
+    def confirm_upload(project_id: str) -> RunAccepted:
+        """Confirm the client's direct-to-B2 PUT completed.
+
+        Verifies the object is really there, hashes it, reads its true duration
+        with ffprobe, and records both in the event log. Until this runs a
+        project has no `source_sha256`, so readiness stays pending and analysis
+        is refused — which is correct: analysing a project whose upload was
+        abandoned fails deep inside a worker instead of at the front door.
+        """
+        from foleyflow.api.jobs import SlotTaken
+
+        _check_project_id(project_id)
+        project = _load_state(store, project_id).project
+
+        if not store.backend.exists(project.input_key):
+            raise err.PreconditionFailed(
+                "No uploaded object found for this project",
+                detail={"project_id": project_id})
+
+        try:
+            run = runner.submit(project_id, "ingest",
+                                _ingest_work(store, project_id), actor="user")
+        except SlotTaken as e:
+            raise err.AlreadyRunning(project_id, e.existing.run_id,
+                                     e.existing.kind) from e
+        return RunAccepted(run_id=run.id, kind="ingest")
 
     # -- timeline ---------------------------------------------------------
 
@@ -305,15 +378,26 @@ def create_app(store: Optional[ProjectStore] = None,
 
     @app.get(f"{API_PREFIX}/quota", response_model=QuotaResponse, tags=["meta"])
     def quota() -> QuotaResponse:
-        from foleyflow.quota import get_all_quotas
-        return QuotaResponse(estimate=True, models=[
-            ModelQuotaOut(**q.to_dict()) for q in get_all_quotas()
-        ])
+        from foleyflow.quota import get_all_quotas, ledger_writable
+        return QuotaResponse(
+            estimate=True,
+            ledger_writable=ledger_writable(),
+            models=[ModelQuotaOut(**q.to_dict()) for q in get_all_quotas()])
 
     return app
 
 
 # -- helpers ----------------------------------------------------------------
+
+def _status_of(store: ProjectStore, project_id: str) -> str:
+    """Status for a list row. An unreadable individual project is reported as
+    such rather than guessed at — the list route already fails loudly if the
+    whole backend is down."""
+    try:
+        return store.get_state(project_id).status
+    except StorageError:
+        return "unknown"
+
 
 def _summary(project, status: str) -> ProjectSummary:
     return ProjectSummary(
@@ -324,22 +408,27 @@ def _summary(project, status: str) -> ProjectSummary:
 
 
 def _load_state(store: ProjectStore, project_id: str):
+    """Absent and unreachable are different failures.
+
+    Mapping every StorageError to 404 turned a B2 outage into a confident
+    "this project does not exist" — the client stops retrying and the user is
+    told their work is gone. Only ObjectNotFound means absent.
+    """
     try:
         return store.get_state(project_id)
-    except StorageError as e:
+    except ObjectNotFound as e:
         raise err.ProjectNotFound(project_id) from e
-
-
-def _status_of(store: ProjectStore, project_id: str) -> str:
-    try:
-        return store.get_state(project_id).status
-    except StorageError:
-        return "unknown"
+    except StorageError as e:
+        raise err.StorageUnavailable("Project storage is unreachable") from e
 
 
 def _sign(store: ProjectStore, key: str) -> Optional[str]:
+    """A thumbnail that cannot be signed is omitted rather than fatal —
+    but only when the object is genuinely missing."""
     try:
         return store.backend.signed_url(key, ARTIFACT_URL_TTL_S)
+    except ObjectNotFound:
+        return None
     except StorageError:
         return None
 
@@ -364,7 +453,10 @@ def _readiness(state, scenes) -> List[ReadinessItem]:
     items = [
         ReadinessItem(
             key="source", label="Source video stored in B2",
-            state="ok" if state.project.source_sha256 else "pending",
+            # From the event log: the project record is written before the
+            # upload exists, so the frozen Project never carries a hash.
+            state="ok" if (state.source_sha256 or state.project.source_sha256)
+            else "blocked",
             detail=state.project.source_filename),
         ReadinessItem(
             key="scenes", label="Scene analysis complete",
@@ -393,6 +485,44 @@ def _readiness_percent(items: List[ReadinessItem]) -> int:
     return round(100 * sum(1 for i in items if i.state == "ok") / len(items))
 
 
+def _fetch_source(store: ProjectStore, project_id: str) -> str:
+    """Download the project's source video to a stable local path.
+
+    Existence alone is not proof of a complete file: a download killed part-way
+    leaves a truncated video that every later run reuses, and the timeline cache
+    then hashes the fragment — producing a key that corresponds to no real
+    asset, so the analysis runs and is cached under a lie. The Backend downloads
+    to a `.part` name and renames on success, so anything present here is whole;
+    a zero-length file is treated as absent.
+    """
+    from foleyflow.workflow import stage_for_ingest
+
+    project = store.get_project(project_id)
+    _, ext = os.path.splitext(project.input_key)
+    local = os.path.join(store.work_dir, f"{project_id}_source{ext or '.mp4'}")
+    if not os.path.exists(local) or os.path.getsize(local) == 0:
+        store.backend.get(project.input_key, local)
+    return stage_for_ingest(local, subdir=project_id)
+
+
+def _ingest_work(store: ProjectStore, project_id: str):
+    """Verify and record the uploaded source: hash, size, true duration."""
+    def work(run):
+        from foley.analyze import get_video_duration
+        from foleyflow.timeline_cache import file_sha256
+
+        staged = _fetch_source(store, project_id)
+        # ffprobe, not the model's self-reported duration. Every other module is
+        # emphatic that ffprobe is the sole duration authority; this is where
+        # that value enters the system.
+        duration = get_video_duration(staged)
+        store.record_input(project_id, sha256=file_sha256(staged),
+                           duration_s=duration,
+                           size_bytes=os.path.getsize(staged), actor="user")
+        store.complete_run(run, metadata={"duration_s": duration})
+    return work
+
+
 def _analysis_work(store: ProjectStore, project_id: str, model: str, force: bool):
     """The analysis job body. Returned as a closure so the route stays thin and
     this stays unit-testable without HTTP."""
@@ -400,20 +530,17 @@ def _analysis_work(store: ProjectStore, project_id: str, model: str, force: bool
         from foley.analyze import TIMELINE_PROMPT, analyze_video_direct
         from foleyflow.scenes import detect_scenes
         from foleyflow.timeline_cache import get_or_analyze
-        from foleyflow.workflow import stage_for_ingest
 
-        project = store.get_project(project_id)
-        local = os.path.join(store.work_dir, f"{project_id}_source.mp4")
-        if not os.path.exists(local):
-            store.backend.get(project.input_key, local)
-        staged = stage_for_ingest(local, subdir=project_id)
+        staged = _fetch_source(store, project_id)
+        state = store.get_state(project_id)
 
         timeline, cached = get_or_analyze(
             staged, lambda: analyze_video_direct(staged, model=model),
             backend=store.backend, model_id=model, prompt=TIMELINE_PROMPT,
             force=force)
 
-        duration = project.duration_s or timeline.duration
+        # ffprobe's duration, recorded at ingest, in preference to the model's.
+        duration = state.duration_s or state.project.duration_s or timeline.duration
         scenes = detect_scenes(staged, duration)
         store.save_scenes(project_id, scenes, video_path=staged, run_id=run.id)
 

@@ -3,6 +3,7 @@ import json
 import re
 import tempfile
 import subprocess
+import time
 import base64
 from typing import List, Optional, Tuple
 from dotenv import load_dotenv
@@ -19,9 +20,26 @@ from foleyflow.providers.config import get_analysis_config
 # "google/gemini-2.5-flash", "google/gemini-3-flash-preview", "qwen/qwen3.6-flash".
 DEFAULT_MODEL = get_analysis_config().get("default_vlm", "google/gemini-2.5-flash")
 
-# Cache CDN URLs so the same clip is uploaded once per process even when
-# analyzed by several models (direct runs + Marlin refinement).
+# Cache upload URIs so the same clip is uploaded once when several models
+# analyze it (direct runs + refinement passes).
+#
+# TTL'd because a Gemini Files API URI expires after ~48h server-side. An
+# unbounded process-lifetime cache in a long-running API server would hand back
+# a dead URI and fail with an opaque error *after* spending one of 20 daily
+# requests. Re-uploading is free, so a short TTL costs nothing.
+_UPLOAD_URI_TTL_S = 3600.0
 _upload_cache: dict = {}
+
+
+def _cached_upload(key) -> Optional[str]:
+    entry = _upload_cache.get(key)
+    if not entry:
+        return None
+    uri, stored_at = entry
+    if (time.monotonic() - stored_at) > _UPLOAD_URI_TTL_S:
+        _upload_cache.pop(key, None)
+        return None
+    return uri
 
 def upload_video(path: str, model_id: Optional[str] = None) -> str:
     """Make `path` reachable by the analysis provider, returning its URI.
@@ -40,10 +58,13 @@ def upload_video(path: str, model_id: Optional[str] = None) -> str:
     adapter_name = get_model_spec(model_id).adapter
 
     key = (os.path.abspath(path), adapter_name)
-    if key not in _upload_cache:
-        print(f"Uploading {os.path.basename(path)} via the {adapter_name} adapter...")
-        _upload_cache[key] = get_adapter(adapter_name).upload(path)
-    return _upload_cache[key]
+    cached = _cached_upload(key)
+    if cached:
+        return cached
+    print(f"Uploading {os.path.basename(path)} via the {adapter_name} adapter...")
+    uri = get_adapter(adapter_name).upload(path)
+    _upload_cache[key] = (uri, time.monotonic())
+    return uri
 
 TIMELINE_PROMPT = """You are a professional Foley artist analyzing a silent video.
 Output ONLY valid JSON, no markdown fences, matching this schema:
@@ -140,7 +161,10 @@ JSON:
             arguments={
                 "image_urls": [],
                 "prompt": repair_prompt,
-                "model": "google/gemini-2.5-flash"
+                # No `model` override: the adapter prefers arguments["model"] over the
+            # spec's id, so a fal-era "google/gemini-2.5-flash" string would be
+            # sent to google-genai and 404 — killing the one recovery path for a
+            # malformed response *after* the request was already billed.
             }
         )
         return clean_json_text(response.get("output") or response.get("text") or "")

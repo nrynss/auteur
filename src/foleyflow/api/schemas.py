@@ -27,12 +27,16 @@ class ErrorResponse(BaseModel):
 
 
 class RunAccepted(BaseModel):
-    """The 202 body for every mutation."""
+    """The 202 body for every mutation.
+
+    Deliberately carries no `cached` field. Whether a request hits the timeline
+    cache is not knowable until the worker runs, so a value here could only
+    ever be a guess — the client learns it from the completed run's metadata.
+    """
 
     run_id: str
     kind: str
     status: str = "running"
-    cached: bool = False
     estimated_cost_usd: Optional[float] = None
 
 
@@ -173,7 +177,9 @@ class RunOut(BaseModel):
     timeline_version: Optional[int] = None
     parent_run_id: Optional[str] = None
     genblaze_run_id: Optional[str] = None
+    # A classification, never the exception text — see docs/api.md §3.6.
     error: Optional[str] = None
+    error_code: Optional[str] = None
 
 
 class RunListResponse(BaseModel):
@@ -258,6 +264,9 @@ class QuotaResponse(BaseModel):
     # ledger and can drift. The flag is in the payload so a UI cannot present
     # them as authoritative without ignoring an explicit signal.
     estimate: bool = True
+    # False means the figures are fiction — nothing is being recorded, so usage
+    # reads zero regardless of what is actually spent.
+    ledger_writable: bool = True
     models: List[ModelQuotaOut]
 
 

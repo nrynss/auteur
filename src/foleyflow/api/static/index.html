@@ -1,0 +1,208 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>FoleyFlow</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { --bg:#fff; --fg:#111; --dim:#666; --line:#ddd; --panel:#fafafa;
+          --ok:#1a7f37; --warn:#9a6700; --blocked:#cf222e; --accent:#0969da; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0d1117; --fg:#e6edf3; --dim:#8b949e; --line:#30363d; --panel:#161b22;
+            --ok:#3fb950; --warn:#d29922; --blocked:#f85149; --accent:#58a6ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 ui-sans-serif,system-ui,sans-serif; background:var(--bg); color:var(--fg); }
+  header { display:flex; align-items:baseline; gap:1rem; padding:.75rem 1rem; border-bottom:1px solid var(--line); }
+  h1 { font-size:1rem; margin:0; letter-spacing:.02em; }
+  h2 { font-size:.8rem; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:1.25rem 0 .5rem; }
+  main { display:grid; grid-template-columns:260px 1fr; gap:1rem; padding:1rem; align-items:start; }
+  @media (max-width:800px) { main { grid-template-columns:1fr; } }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:.75rem; }
+  ul { list-style:none; margin:0; padding:0; }
+  li.project { padding:.5rem; border-radius:4px; cursor:pointer; }
+  li.project:hover { background:var(--bg); }
+  li.project[aria-selected=true] { background:var(--bg); outline:1px solid var(--accent); }
+  .muted { color:var(--dim); font-size:.85em; }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.85em; }
+  table { border-collapse:collapse; width:100%; }
+  th,td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:.8rem; }
+  .state-ok::before      { content:"OK  "; color:var(--ok); font-weight:700; }
+  .state-warn::before    { content:"WARN "; color:var(--warn); font-weight:700; }
+  .state-blocked::before { content:"STOP "; color:var(--blocked); font-weight:700; }
+  .state-pending::before { content:"--  "; color:var(--dim); font-weight:700; }
+  button { font:inherit; padding:.35rem .8rem; border:1px solid var(--line); border-radius:4px;
+           background:var(--bg); color:var(--fg); cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .scenes { display:flex; gap:.5rem; overflow-x:auto; padding-bottom:.25rem; }
+  .scene { flex:0 0 auto; width:120px; }
+  .scene img { width:120px; height:68px; object-fit:cover; border-radius:4px; border:1px solid var(--line); background:var(--line); }
+  .bar { height:4px; background:var(--line); border-radius:2px; overflow:hidden; }
+  .bar > i { display:block; height:100%; background:var(--accent); }
+  #err { color:var(--blocked); padding:0 1rem; }
+</style>
+
+<header>
+  <h1>FoleyFlow</h1>
+  <span class="muted" id="quota">quota…</span>
+  <span style="flex:1"></span>
+  <span class="muted mono" id="health"></span>
+</header>
+<div id="err"></div>
+
+<main>
+  <section class="panel">
+    <h2 style="margin-top:0">Projects</h2>
+    <ul id="projects"><li class="muted">loading…</li></ul>
+  </section>
+
+  <section id="detail" class="panel">
+    <p class="muted">Select a project.</p>
+  </section>
+</main>
+
+<script>
+const API = "/api/v1";
+let selected = null, pollTimer = null;
+
+// Single fetch wrapper: the API guarantees one error shape, so one place
+// unwraps it. Anything that throws here is already a human-readable message.
+async function api(path, opts) {
+  const r = await fetch(API + path, opts);
+  const body = r.status === 204 ? null : await r.json().catch(() => null);
+  if (!r.ok) throw new Error(body?.error?.message || `${r.status} ${r.statusText}`);
+  return body;
+}
+const esc = s => String(s ?? "").replace(/[<>&"]/g, c => ({ "<":"&lt;", ">":"&gt;", "&":"&amp;", '"':"&quot;" }[c]));
+const fail = e => { document.getElementById("err").textContent = e ? "Error: " + e.message : ""; };
+
+async function loadHealth() {
+  try {
+    const h = await api("/health");
+    document.getElementById("health").textContent = `storage ${h.storage} · v${h.version}`;
+  } catch (e) { document.getElementById("health").textContent = "unreachable"; }
+}
+
+async function loadQuota() {
+  try {
+    const q = await api("/quota");
+    const parts = q.models
+      .filter(m => m.per_day.limit)
+      .map(m => `${m.model_id.replace("gemini-", "")} ${m.per_day.used}/${m.per_day.limit}`);
+    document.getElementById("quota").textContent = parts.join(" · ") + " today (est.)";
+  } catch (e) { /* quota is decoration; never let it break the page */ }
+}
+
+async function loadProjects() {
+  try {
+    const { projects } = await api("/projects?limit=50");
+    const ul = document.getElementById("projects");
+    if (!projects.length) { ul.innerHTML = '<li class="muted">No projects yet.</li>'; return; }
+    ul.innerHTML = projects.map(p => `
+      <li class="project" data-id="${esc(p.id)}" aria-selected="${p.id === selected}">
+        <div>${esc(p.title)}</div>
+        <div class="muted">${esc(p.status)}${p.duration_s ? ` · ${p.duration_s.toFixed(1)}s` : ""}</div>
+      </li>`).join("");
+    ul.querySelectorAll(".project").forEach(li =>
+      li.onclick = () => select(li.dataset.id));
+    if (!selected && projects.length) select(projects[0].id);
+  } catch (e) { fail(e); }
+}
+
+function select(id) {
+  selected = id;
+  document.querySelectorAll(".project").forEach(li =>
+    li.setAttribute("aria-selected", li.dataset.id === id));
+  loadDetail();
+}
+
+async function loadDetail() {
+  if (!selected) return;
+  fail(null);
+  try {
+    // Timeline and scenes 404 / empty before analysis — expected, not an error.
+    const [p, scenes, timeline, events] = await Promise.all([
+      api(`/projects/${selected}`),
+      api(`/projects/${selected}/scenes`).catch(() => ({ scenes: [] })),
+      api(`/projects/${selected}/timeline`).catch(() => null),
+      api(`/projects/${selected}/events`).catch(() => ({ events: [] })),
+    ]);
+    render(p, scenes.scenes, timeline, events.events);
+  } catch (e) { fail(e); }
+}
+
+function render(p, scenes, timeline, events) {
+  const busy = events.some(e => e.type === "postproduction.run.started") &&
+               p.status === "analyzing";
+  document.getElementById("detail").innerHTML = `
+    <h2 style="margin-top:0">${esc(p.title)}</h2>
+    <div class="muted mono">${esc(p.id)}</div>
+
+    <h2>Post-production readiness — ${p.readiness_percent}%</h2>
+    <div class="bar"><i style="width:${p.readiness_percent}%"></i></div>
+    <ul style="margin-top:.5rem">
+      ${p.readiness.map(r => `<li class="state-${esc(r.state)}">${esc(r.label)}
+        ${r.detail ? `<span class="muted">— ${esc(r.detail)}</span>` : ""}</li>`).join("")}
+    </ul>
+    <p>
+      <button id="analyze" ${busy ? "disabled" : ""}>${busy ? "Analyzing…" : "Run analysis"}</button>
+      <span class="muted">${p.blocks_export ? "Export blocked" : "Export ready"}</span>
+    </p>
+
+    ${scenes.length ? `<h2>Scenes (${scenes.length})</h2>
+      <div class="scenes">${scenes.map(s => `
+        <div class="scene">
+          ${s.thumbnail_url ? `<img src="${esc(s.thumbnail_url)}" alt="${esc(s.id)}" loading="lazy">` : ""}
+          <div class="mono">${esc(s.id)}</div>
+          <div class="muted">${s.start_s.toFixed(2)}–${s.end_s.toFixed(2)}s${
+            s.stats ? ` · luma ${s.stats.mean_luma.toFixed(0)}` : ""}</div>
+        </div>`).join("")}</div>` : ""}
+
+    ${timeline ? `<h2>Timeline v${timeline.version} — ${esc(timeline.ambience)}</h2>
+      <table><tr><th>#</th><th>start</th><th>scene</th><th>kind</th><th>int.</th><th>event</th></tr>
+      ${timeline.events.map(e => `<tr>
+        <td class="mono">${e.index}</td>
+        <td class="mono">${e.start_time.toFixed(2)}s</td>
+        <td class="mono">${esc(e.scene_id ?? "—")}</td>
+        <td>${esc(e.kind)}</td><td>${esc(e.intensity)}</td><td>${esc(e.name)}</td>
+      </tr>`).join("")}</table>` : `<h2>Timeline</h2><p class="muted">Not analyzed yet.</p>`}
+
+    <h2>History</h2>
+    <table>${events.slice().reverse().map(e => `<tr>
+      <td class="mono muted">${esc(e.created_at.slice(11, 19))}</td>
+      <td class="mono">${esc(e.type.replace("postproduction.", ""))}</td>
+      <td class="muted">${esc(e.actor)}</td>
+    </tr>`).join("")}</table>`;
+
+  const btn = document.getElementById("analyze");
+  if (btn) btn.onclick = analyze;
+}
+
+async function analyze() {
+  const btn = document.getElementById("analyze");
+  btn.disabled = true; btn.textContent = "Starting…";
+  try {
+    const { run_id } = await api(`/projects/${selected}/analyze`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    pollRun(run_id);
+  } catch (e) { fail(e); btn.disabled = false; btn.textContent = "Run analysis"; }
+}
+
+// Poll the run rather than the project: every mutation returns a run id, and
+// the run is the only thing that reports failure with its reason.
+function pollRun(runId) {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    try {
+      const run = await api(`/projects/${selected}/runs/${runId}`);
+      if (run.status !== "running") {
+        clearInterval(pollTimer);
+        if (run.status === "failed") fail(new Error(run.error || "run failed"));
+        loadDetail(); loadQuota();
+      }
+    } catch (e) { clearInterval(pollTimer); fail(e); }
+  }, 2000);
+}
+
+loadHealth(); loadQuota(); loadProjects();
+</script>
