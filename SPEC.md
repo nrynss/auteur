@@ -26,13 +26,17 @@ product, and a reader needs to know which parts of it exist. Updated
 | HTTP API | **Partial** | Read paths, project creation, analyze, QA; see §14 |
 | Throwaway dashboard | **Built** | One static file; the §6.1 control room replaces it |
 | Command-line client | **Built** | Single command `foleyflow` — project verbs over HTTP; `render` / `direct` file-scoped (§14.1) |
-| Foley generation (stems) | **Not built** | Blocked on the self-hosted SFX worker — see §9 |
+| Self-hosted SFX worker | **Built** | MOSS-SoundEffect v2 behind HTTP; `LocalAdapter` + `get_sfx` verified end-to-end (§9.1) |
+| Foley generation (stems) | **Partial** | One stem generates, normalises, and caches on demand; not yet driven from a run |
 | Mix / export / dossier | **Not built** | |
 | QA (loudness, true peak, continuity) | **Built** | Continuity from scene stats; loudness via ebur128 when a mix is measured |
 | Targeted repair | **Not built** | The cache's variant nonce exists and is tested |
 | Deployment | **Not built** | Required by §16 |
 
-Test suite: 318 passing, 1 skipped, fully offline.
+Test suite: 346 passing, 1 skipped, fully offline.
+
+The SFX worker is a separate CUDA process outside this repo and is **not** part
+of that suite — it needs a GPU and an 11 GB model. Nothing here imports torch.
 
 ---
 
@@ -352,24 +356,59 @@ paid".
 | Ambience beds and the bulk of discrete Foley | **Self-hosted, on the project's own GPU** | Open-weight text-to-audio with explicit duration conditioning. Free per generation, so iteration is unmetered. | $0.00 |
 | Hero discrete Foley, on explicit user approval | ElevenLabs Sound Effects | Reserved for the one or two sounds a viewer notices most, and only when the user approves the spend. | ~$0.02 per 10s |
 
-Model shortlist for the self-hosted tier, in preference order:
+**The self-hosted tier runs MOSS-SoundEffect v2.0** (Apache 2.0, the only
+unambiguous licence on the shortlist). Stable Audio Open remains the fallback if
+MOSS proves unsuitable for some class of sound; MMAudio is excluded — usable
+through an API but **not** locally, since its checkpoints are CC-BY-NC and
+running non-commercial weights inside a submitted product is a different posture
+from calling a hosted endpoint.
 
-1. **MOSS-SoundEffect v2.0** — Apache 2.0, the only unambiguous licence here.
-2. **Stable Audio Open** — the strongest track record for SFX and field
-   recordings, and fine-tunable. Free under $1M revenue.
-3. ~~MMAudio~~ — usable through an API but **not** locally: its checkpoints are
-   CC-BY-NC, and running non-commercial weights inside a submitted product is a
-   different posture from calling a hosted endpoint.
-
-The deciding feature is **duration conditioning**. The whole pipeline passes an
+The deciding feature was **duration conditioning**. The whole pipeline passes an
 explicit `duration_s` with per-model clamping, and a model that returns "about
-the right length" would force padding or truncation — truncation in particular
-destroys the transient alignment that `trim_onset` depends on.
+the right length" would force padding or truncation. MOSS satisfies this: it
+crops its output to `int(48000 * round(seconds, 1))` samples, so durations are
+exact by construction, to a granularity of 100 ms.
+
+Measured 2026-07-28 on an RTX 4070 SUPER (12 GB), eager mode — Triton is
+unavailable on Windows, so `torch.compile` is disabled:
+
+| Property | Value | Consequence |
+|---|---|---|
+| Duration | sample-exact | `trim_onset` alignment holds; no padding or truncation |
+| Latent | always 30 s, output cropped from it | a 15 s ambience bed costs the same as a 0.4 s footstep — only the **number** of stems scales |
+| Cost per stem | ~16 s at 50 steps | ~3.4 s fixed plus ~270 ms/step; a §9.3 single-stem repair is ~16 s |
+| Steps | 50, not the model card's 100 | indistinguishable by ear on a creak and a rain bed; halves cost |
+| Output | mono, 48 kHz, ~−37 dBFS RMS, 25 dB crest | `convert_to_canonical` upmixes; `rms_normalize` owns level |
+| VRAM | 9.88 GiB resident | requires `enable_cpu_offload()`; without it, peak is 12.9 GiB and pages over PCIe |
+
+Two settings must be left alone. `max_inference_seconds` is trained at 30 —
+shrinking it to 2–8 s produced a low drone and, at 8 s, digital silence. And CPU
+offload must stay on; it, not the latent size, is what makes the model fit a
+12 GB card.
+
+One interaction to expect: MOSS's 25 dB crest factor means `rms_normalize`
+cannot reach its −18 dBFS RMS target without breaching the −1 dBFS peak guard,
+so stems land near −26 dBFS RMS and the guard warning fires on every one. Not a
+fault — but a warning that always fires is one nobody reads, so the target
+deserves revisiting once several stems are mixed together.
 
 Self-hosted inference runs as an HTTP service behind a tunnel, so from the
 application's side it is one more provider with a base URL and a key. That
 keeps the deployed app free of CUDA, and lets the worker move without touching
 the app.
+
+**As built.** The worker exposes `/health`, `/generate`, and `/files/{name}`,
+loads the model once at startup, and serialises generation behind a lock — one
+GPU, and a second concurrent request would exhaust VRAM rather than queue. It
+returns fal's response envelope (`{"audio": {"url": …}}`), so
+`foleyflow.providers.local.LocalAdapter` is a thin HTTP client and `sfx.get_sfx`
+works against either provider unchanged. `LocalAdapter` imports no torch. The
+base URL resolves from `$FOLEYFLOW_SFX_WORKER_URL`, then
+`[adapters.local] base_url`, then localhost — so pointing at a tunnel needs no
+code edit. The worker lives outside this repo and is not covered by its tests.
+
+Not yet done: the tunnel itself, and driving stem generation from a run. Today
+`get_sfx` produces one stem on demand.
 
 Prices are planning estimates, not guarantees. FoleyFlow records the estimate
 actually presented to the user at approval time.

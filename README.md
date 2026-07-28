@@ -18,6 +18,7 @@ Milestone 2 in progress. One package (`src/foleyflow`), one command (`foleyflow`
 | Projects, runs, versions | Built |
 | HTTP API + CLI | Partial (read paths, analyze, CLI) |
 | QA — loudness, true peak, visual continuity | Built (audio when mix measured) |
+| Self-hosted SFX worker — MOSS-SoundEffect v2 | Built (separate GPU process) |
 | Control room UI | Not started |
 
 ## Prerequisites
@@ -25,7 +26,8 @@ Milestone 2 in progress. One package (`src/foleyflow`), one command (`foleyflow`
 - Python 3.14+ and [uv](https://docs.astral.sh/uv/)
 - `ffmpeg` and `ffprobe` on `PATH`
 - A [Google AI Studio](https://aistudio.google.com/apikey) key (`GEMINI_API_KEY`) for analysis
-- A [fal.ai](https://fal.ai) API key (`FAL_KEY`) for SFX generation
+- For SFX, the self-hosted worker (see below). A [fal.ai](https://fal.ai) key
+  (`FAL_KEY`) is needed only for the paid hero-sound tier
 - A Backblaze B2 bucket and an application key scoped to it
 
 ## Setup
@@ -90,9 +92,27 @@ sha256 of each event's name and start time, never Python's per-process `hash()`.
 Configured in [providers.toml](providers.toml) — adding or swapping a model is a
 config edit, not a code change.
 
-| Role | Provider / model |
-|---|---|
-| Video understanding → event timeline | `gemini-2.5-flash` (Google GenAI) |
-| Ambience and default SFX | `cassetteai/sound-effects-generator` (fal) |
-| Hero discrete Foley | `fal-ai/elevenlabs/sound-effects/v2` (fal) |
-| Impacts | `fal-ai/mmaudio-v2/text-to-audio` (fal) |
+| Role | Provider / model | Cost |
+|---|---|---|
+| Video understanding → event timeline | `gemini-2.5-flash` (Google GenAI) | ~$0.005/call |
+| Ambience and the bulk of Foley | `openmoss/moss-soundeffect-v2` (self-hosted) | $0.00 |
+| Hero discrete Foley, on approval | `fal-ai/elevenlabs/sound-effects/v2` (fal) | ~$0.02/10s |
+
+The fal entries need credits this project no longer has; the self-hosted tier is
+the default path. See SPEC.md §9.1 for why routing is "free local vs paid hero
+sound" rather than "which paid API".
+
+### Self-hosted SFX worker
+
+MOSS-SoundEffect v2 runs as a separate CUDA process outside this repo — nothing
+here imports torch, and the deployed app stays free of CUDA. It needs a GPU with
+~10 GB free and an 11 GB model from Hugging Face.
+
+```bash
+uvicorn server:app --host 127.0.0.1 --port 8600
+```
+
+Point FoleyFlow at it with `FOLEYFLOW_SFX_WORKER_URL`, or leave it unset for
+`http://127.0.0.1:8600`. Generation is ~16 s per stem regardless of clip length
+(the model always denoises a 30-second latent and crops), and the worker
+serialises requests — one GPU.

@@ -13,7 +13,10 @@ api_key_env = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
 
 [adapters.local]
 module = "foleyflow.providers.local:LocalAdapter"
-enabled = false
+enabled = true
+# The self-hosted SFX worker (§9.1). Overridden by $FOLEYFLOW_SFX_WORKER_URL,
+# which is how a tunnel URL gets swapped in without editing this file.
+base_url = "http://127.0.0.1:8600"
 
 # ------------------------------------------------------------------ models --
 # NOTE: the table key is the canonical model ID and is part of the SFX cache
@@ -58,6 +61,42 @@ duration_type = "float"
 # Static extra arguments, if a model ever needs them:
 # [models."some/model".extra_arguments]
 # output_format = "wav"
+
+# Self-hosted tier (§9.1). Free per generation, so iteration is unmetered and
+# the routing decision becomes "free local vs paid hero sound", not "which paid
+# API". Runs as an HTTP service on the project's own GPU; the app stays free of
+# CUDA.
+#
+# Measured 2026-07-28 on an RTX 4070 SUPER (12 GB), eager mode — Triton is
+# unavailable on Windows, so torch.compile is disabled:
+#   - `seconds` is sample-exact: int(48000 * round(seconds, 1)) samples.
+#   - The latent is always 30s regardless of `seconds`, so a 15s ambience bed
+#     costs the same ~16s as a 0.4s footstep. Only the NUMBER of stems scales.
+#   - Output is mono at 48 kHz and quiet (~-37 dBFS RMS, 25 dB crest). It needs
+#     upmixing to CANONICAL_CHANNELS; rms_normalize owns level.
+[models."openmoss/moss-soundeffect-v2"]
+adapter = "local"
+role = "sfx"
+cost_per_call_usd = 0.0
+# Model hard-caps at 30s (model_index.json max_inference_seconds); below ~0.3s
+# there is not enough audio for trim_onset to find a transient.
+duration_min_s = 0.3
+duration_max_s = 30.0
+prompt_field = "prompt"
+duration_field = "seconds"
+duration_type = "float"
+
+# WARNING: these are NOT part of the SFX cache key, which is
+# sha256(endpoint|prompt|duration_s) — see sfx.cache_key and cleanup.md §4.1.
+# Changing either value silently reuses clips generated under the old one.
+# Sweep the cache when you edit these.
+[models."openmoss/moss-soundeffect-v2".extra_arguments]
+# 50 vs the model card's 100: judged indistinguishable by ear on a 2.5s creak
+# and a 15s rain bed (envelope correlation 0.998 / 0.999), and it halves cost
+# to ~16s per stem. Cost is ~3.4s fixed plus ~270ms/step, so dropping below
+# ~30 steps buys little.
+num_inference_steps = 50
+cfg_scale = 4.0
 
 # --------------------------------------------------------------- analysis --
 # Analysis runs against Google directly. fal's OpenRouter gateway was only a
