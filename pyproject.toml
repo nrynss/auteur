@@ -25,7 +25,10 @@ dev = [
 ]
 
 [project.scripts]
+# The media core's local renderer (no server).
 foley = "foley.cli:main"
+# The API client.
+foleyflow = "foleyflow.cli:main"
 
 [build-system]
 requires = ["hatchling"]
