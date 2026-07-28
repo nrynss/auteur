@@ -25,13 +25,14 @@ product, and a reader needs to know which parts of it exist. Updated
 | Genblaze integration | **Partial** | Ingest + hash-verified manifest only; generation not yet orchestrated |
 | HTTP API | **Partial** | Read paths, project creation, analyze; see §14 |
 | Throwaway dashboard | **Built** | One static file; the §6.1 control room replaces it |
+| Command-line client | **Built, to be consolidated** | Two commands exist (`foley`, `foleyflow`); §14.1 collapses them to one |
 | Foley generation (stems) | **Not built** | Blocked on the self-hosted SFX worker — see §9 |
 | Mix / export / dossier | **Not built** | |
 | QA (loudness, true peak, continuity) | **Not built** | Scene stats exist; the comparison does not |
 | Targeted repair | **Not built** | The cache's variant nonce exists and is tested |
 | Deployment | **Not built** | Required by §16 |
 
-Test suite: 295 passing, 1 skipped, fully offline.
+Test suite: 315 passing, 1 skipped, fully offline.
 
 ---
 
@@ -217,6 +218,7 @@ src/foleyflow/                everything new
   providers/                  adapter layer, declared in providers.toml
   workflow.py                 Genblaze seam
   api/                        FastAPI app, job runner, schemas, error contract
+  cli.py                      `foleyflow` — the single command (§14.1)
 ```
 
 Two boundaries are load-bearing:
@@ -723,6 +725,55 @@ Four decisions the contract encodes that are worth stating here:
 
 Video bytes never pass through the API: the client PUTs straight to B2.
 
+### 14.1 Command-line client
+
+**Decision (2026-07-28): FoleyFlow ships exactly one command, `foleyflow`.**
+Not yet implemented — see §17.
+
+Two commands exist today. `foley` came across with the ported media core and
+renders a file locally; `foleyflow` is the API client. Both work, and that is
+the problem.
+
+**Why one.** Two entry points with overlapping verbs is a liability in the three
+places that decide this submission:
+
+- §16 requires setup and run instructions a judge can follow without help. "Use
+  `foley` for this and `foleyflow` for that" is the kind of instruction people
+  get wrong on the first try, and a judge only gets one try.
+- The §15 demo has to pick one and stick to it. Switching commands mid-demo
+  invites exactly the question we do not want to spend thirty seconds
+  answering.
+- `foley render` and `foleyflow analyze` reach the same VLM by different paths.
+  Anyone reading the repo has to work out which one is real. Both being real is
+  the worst answer.
+
+**The shape it consolidates to.** The distinction worth keeping is not local
+versus remote — it is *project-scoped* versus *file-scoped*:
+
+| Scope | Commands | Path |
+|---|---|---|
+| Project — needs the record system, versions, and provenance | `create`, `show`, `list`, `analyze`, `timeline`, `scenes`, `runs`, `events`, `qa`, `regenerate`, `export`, `dossier` | HTTP to the API |
+| File — "render this clip, now, with no server" | `render` | The media core directly |
+
+`render` is not a duplicate of `analyze`; it is the offline, deterministic,
+zero-cost path that renders a clip from a saved timeline and needs no server, no
+credentials, and no project. It is how the mix gets tuned, and it is worth
+keeping as a first-class verb rather than hiding behind a flag.
+
+Everything else goes through the API. A CLI that reached into the domain
+packages for project operations would be a second implementation of the rules
+the API enforces — quota gates, readiness preconditions, immutability — and the
+two would drift.
+
+**What changes:** the `foley` console script is withdrawn; `foley.cli` becomes
+an internal module that `foleyflow render` calls. `src/foley/` keeps its name as
+a package — it is the ported media core and renaming it would orphan nothing but
+buy nothing.
+
+**Migration note.** Existing invocations of `foley render <clip>
+--from-timeline <json>` become `foleyflow render <clip> --from-timeline <json>`.
+The flags and behaviour are unchanged; only the command word moves.
+
 ---
 
 ## 15. Demo plan (about 3 minutes)
@@ -746,7 +797,7 @@ The demo must use the real deployed app, a real B2-backed project, and a real Ge
 ## 16. Submission requirements checklist
 
 - [ ] Public working app URL that a judge can open without local dependencies
-- [ ] Public GitHub repository with setup, environment variables, and local run instructions — **the repo has no remote yet**
+- [ ] Public GitHub repository with setup, environment variables, and local run instructions — **the repo has no remote yet**, and the instructions should document one command, not two (§14.1)
 - [x] Exact providers and model IDs listed — `providers.toml` is authoritative; mirror it into the README
 - [x] Clear B2 explanation: object layout (§10), signed upload/download, manifests
 - [~] Clear Genblaze explanation: §8.2 documents what is integrated and what is not
@@ -829,14 +880,17 @@ repository instructions.
 
 In order, with the parallel track called out:
 
-1. **QA module** (loudness + true peak, then continuity). Self-contained, inputs
+1. **Collapse the two CLIs into `foleyflow`** (§14.1). Small, and it gets
+   cheaper the sooner it happens — every day it waits is another day of README,
+   demo notes, and habit built on the wrong command name.
+2. **QA module** (loudness + true peak, then continuity). Self-contained, inputs
    already exist, gates nothing else.
-2. **Deployment skeleton.** Early, for the reasons above.
-3. **Mix and export wiring**, using cached stems where available — this can be
+3. **Deployment skeleton.** Early, for the reasons above.
+4. **Mix and export wiring**, using cached stems where available — this can be
    proved against the existing 161-clip cache before the self-hosted worker
    lands.
-4. **Repair loop**, once mix and export exist.
-5. **Control-room UI** over the API.
+5. **Repair loop**, once mix and export exist.
+6. **Control-room UI** over the API.
 
 Running in parallel, unblocking Milestone 2: the **self-hosted SFX worker**.
 
