@@ -10,6 +10,7 @@ mix with `ebur128=peak=true`.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -85,6 +86,9 @@ class AudioQa:
     issues: List[QaIssue] = field(default_factory=list)
     measured: bool = False
     loudness_range_lu: Optional[float] = None
+    # Run that measured this audio — distinct from the report's run_id, which
+    # may be a later continuity-only refresh that preserved these metrics.
+    measured_run_id: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -94,6 +98,7 @@ class AudioQa:
             "target_true_peak_dbtp": self.target_true_peak_dbtp,
             "loudness_range_lu": self.loudness_range_lu,
             "measured": self.measured,
+            "measured_run_id": self.measured_run_id,
             "issues": [i.to_dict() for i in self.issues],
         }
 
@@ -142,15 +147,62 @@ def _run_ffmpeg(cmd: List[str]) -> subprocess.CompletedProcess:
         proc = subprocess.run(cmd, capture_output=True, timeout=FFMPEG_TIMEOUT_S)
     except subprocess.TimeoutExpired as e:
         raise QaError(f"ffmpeg timed out after {FFMPEG_TIMEOUT_S}s") from e
+    except OSError as e:
+        # Missing binary, permission error, etc. — must stay inside the API's
+        # error contract rather than surfacing as an unhandled 500.
+        raise QaError(f"ffmpeg could not be run: {e}") from e
     return proc
 
 
 _SUMMARY_I = re.compile(r"^\s*I:\s*(-?[0-9.]+)\s*LUFS", re.M)
-_SUMMARY_LRA = re.compile(r"^\s*LRA:\s*(-?[0-9.]+)\s*LU", re.M)
-_SUMMARY_PEAK = re.compile(r"True peak:\s*\n\s*Peak:\s*(-?[0-9.]+)\s*dBFS", re.M)
-# Fallback when the Summary block is missing (very short clips).
+_SUMMARY_LRA = re.compile(r"^\s*LRA:\s*(-?[0-9.]+)\s*LU\b", re.M)
+_SUMMARY_PEAK = re.compile(r"True peak:\s*\r?\n\s*Peak:\s*(-?[0-9.]+)\s*dBFS", re.M)
+# Stream fallbacks: integrated loudness and the *running* true peak (TPK), never
+# FTPK (per-frame). Prefer the last match — early frames carry the startup gate.
 _STREAM_I = re.compile(r"\bI:\s*(-?[0-9.]+)\s*LUFS")
-_STREAM_FTPK = re.compile(r"FTPK:\s*(-?[0-9.]+)\s+(-?[0-9.]+)\s*dBFS")
+_STREAM_TPK = re.compile(r"\bTPK:\s*(-?[0-9.]+)\s+(-?[0-9.]+)\s*dBFS")
+
+
+def _parse_ebur128(stderr: str) -> AudioMetrics:
+    """Extract integrated loudness and true peak from ffmpeg ebur128 output.
+
+    Prefer the Summary block. If it is absent, fall back to the *last* stream
+    `I:` and `TPK:` values — never the first `I:` (startup gate, often -70) and
+    never `FTPK` (current-frame peak). Incomplete output raises rather than
+    inventing a confident wrong number.
+    """
+    has_summary = "Summary:" in stderr
+    if has_summary:
+        summary = stderr[stderr.rfind("Summary:"):]
+        i_match = _SUMMARY_I.search(summary)
+        peak_match = _SUMMARY_PEAK.search(summary)
+        lra_match = _SUMMARY_LRA.search(summary)
+        if i_match is None or peak_match is None:
+            raise QaError(
+                "ebur128 Summary block present but missing integrated loudness "
+                "or true peak — refusing to guess from stream lines"
+            )
+        return AudioMetrics(
+            integrated_lufs=round(float(i_match.group(1)), 1),
+            true_peak_dbtp=round(float(peak_match.group(1)), 1),
+            loudness_range_lu=(round(float(lra_match.group(1)), 1)
+                               if lra_match else None),
+        )
+
+    i_matches = list(_STREAM_I.finditer(stderr))
+    tpk_matches = list(_STREAM_TPK.finditer(stderr))
+    if not i_matches or not tpk_matches:
+        raise QaError(
+            "could not parse ebur128 output: no Summary and no usable "
+            "stream I:/TPK: lines"
+        )
+    last_tpk = tpk_matches[-1]
+    peak = max(float(last_tpk.group(1)), float(last_tpk.group(2)))
+    return AudioMetrics(
+        integrated_lufs=round(float(i_matches[-1].group(1)), 1),
+        true_peak_dbtp=round(peak, 1),
+        loudness_range_lu=None,
+    )
 
 
 def measure_loudness(audio_path: str) -> AudioMetrics:
@@ -169,35 +221,10 @@ def measure_loudness(audio_path: str) -> AudioMetrics:
     if proc.returncode != 0:
         tail = stderr.strip()[-300:]
         raise QaError(f"ffmpeg ebur128 failed (exit {proc.returncode}): {tail}")
-
-    summary = stderr
-    if "Summary:" in stderr:
-        summary = stderr[stderr.rfind("Summary:"):]
-
-    i_match = _SUMMARY_I.search(summary) or _STREAM_I.search(stderr)
-    peak_match = _SUMMARY_PEAK.search(stderr)
-    if not peak_match:
-        ftpk = list(_STREAM_FTPK.finditer(stderr))
-        if ftpk:
-            last = ftpk[-1]
-            peak = max(float(last.group(1)), float(last.group(2)))
-        else:
-            peak = None
-    else:
-        peak = float(peak_match.group(1))
-
-    if i_match is None or peak is None:
-        raise QaError(
-            f"could not parse ebur128 summary from ffmpeg output for {audio_path!r}"
-        )
-
-    lra_match = _SUMMARY_LRA.search(summary)
-    return AudioMetrics(
-        integrated_lufs=round(float(i_match.group(1)), 1),
-        true_peak_dbtp=round(peak, 1),
-        loudness_range_lu=(round(float(lra_match.group(1)), 1)
-                           if lra_match else None),
-    )
+    try:
+        return _parse_ebur128(stderr)
+    except QaError as e:
+        raise QaError(f"{e} for {audio_path!r}") from e
 
 
 def check_audio(
@@ -254,12 +281,13 @@ def _scene_id(scene: Any) -> str:
 
 
 def exposure_confidence(delta: float, threshold: float = LUMA_DELTA_THRESHOLD) -> float:
-    """Map how far a jump exceeds the threshold onto 0.5..0.99.
+    """Map how far a jump meets/exceeds the threshold onto 0.5..0.99.
 
-    Tuned so the demo clip's 31.7-luma jump at threshold 20 lands near the
-    SPEC.md §11.5 example confidence of 0.82.
+    Aligned with `check_continuity`: a delta of exactly `threshold` fires a
+    warning at confidence 0.5. The curve is a tuned constant for the demo
+    clip's 31.7-luma jump (→ ~0.79 at threshold 20), not a calibrated metric.
     """
-    if delta <= threshold:
+    if delta < threshold:
         return 0.0
     excess = (delta - threshold) / threshold
     return round(min(0.99, 0.5 + 0.5 * min(1.0, excess)), 2)
@@ -319,7 +347,8 @@ def build_report(
 
     Continuity needs only stored scene stats. Audio needs a real mix — silent
     sources and pre-mix projects leave `audio.measured` false rather than
-    inventing numbers.
+    inventing numbers. When audio is measured, `audio.measured_run_id` records
+    which run produced those metrics (see `with_preserved_audio`).
     """
     visual_issues = check_continuity(scenes, luma_threshold=luma_threshold)
     visual = VisualQa(issues=visual_issues, luma_delta_threshold=luma_threshold)
@@ -340,6 +369,7 @@ def build_report(
             loudness_range_lu=metrics.loudness_range_lu,
             issues=audio_issues,
             measured=True,
+            measured_run_id=run_id,
         )
     else:
         audio = AudioQa(
@@ -349,6 +379,7 @@ def build_report(
             target_true_peak_dbtp=target_true_peak_dbtp,
             issues=[],
             measured=False,
+            measured_run_id=None,
         )
 
     all_issues = [*audio.issues, *visual.issues]
@@ -388,6 +419,7 @@ def report_from_dict(d: dict) -> QaReport:
         loudness_range_lu=audio_raw.get("loudness_range_lu"),
         issues=_issues(audio_raw.get("issues") or []),
         measured=measured,
+        measured_run_id=audio_raw.get("measured_run_id"),
     )
     visual = VisualQa(
         issues=_issues(visual_raw.get("issues") or []),
@@ -403,6 +435,21 @@ def report_from_dict(d: dict) -> QaReport:
     )
 
 
+def findings_signature(payload: dict) -> str:
+    """Stable fingerprint of QA findings, ignoring the report-level run_id.
+
+    Used to skip duplicate event-log entries when a re-save does not change
+    what was flagged (e.g. re-analysis with identical continuity + preserved
+    audio).
+    """
+    interesting = {
+        "overall_status": payload.get("overall_status"),
+        "audio": payload.get("audio") or {},
+        "visual": payload.get("visual") or {},
+    }
+    return json.dumps(interesting, sort_keys=True, separators=(",", ":"))
+
+
 def with_preserved_audio(
     report: QaReport, previous: Optional[dict],
 ) -> QaReport:
@@ -411,6 +458,11 @@ def with_preserved_audio(
     Re-analysis rebuilds visual QA from fresh scene stats but does not re-measure
     the mix. Without this merge, a continuity-only save would erase a blocking
     true-peak finding and unblock export incorrectly.
+
+    Fail-closed and deliberate: a stale true-peak block from an obsolete mix is
+    kept until a new measurement replaces it. `audio.measured_run_id` names the
+    run that produced the preserved metrics so the report-level `run_id` (the
+    continuity refresh) is not mistaken for the measurement provenance.
     """
     if report.audio.measured or not previous:
         return report

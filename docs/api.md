@@ -284,7 +284,9 @@ confidence. Matches SPEC.md §11.5.
 Blocking issues and warnings are distinguished in the payload, because §13 makes
 a true-peak overage block export while a continuity difference only warns.
 Continuity is written at analysis time from scene statistics. Audio metrics are
-present only after a mix has been measured (`audio.measured`).
+present only after a mix has been measured (`audio.measured`). When continuity
+is refreshed without re-measuring, `audio.measured_run_id` keeps the provenance
+of the preserved mix check — distinct from the report-level `run_id`.
 
 ---
 

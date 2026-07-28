@@ -327,9 +327,11 @@ def test_continuity_only_save_preserves_measured_audio(store, project):
     from foleyflow.scenes import Scene, SceneStats
 
     store.save_qa_report(project.id, QaReport(
-        run_id=None, overall_status=STATUS_BLOCKED,
+        run_id="run_01MIX00000000000000000000000",
+        overall_status=STATUS_BLOCKED,
         audio=AudioQa(
             integrated_lufs=-12.0, true_peak_dbtp=1.4, measured=True,
+            measured_run_id="run_01MIX00000000000000000000000",
             issues=[QaIssue(severity="blocking", code="true_peak_exceeded")]),
         visual=VisualQa(),
     ))
@@ -342,13 +344,34 @@ def test_continuity_only_save_preserves_measured_audio(store, project):
               stats=SceneStats(mean_luma=90.0, mean_rgb=[90, 90, 90],
                                luma_stddev=1.0, sample_count=4)),
     ]
-    store.save_qa_report(project.id, build_report(scenes))
+    store.save_qa_report(project.id, build_report(scenes, run_id="run_01ANALYZE0000000000000000"))
     loaded = store.load_qa_report(project.id)
     assert loaded["audio"]["measured"] is True
     assert loaded["audio"]["true_peak_dbtp"] == 1.4
+    assert loaded["audio"]["measured_run_id"] == "run_01MIX00000000000000000000000"
+    assert loaded["run_id"] == "run_01ANALYZE0000000000000000"
     assert any(i["code"] == "true_peak_exceeded" for i in loaded["audio"]["issues"])
     assert any(i["code"] == "exposure_discontinuity" for i in loaded["visual"]["issues"])
     assert loaded["overall_status"] == "blocked"
+
+
+def test_identical_qa_save_does_not_duplicate_events(store, project):
+    from foleyflow.qa import build_report
+    from foleyflow.scenes import Scene, SceneStats
+
+    scenes = [
+        Scene(id="scene_01", index=1, start_s=0.0, end_s=1.0,
+              stats=SceneStats(mean_luma=40.0, mean_rgb=[40, 40, 40],
+                               luma_stddev=1.0, sample_count=4)),
+        Scene(id="scene_02", index=2, start_s=1.0, end_s=2.0,
+              stats=SceneStats(mean_luma=90.0, mean_rgb=[90, 90, 90],
+                               luma_stddev=1.0, sample_count=4)),
+    ]
+    store.save_qa_report(project.id, build_report(scenes, run_id="run_a"))
+    before = len(store.list_events(project.id))
+    store.save_qa_report(project.id, build_report(scenes, run_id="run_b"))
+    assert len(store.list_events(project.id)) == before
+    assert store.load_qa_report(project.id)["run_id"] == "run_b"
 
 
 def test_failed_analysis_is_not_masked_by_a_qa_flag(store, project):

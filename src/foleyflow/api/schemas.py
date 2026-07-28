@@ -184,6 +184,7 @@ class AudioQaOut(BaseModel):
     target_true_peak_dbtp: float
     loudness_range_lu: Optional[float] = None
     measured: bool = False
+    measured_run_id: Optional[str] = None
     issues: List[QaIssueOut] = Field(default_factory=list)
 
 

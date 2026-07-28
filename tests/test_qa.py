@@ -55,26 +55,85 @@ def test_luma_delta_at_threshold_fires():
     issues = qa.check_continuity(scenes)
     assert len(issues) == 1
     assert issues[0].code == qa.CODE_EXPOSURE_DISCONTINUITY
+    assert issues[0].confidence == 0.5
 
 
 def test_with_preserved_audio_keeps_blocking_true_peak():
-    previous = qa.build_report(audio_path=None).to_dict()
     previous = {
-        "run_id": None,
+        "run_id": "run_01MIX",
         "overall_status": qa.STATUS_BLOCKED,
         "audio": qa.AudioQa(
             integrated_lufs=-12.0, true_peak_dbtp=1.4, measured=True,
+            measured_run_id="run_01MIX",
             issues=[qa.QaIssue(severity=qa.SEVERITY_BLOCKING,
                                code=qa.CODE_TRUE_PEAK_EXCEEDED)],
         ).to_dict(),
         "visual": qa.VisualQa().to_dict(),
     }
-    visual_only = qa.build_report([_scene(1, 40.0), _scene(2, 80.0)])
+    visual_only = qa.build_report([_scene(1, 40.0), _scene(2, 80.0)],
+                                  run_id="run_01ANALYZE")
     merged = qa.with_preserved_audio(visual_only, previous)
     assert merged.audio.measured is True
     assert merged.audio.true_peak_dbtp == 1.4
+    assert merged.audio.measured_run_id == "run_01MIX"
+    assert merged.run_id == "run_01ANALYZE"
     assert merged.overall_status == qa.STATUS_BLOCKED
     assert any(i.code == qa.CODE_EXPOSURE_DISCONTINUITY for i in merged.visual.issues)
+
+
+def test_parse_ebur128_prefers_summary_over_stream_gate():
+    """Regression: first stream I: is the -70 startup gate, not the answer."""
+    stderr = """
+[Parsed_ebur128_0] t: 0.1  I: -70.0 LUFS  FTPK: -10.0 -10.0 dBFS  TPK: -3.0 -3.0 dBFS
+[Parsed_ebur128_0] t: 1.0  I: -14.0 LUFS  FTPK: -5.0 -5.0 dBFS  TPK: -1.5 -1.5 dBFS
+[Parsed_ebur128_0] Summary:
+
+  Integrated loudness:
+    I:         -14.2 LUFS
+
+  Loudness range:
+    LRA:         5.0 LU
+
+  True peak:
+    Peak:       -1.5 dBFS
+"""
+    metrics = qa._parse_ebur128(stderr)
+    assert metrics.integrated_lufs == -14.2
+    assert metrics.true_peak_dbtp == -1.5
+    assert metrics.loudness_range_lu == 5.0
+
+
+def test_parse_ebur128_stream_fallback_uses_last_tpk_not_ftpk():
+    """Without Summary, TPK is the running max; FTPK is only the last frame."""
+    stderr = """
+[Parsed_ebur128_0] t: 0.5  I: -70.0 LUFS  FTPK:  2.0  2.0 dBFS  TPK:  2.0  2.0 dBFS
+[Parsed_ebur128_0] t: 1.0  I: -12.0 LUFS  FTPK: -6.0 -6.0 dBFS  TPK:  2.0  2.0 dBFS
+[Parsed_ebur128_0] t: 1.5  I: -13.0 LUFS  FTPK: -8.0 -8.0 dBFS  TPK:  2.0  2.0 dBFS
+"""
+    metrics = qa._parse_ebur128(stderr)
+    assert metrics.integrated_lufs == -13.0
+    assert metrics.true_peak_dbtp == 2.0
+
+
+def test_parse_ebur128_incomplete_summary_refuses_to_guess():
+    stderr = """
+[Parsed_ebur128_0] t: 1.0  I: -14.0 LUFS  TPK: -1.0 -1.0 dBFS
+[Parsed_ebur128_0] Summary:
+
+  Integrated loudness:
+    I:         -14.0 LUFS
+"""
+    with pytest.raises(qa.QaError, match="refusing to guess"):
+        qa._parse_ebur128(stderr)
+
+
+def test_missing_ffmpeg_becomes_qa_error(monkeypatch):
+    def boom(*args, **kwargs):
+        raise FileNotFoundError("ffmpeg")
+
+    monkeypatch.setattr(qa.subprocess, "run", boom)
+    with pytest.raises(qa.QaError, match="could not be run"):
+        qa.measure_loudness("missing.wav")
 
 
 def test_missing_stats_skip_rather_than_invent_a_jump():

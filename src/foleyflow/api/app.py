@@ -47,6 +47,7 @@ from foleyflow.api.schemas import (
 from foleyflow.api.uploads import create_upload_target, source_key
 from foleyflow.ids import is_valid
 from foleyflow.projects import ProjectStore
+from foleyflow.qa import build_report
 from foleyflow.storage import get_backend
 from foleyflow.storage.base import ObjectNotFound, StorageError
 
@@ -594,7 +595,6 @@ def _analysis_work(store: ProjectStore, project_id: str, model: str, force: bool
         # After the timeline: a crash before this point leaves no QA flag that
         # could mask a failed analysis as needs_review. Continuity-only; prior
         # mix measurements are preserved inside save_qa_report.
-        from foleyflow.qa import build_report
         store.save_qa_report(
             project_id, build_report(scenes, run_id=run.id), run_id=run.id)
 

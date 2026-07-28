@@ -41,6 +41,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from foleyflow.models import Timeline
+from foleyflow.qa import QaReport, findings_signature, report_from_dict, with_preserved_audio
 from foleyflow.timeline_io import dict_to_timeline, timeline_to_dict
 from foleyflow.ids import is_valid, new_event_id, new_project_id, new_run_id
 from foleyflow.storage.base import (
@@ -564,15 +565,16 @@ class ProjectStore:
         """Persist the latest QA report and keep the event log in sync.
 
         Refreshable like scenes.json: re-running QA after a re-mix must update
-        the report without tripping the immutable-artifact guard.
+        the report without tripping the immutable-artifact guard. Not atomic
+        against concurrent writers (load → merge → put); the API is single-
+        worker today. Fail-closed audio preservation is deliberate — see
+        `with_preserved_audio`.
 
         Continuity-only writes preserve any previously measured audio section
         so re-analysis cannot erase a true-peak block. Dirty reports append
         `postproduction.qa.flagged`; a clean report appends
-        `postproduction.qa.cleared` so the sticky flag does not outlive a fix.
+        `postproduction.qa.cleared`. Identical findings skip a new event.
         """
-        from foleyflow.qa import QaReport, report_from_dict, with_preserved_audio
-
         previous = self.load_qa_report(project_id)
         if isinstance(report, QaReport):
             merged = with_preserved_audio(report, previous)
@@ -582,6 +584,9 @@ class ProjectStore:
         if run_id and not payload.get("run_id"):
             payload["run_id"] = run_id
         self._put_json(self.qa_report_key(project_id), payload)
+
+        if previous and findings_signature(previous) == findings_signature(payload):
+            return payload
 
         issues = list((payload.get("audio") or {}).get("issues") or [])
         issues.extend((payload.get("visual") or {}).get("issues") or [])
