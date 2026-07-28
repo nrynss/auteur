@@ -127,6 +127,25 @@ def test_scenes_before_analysis_says_so(client, project, capsys):
     assert "run analysis first" in capsys.readouterr().out
 
 
+def test_qa_renders_continuity_warnings(client, store, project, capsys):
+    from foleyflow.qa import build_report
+    from foleyflow.scenes import Scene, SceneStats
+
+    store.save_qa_report(project.id, build_report([
+        Scene(id="scene_01", index=1, start_s=0.0, end_s=1.0,
+              stats=SceneStats(mean_luma=40.0, mean_rgb=[40, 40, 40],
+                               luma_stddev=1.0, sample_count=4)),
+        Scene(id="scene_02", index=2, start_s=1.0, end_s=2.0,
+              stats=SceneStats(mean_luma=90.0, mean_rgb=[90, 90, 90],
+                               luma_stddev=1.0, sample_count=4)),
+    ]))
+    assert run(client, "qa", project.id) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "needs_review" in out
+    assert "exposure_discontinuity" in out
+    assert "not measured" in out
+
+
 def test_events_shows_the_audit_trail(client, store, project, capsys):
     store.save_timeline(project.id, _timeline())
     assert run(client, "events", project.id) == EXIT_OK

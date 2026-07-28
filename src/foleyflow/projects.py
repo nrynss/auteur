@@ -27,6 +27,7 @@ cannot clobber each other, and ULID names make a sorted listing an ordered log.
       timelines/timeline.v{n}.json  immutable versions
       runs/{run_id}/run.json        immutable, written at terminal state
       scenes/scenes.json            deterministic, refreshable
+      qa/qa-report.json             latest QA report; refreshable like scenes
       exports/latest.json           the single mutable pointer (§10)
 """
 
@@ -58,6 +59,7 @@ EVENT_PLAN_PROPOSED = "postproduction.foley.plan.proposed"
 EVENT_REPAIR_APPROVED = "postproduction.repair.approved"
 EVENT_STEM_GENERATED = "postproduction.stem.generated"
 EVENT_QA_FLAGGED = "postproduction.qa.flagged"
+EVENT_QA_CLEARED = "postproduction.qa.cleared"
 EVENT_EXPORT_APPROVED = "postproduction.export.approved"
 EVENT_RUN_STARTED = "postproduction.run.started"
 EVENT_RUN_COMPLETED = "postproduction.run.completed"
@@ -244,6 +246,9 @@ class ProjectStore:
     def scene_thumbnail_key(self, project_id: str, scene_id: str) -> str:
         return (f"{self._root(project_id)}/scenes/"
                 f"{self._check_scene_id(scene_id)}/thumbnail.jpg")
+
+    def qa_report_key(self, project_id: str) -> str:
+        return f"{self._root(project_id)}/qa/qa-report.json"
 
     # -- JSON helpers -----------------------------------------------------
 
@@ -551,6 +556,55 @@ class ProjectStore:
         except ObjectNotFound:
             return []
 
+    # -- QA ---------------------------------------------------------------
+
+    def save_qa_report(self, project_id: str, report, *,
+                       run_id: Optional[str] = None,
+                       actor: str = "system") -> dict:
+        """Persist the latest QA report and keep the event log in sync.
+
+        Refreshable like scenes.json: re-running QA after a re-mix must update
+        the report without tripping the immutable-artifact guard.
+
+        Continuity-only writes preserve any previously measured audio section
+        so re-analysis cannot erase a true-peak block. Dirty reports append
+        `postproduction.qa.flagged`; a clean report appends
+        `postproduction.qa.cleared` so the sticky flag does not outlive a fix.
+        """
+        from foleyflow.qa import QaReport, report_from_dict, with_preserved_audio
+
+        previous = self.load_qa_report(project_id)
+        if isinstance(report, QaReport):
+            merged = with_preserved_audio(report, previous)
+        else:
+            merged = with_preserved_audio(report_from_dict(dict(report)), previous)
+        payload = merged.to_dict()
+        if run_id and not payload.get("run_id"):
+            payload["run_id"] = run_id
+        self._put_json(self.qa_report_key(project_id), payload)
+
+        issues = list((payload.get("audio") or {}).get("issues") or [])
+        issues.extend((payload.get("visual") or {}).get("issues") or [])
+        if issues:
+            self.append_event(
+                project_id, EVENT_QA_FLAGGED, actor=actor, run_id=run_id,
+                payload={
+                    "overall_status": payload.get("overall_status"),
+                    "issue_count": len(issues),
+                    "codes": sorted({i.get("code") for i in issues if i.get("code")}),
+                })
+        else:
+            self.append_event(
+                project_id, EVENT_QA_CLEARED, actor=actor, run_id=run_id,
+                payload={"overall_status": payload.get("overall_status") or "ok"})
+        return payload
+
+    def load_qa_report(self, project_id: str) -> Optional[dict]:
+        try:
+            return self._get_json(self.qa_report_key(project_id))
+        except ObjectNotFound:
+            return None
+
     # -- exports ----------------------------------------------------------
 
     def set_latest_export(self, project_id: str, *, run_id: str, export_key: str,
@@ -625,6 +679,8 @@ class ProjectStore:
                                        event.payload.get("timeline_version") or 0)
             elif event.type == EVENT_QA_FLAGGED:
                 qa_flagged = True
+            elif event.type == EVENT_QA_CLEARED:
+                qa_flagged = False
             elif event.type == EVENT_EXPORT_APPROVED:
                 has_export = True
 
@@ -661,7 +717,9 @@ class ProjectStore:
 
         A live run outranks a finished one because it is what the user is
         waiting on; an approved export outranks everything else because it is
-        the terminal state of the whole workflow.
+        the terminal state of the whole workflow. A timeline means there is a
+        plan to review. Failed runs without a timeline outrank a QA flag so a
+        crash mid-analysis cannot masquerade as needs_review.
         """
         live = [r for r in runs.values() if r["status"] == "running"]
         if live:
@@ -671,13 +729,15 @@ class ProjectStore:
 
         if has_export:
             return STATUS_READY
-        if timeline_version or qa_flagged:
+        if timeline_version:
             return STATUS_NEEDS_REVIEW
 
-        # No plan yet: a failed or stale run is the reason, and the user needs
-        # to see that rather than a project that looks merely unstarted.
+        # Failed/stale before qa_flagged: a mid-flight QA write must not mask an
+        # analysis that never landed a timeline as "needs review".
         if any(r["status"] in ("failed", "stale") for r in runs.values()):
             return STATUS_FAILED
+        if qa_flagged:
+            return STATUS_NEEDS_REVIEW
         if not (source_sha256 or project.source_sha256):
             return STATUS_AWAITING_UPLOAD
         return STATUS_NEW

@@ -23,12 +23,12 @@ product, and a reader needs to know which parts of it exist. Updated
 | Timeline + SFX caches | **Built** | Content-addressed; protect the 20/day analysis budget |
 | Cost ledger + quota accounting | **Built** | Estimates, explicitly labelled as such |
 | Genblaze integration | **Partial** | Ingest + hash-verified manifest only; generation not yet orchestrated |
-| HTTP API | **Partial** | Read paths, project creation, analyze; see §14 |
+| HTTP API | **Partial** | Read paths, project creation, analyze, QA; see §14 |
 | Throwaway dashboard | **Built** | One static file; the §6.1 control room replaces it |
 | Command-line client | **Built** | Single command `foleyflow` — project verbs over HTTP; `render` / `direct` file-scoped (§14.1) |
 | Foley generation (stems) | **Not built** | Blocked on the self-hosted SFX worker — see §9 |
 | Mix / export / dossier | **Not built** | |
-| QA (loudness, true peak, continuity) | **Not built** | Scene stats exist; the comparison does not |
+| QA (loudness, true peak, continuity) | **Built** | Continuity from scene stats; loudness via ebur128 when a mix is measured |
 | Targeted repair | **Not built** | The cache's variant nonce exists and is tested |
 | Deployment | **Not built** | Required by §16 |
 
@@ -329,6 +329,7 @@ postproduction.foley.plan.proposed
 postproduction.repair.approved
 postproduction.stem.generated
 postproduction.qa.flagged
+postproduction.qa.cleared
 postproduction.export.approved
 ```
 
@@ -437,6 +438,7 @@ foleyflow/
     events/{evt_ulid}.json          append-only lifecycle log, one object per event
     scenes/scenes.json              breakdown + per-scene colour statistics
     scenes/{scene_id}/thumbnail.jpg
+    qa/qa-report.json               latest QA report (refreshable)
     timelines/timeline.v{n}.json    immutable versions; a repair adds, never replaces
     runs/{run_id}/run.json          immutable, written only at a terminal state
     exports/latest.json             the single mutable pointer
@@ -631,8 +633,8 @@ Use the fewest providers needed for an impressive and repeatable demo. All names
 | Video/scene understanding | `gemini-2.5-flash` via the Google GenAI SDK | **Built** | Schema-validated JSON; a repair pass handles malformed output |
 | Scene boundaries + colour statistics | ffmpeg | **Built** | Deterministic; exit codes honoured so a failed probe is not a single-shot clip |
 | Foley sound effects | Self-hosted open-weight model; ElevenLabs on approval | **Not built** | Ambience and discrete events generated independently; cached by request hash |
-| Visual continuity | Per-scene statistics first; optional multimodal explanation | **Partial** | Statistics exist; the comparison does not. Warning only — never claim automatic colour correction |
-| Audio QA | ffmpeg `ebur128` + true-peak | **Not built** | Deterministic, stored as raw metrics |
+| Visual continuity | Per-scene statistics first; optional multimodal explanation | **Built** | Adjacent mean-luma comparison; warning only — never automatic colour correction |
+| Audio QA | ffmpeg `ebur128` + true-peak | **Built** | Deterministic; written when a mix is measured |
 | Mix/mux | The ported local renderer | **Built (unwired)** | `-c:v copy`, so the source video stream is bit-identical |
 | Video generation | — | **Out of scope** | Not a FoleyFlow feature. Three silent source clips already exist and are archived in B2 |
 
@@ -702,7 +704,7 @@ implementation and treated as the source of truth. Base path `/api/v1`.
 | `GET` | `/quota` | Provider budget, flagged as an estimate | **Built** |
 | `POST` | `/projects/{id}/events/{index}/regenerate` | Targeted stem regeneration | Not built |
 | `POST` | `/projects/{id}/mixes` | Re-mix from approved stems | Not built |
-| `GET` | `/projects/{id}/qa` | Latest QA report | Not built |
+| `GET` | `/projects/{id}/qa` | Latest QA report | **Built** |
 | `POST` | `/projects/{id}/exports` | Final export + provenance manifest | Not built |
 | `GET` | `/projects/{id}/dossier` | Every artifact with signed links | Not built |
 
@@ -751,12 +753,7 @@ the API enforces — quota gates, readiness preconditions, immutability — and 
 two would drift.
 
 `render` and `direct` are implemented in `foleyflow.cli` itself and call the
-pipeline modules in the same package. There is no separate `foley` package or
-console script.
-
-**Migration note.** Existing invocations of `foley render <clip>
---from-timeline <json>` become `foleyflow render <clip> --from-timeline <json>`.
-The flags and behaviour are unchanged; only the command word moves.
+pipeline modules in the same package.
 
 ---
 
@@ -829,13 +826,12 @@ in parallel.
 
 ### Milestone 3 — QA and targeted repair
 
-- Loudness and true-peak metrics — ffmpeg `ebur128`. Self-contained.
-- Visual continuity warning — the per-scene statistics already exist; what is
-  missing is the adjacent-shot comparison and a threshold. The demo clip has a
-  real 31.7-luma jump between scenes 4 and 5 to fire on.
-- Per-event regenerate and versioned re-mix — the cache's variant nonce is built
+- ✅ Loudness and true-peak metrics — ffmpeg `ebur128`. Self-contained.
+- ✅ Visual continuity warning — adjacent-shot mean-luma comparison; threshold
+  20 so the demo clip's 31.7-luma jump between scenes 4 and 5 fires.
+- ☐ Per-event regenerate and versioned re-mix — the cache's variant nonce is built
   and tested; it needs wiring to run and version lineage.
-- Provenance manifest with hashes and lineage — largely Genblaze's
+- ☐ Provenance manifest with hashes and lineage — largely Genblaze's
   `Manifest.from_run()`.
 
 **Exit condition:** one selected stem is regenerated without redoing the project,
@@ -865,12 +861,11 @@ repository instructions.
 In order, with the parallel track called out:
 
 1. **Collapse the two CLIs into `foleyflow`** (§14.1) — **done**.
-2. **QA module** (loudness + true peak, then continuity). Self-contained, inputs
-   already exist, gates nothing else.
+2. **QA module** (loudness + true peak, then continuity) — **done**.
 3. **Deployment skeleton.** Early, for the reasons above.
 4. **Mix and export wiring**, using cached stems where available — this can be
    proved against the existing 161-clip cache before the self-hosted worker
-   lands.
+   lands. Re-measure audio QA when a mix is written.
 5. **Repair loop**, once mix and export exist.
 6. **Control-room UI** over the API.
 
@@ -887,7 +882,7 @@ FoleyFlow is ready to submit when a judge can verify all of the following:
 | 1 | A real video enters a B2-backed project | **Met** — verified live |
 | 2 | Genblaze orchestrates visible, meaningful workflow stages | Partial — ingest and its manifest only |
 | 3 | The app produces an audible, synchronized Foley transformation | Not met — the headline feature, blocked on the SFX worker |
-| 4 | The app surfaces at least one useful technical or visual QA finding | Not met — the measurements exist, the comparison does not |
+| 4 | The app surfaces at least one useful technical or visual QA finding | **Met** for continuity after analysis; audio when a mix is measured |
 | 5 | A targeted repair updates only the relevant asset/mix version | Not met |
 | 6 | The final export traces to source, prompts, models, QA, and B2 objects | Partial — Genblaze's manifest covers ingest |
 

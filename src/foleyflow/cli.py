@@ -315,6 +315,41 @@ def cmd_scenes(client: Client, args) -> int:
     return EXIT_OK
 
 
+def cmd_qa(client: Client, args) -> int:
+    data = client.get(f"/projects/{args.project_id}/qa")
+
+    def render(d):
+        print(f"status: {d['overall_status']}")
+        audio = d.get("audio") or {}
+        if audio.get("measured"):
+            print(f"audio:  {audio['integrated_lufs']:.1f} LUFS  "
+                  f"true peak {audio['true_peak_dbtp']:.1f} dBTP  "
+                  f"(targets {audio['target_lufs']:.0f} / "
+                  f"{audio['target_true_peak_dbtp']:.1f})")
+        else:
+            print("audio:  not measured yet (needs a mix)")
+        for issue in audio.get("issues") or []:
+            print(f"  [{issue['severity']}] {issue['code']}"
+                  + (f" — {issue['detail']}" if issue.get("detail") else ""))
+        visual = d.get("visual") or {}
+        v_issues = visual.get("issues") or []
+        if not v_issues:
+            print("visual: no continuity warnings")
+        else:
+            print(f"visual: {len(v_issues)} continuity warning(s)")
+            for issue in v_issues:
+                conf = (f"  conf={issue['confidence']:.2f}"
+                        if issue.get("confidence") is not None else "")
+                pair = ""
+                if issue.get("scene_id") and issue.get("compared_with"):
+                    pair = f" {issue['compared_with']}→{issue['scene_id']}"
+                print(f"  [{issue['severity']}] {issue['code']}{pair}{conf}"
+                      + (f" — {issue['detail']}" if issue.get("detail") else ""))
+
+    _emit(data, args.json, render)
+    return EXIT_OK
+
+
 def cmd_events(client: Client, args) -> int:
     data = client.get(f"/projects/{args.project_id}/events")
 
@@ -532,6 +567,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     project_arg(sub.add_parser("scenes", help="scene breakdown")).set_defaults(
         func=cmd_scenes)
+    project_arg(sub.add_parser("qa", help="latest QA report")).set_defaults(
+        func=cmd_qa)
     project_arg(sub.add_parser("events", help="the project's audit trail")
                 ).set_defaults(func=cmd_events)
     project_arg(sub.add_parser("runs", help="completed runs")).set_defaults(

@@ -165,7 +165,7 @@ cost_per_call_usd = 0.02
 
 # ---------------------------------------------------------------- routing --
 # Ordered list — the first category whose keyword list has a word-boundary
-# match (foley.keywords.has_word) against the lowercased event name wins.
+# match (foleyflow.keywords.has_word) against the lowercased event name wins.
 #
 # Keyword notes:
 # - has_word does a PREFIX match at a left word boundary ("wood" matches

@@ -166,6 +166,39 @@ class SceneListResponse(BaseModel):
     scenes: List[SceneOut]
 
 
+# -- QA ---------------------------------------------------------------------
+
+class QaIssueOut(BaseModel):
+    severity: str
+    code: str
+    scene_id: Optional[str] = None
+    compared_with: Optional[str] = None
+    confidence: Optional[float] = None
+    detail: Optional[str] = None
+
+
+class AudioQaOut(BaseModel):
+    integrated_lufs: Optional[float] = None
+    true_peak_dbtp: Optional[float] = None
+    target_lufs: float
+    target_true_peak_dbtp: float
+    loudness_range_lu: Optional[float] = None
+    measured: bool = False
+    issues: List[QaIssueOut] = Field(default_factory=list)
+
+
+class VisualQaOut(BaseModel):
+    luma_delta_threshold: float
+    issues: List[QaIssueOut] = Field(default_factory=list)
+
+
+class QaReportResponse(BaseModel):
+    run_id: Optional[str] = None
+    overall_status: str
+    audio: AudioQaOut
+    visual: VisualQaOut
+
+
 # -- runs and events --------------------------------------------------------
 
 class RunOut(BaseModel):

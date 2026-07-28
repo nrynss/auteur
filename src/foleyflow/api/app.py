@@ -31,6 +31,7 @@ from foleyflow.api.schemas import (
     ProjectDetail,
     ProjectListResponse,
     ProjectSummary,
+    QaReportResponse,
     QuotaResponse,
     ReadinessItem,
     RunAccepted,
@@ -192,7 +193,7 @@ def create_app(store: Optional[ProjectStore] = None,
         _check_project_id(project_id)
         state = _load_state(store, project_id)
         scenes = store.load_scenes(project_id)
-        readiness = _readiness(state, scenes)
+        readiness = _readiness(state, scenes, store.load_qa_report(project_id))
         return ProjectDetail(
             **_summary(state.project, state.status).model_dump(),
             source_sha256=state.source_sha256 or state.project.source_sha256 or None,
@@ -336,6 +337,20 @@ def create_app(store: Optional[ProjectStore] = None,
             ))
         return SceneListResponse(scenes=out)
 
+    # -- QA ---------------------------------------------------------------
+
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/qa",
+             response_model=QaReportResponse, tags=["qa"])
+    def get_qa(project_id: str) -> QaReportResponse:
+        """Latest QA report. Continuity is written at analysis; audio lands
+        once a mix is measured."""
+        _check_project_id(project_id)
+        _load_state(store, project_id)
+        raw = store.load_qa_report(project_id)
+        if raw is None:
+            raise err.QaNotFound(project_id)
+        return QaReportResponse(**raw)
+
     # -- runs and events --------------------------------------------------
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/runs",
@@ -448,7 +463,7 @@ def _estimate(model: str) -> float:
     return estimate_cost(model, {})
 
 
-def _readiness(state, scenes) -> List[ReadinessItem]:
+def _readiness(state, scenes, qa_report=None) -> List[ReadinessItem]:
     """The §6.1 checklist. `blocked` states are what §13 makes gate export."""
     items = [
         ReadinessItem(
@@ -467,11 +482,41 @@ def _readiness(state, scenes) -> List[ReadinessItem]:
             state="ok" if state.timeline_version else "blocked",
             detail=f"timeline v{state.timeline_version}" if state.timeline_version
             else "required before export"),
+        _qa_readiness(qa_report),
         ReadinessItem(
             key="export", label="Final export approved",
             state="ok" if state.has_export else "pending"),
     ]
     return items
+
+
+def _qa_readiness(qa_report) -> ReadinessItem:
+    """Map a stored QA report onto one checklist row.
+
+    True-peak overage blocks export (§13). Continuity and loudness drift only
+    warn. No report yet is pending — analysis writes continuity, mix writes audio.
+    """
+    if not qa_report:
+        return ReadinessItem(
+            key="qa", label="QA checks", state="pending",
+            detail="run analysis to produce the first report")
+    status = qa_report.get("overall_status") or "ok"
+    audio = qa_report.get("audio") or {}
+    visual = qa_report.get("visual") or {}
+    issues = list(audio.get("issues") or []) + list(visual.get("issues") or [])
+    codes = sorted({i.get("code") for i in issues if i.get("code")})
+    if status == "blocked" or any(i.get("severity") == "blocking" for i in issues):
+        return ReadinessItem(
+            key="qa", label="QA checks", state="blocked",
+            detail=", ".join(codes) if codes else "blocking issue")
+    if status == "needs_review" or issues:
+        return ReadinessItem(
+            key="qa", label="QA checks", state="warn",
+            detail=", ".join(codes) if codes else "needs review")
+    detail = "passed"
+    if not audio.get("measured"):
+        detail = "continuity ok — mix not measured yet"
+    return ReadinessItem(key="qa", label="QA checks", state="ok", detail=detail)
 
 
 def _readiness_percent(items: List[ReadinessItem]) -> int:
@@ -545,6 +590,14 @@ def _analysis_work(store: ProjectStore, project_id: str, model: str, force: bool
         store.save_scenes(project_id, scenes, video_path=staged, run_id=run.id)
 
         version = store.save_timeline(project_id, timeline, run_id=run.id)
+
+        # After the timeline: a crash before this point leaves no QA flag that
+        # could mask a failed analysis as needs_review. Continuity-only; prior
+        # mix measurements are preserved inside save_qa_report.
+        from foleyflow.qa import build_report
+        store.save_qa_report(
+            project_id, build_report(scenes, run_id=run.id), run_id=run.id)
+
         store.complete_run(run, timeline_version=version,
                            metadata={"cached": cached, "model": model,
                                      "scene_count": len(scenes)})

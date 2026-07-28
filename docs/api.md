@@ -55,7 +55,7 @@ optional structured context. Clients branch on `code`, never on `message`.
 |---|---|---|
 | 400 | `invalid_request` | Malformed body or parameter |
 | 400 | `invalid_id` | An id that is not a well-formed ULID of the right kind |
-| 404 | `project_not_found` / `run_not_found` / `timeline_not_found` | Unknown id |
+| 404 | `project_not_found` / `run_not_found` / `timeline_not_found` / `qa_not_found` | Unknown id |
 | 409 | `already_running` | A run of this kind is already in flight for the project |
 | 409 | `immutable_conflict` | An attempt to overwrite a completed artifact |
 | 422 | `precondition_failed` | Valid request, wrong state (e.g. export before analysis) |
@@ -277,10 +277,14 @@ GET /api/v1/projects/{id}/qa
 
 `200` — the latest QA report: loudness and true-peak measurements against
 targets, and visual continuity warnings with the two scenes compared and a
-confidence. Matches SPEC.md §10.3.
+confidence. Matches SPEC.md §11.5.
+
+`404 qa_not_found` before analysis has written a report.
 
 Blocking issues and warnings are distinguished in the payload, because §13 makes
 a true-peak overage block export while a continuity difference only warns.
+Continuity is written at analysis time from scene statistics. Audio metrics are
+present only after a mix has been measured (`audio.measured`).
 
 ---
 

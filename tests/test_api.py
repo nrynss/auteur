@@ -306,6 +306,52 @@ def test_timeline_events_carry_scene_ids(client, store, project):
     assert [e["scene_id"] for e in events] == ["scene_01", "scene_02", "scene_02"]
 
 
+# -- QA ---------------------------------------------------------------------
+
+def test_qa_404s_before_a_report_exists(client, project):
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/qa")
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "qa_not_found"
+
+
+def test_qa_report_distinguishes_blocking_and_warning(client, store, project):
+    from foleyflow.qa import build_report
+    from foleyflow.scenes import Scene, SceneStats
+
+    scenes = [
+        Scene(id="scene_01", index=1, start_s=0.0, end_s=1.0,
+              stats=SceneStats(mean_luma=40.0, mean_rgb=[40, 40, 40],
+                               luma_stddev=1.0, sample_count=4)),
+        Scene(id="scene_02", index=2, start_s=1.0, end_s=2.0,
+              stats=SceneStats(mean_luma=90.0, mean_rgb=[90, 90, 90],
+                               luma_stddev=1.0, sample_count=4)),
+    ]
+    store.save_qa_report(project.id, build_report(scenes, run_id="run_01TEST"))
+    body = client.get(f"{API_PREFIX}/projects/{project.id}/qa").json()
+    assert body["overall_status"] == "needs_review"
+    assert body["audio"]["measured"] is False
+    issue = body["visual"]["issues"][0]
+    assert issue["severity"] == "warning"
+    assert issue["code"] == "exposure_discontinuity"
+    assert issue["scene_id"] == "scene_02"
+    assert issue["compared_with"] == "scene_01"
+
+
+def test_project_readiness_surfaces_qa_warnings(client, store, project):
+    from foleyflow.qa import QaIssue, QaReport, AudioQa, VisualQa, STATUS_NEEDS_REVIEW
+    store.save_qa_report(project.id, QaReport(
+        run_id=None, overall_status=STATUS_NEEDS_REVIEW,
+        audio=AudioQa(integrated_lufs=None, true_peak_dbtp=None),
+        visual=VisualQa(issues=[QaIssue(
+            severity="warning", code="exposure_discontinuity",
+            scene_id="scene_02", compared_with="scene_01", confidence=0.8)]),
+    ))
+    readiness = {r["key"]: r for r in
+                 client.get(f"{API_PREFIX}/projects/{project.id}").json()["readiness"]}
+    assert readiness["qa"]["state"] == "warn"
+    assert "exposure_discontinuity" in readiness["qa"]["detail"]
+
+
 # -- runs -------------------------------------------------------------------
 
 def test_running_run_is_pollable_before_it_finishes(client, store, project):

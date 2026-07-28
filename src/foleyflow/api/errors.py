@@ -82,6 +82,16 @@ class TimelineNotFound(NotFound):
         )
 
 
+class QaNotFound(NotFound):
+    code = "qa_not_found"
+
+    def __init__(self, project_id: str):
+        super().__init__(
+            f"Project {project_id} has no QA report yet",
+            detail={"project_id": project_id},
+        )
+
+
 class AlreadyRunning(ApiError):
     status_code = 409
     code = "already_running"

@@ -17,7 +17,7 @@ Milestone 2 in progress. One package (`src/foleyflow`), one command (`foleyflow`
 | Storage — content-addressed cache, B2 artifacts | Built |
 | Projects, runs, versions | Built |
 | HTTP API + CLI | Partial (read paths, analyze, CLI) |
-| QA — loudness, true peak, visual continuity | Not started |
+| QA — loudness, true peak, visual continuity | Built (audio when mix measured) |
 | Control room UI | Not started |
 
 ## Prerequisites
@@ -64,6 +64,7 @@ uv run foleyflow create path/to/clip.mp4 --title "Standoff" --analyze --wait
 uv run foleyflow show proj_…
 uv run foleyflow timeline proj_…
 uv run foleyflow scenes proj_…
+uv run foleyflow qa proj_…
 uv run foleyflow quota
 ```
 

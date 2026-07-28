@@ -254,3 +254,111 @@ def test_scenes_round_trip_and_log_completion(store, project):
 
 def test_load_scenes_before_analysis_is_empty_not_an_error(store, project):
     assert store.load_scenes(project.id) == []
+
+
+# -- QA ---------------------------------------------------------------------
+
+def test_qa_report_round_trips_and_flags_the_log(store, project):
+    from foleyflow.qa import build_report
+    from foleyflow.scenes import Scene, SceneStats
+
+    scenes = [
+        Scene(id="scene_01", index=1, start_s=0.0, end_s=1.0,
+              stats=SceneStats(mean_luma=40.0, mean_rgb=[40, 40, 40],
+                               luma_stddev=1.0, sample_count=4)),
+        Scene(id="scene_02", index=2, start_s=1.0, end_s=2.0,
+              stats=SceneStats(mean_luma=90.0, mean_rgb=[90, 90, 90],
+                               luma_stddev=1.0, sample_count=4)),
+    ]
+    report = build_report(scenes, run_id="run_01TESTQA000000000000000000")
+    store.save_qa_report(project.id, report)
+
+    loaded = store.load_qa_report(project.id)
+    assert loaded["overall_status"] == "needs_review"
+    assert loaded["visual"]["issues"][0]["code"] == "exposure_discontinuity"
+    assert EVENT_QA_FLAGGED in [e.type for e in store.list_events(project.id)]
+    assert store.get_state(project.id).status == STATUS_NEEDS_REVIEW
+
+
+def test_clean_qa_report_clears_a_prior_flag(store, project):
+    from foleyflow.qa import AudioQa, QaIssue, QaReport, VisualQa, STATUS_BLOCKED
+    from foleyflow.projects import EVENT_QA_CLEARED
+
+    store.save_qa_report(project.id, QaReport(
+        run_id=None, overall_status=STATUS_BLOCKED,
+        audio=AudioQa(
+            integrated_lufs=-10.0, true_peak_dbtp=1.4, measured=True,
+            issues=[QaIssue(severity="blocking", code="true_peak_exceeded")]),
+        visual=VisualQa(),
+    ))
+    assert EVENT_QA_FLAGGED in [e.type for e in store.list_events(project.id)]
+
+    from foleyflow.qa import build_report
+    from foleyflow.scenes import Scene, SceneStats
+
+    scenes = [
+        Scene(id="scene_01", index=1, start_s=0.0, end_s=1.0,
+              stats=SceneStats(mean_luma=100.0, mean_rgb=[100, 100, 100],
+                               luma_stddev=1.0, sample_count=4)),
+        Scene(id="scene_02", index=2, start_s=1.0, end_s=2.0,
+              stats=SceneStats(mean_luma=105.0, mean_rgb=[105, 105, 105],
+                               luma_stddev=1.0, sample_count=4)),
+    ]
+    # Continuity-only clean write must not wipe the measured audio — so overall
+    # stays blocked from the preserved true-peak. Clear audio explicitly to
+    # exercise the cleared event.
+    store.save_qa_report(project.id, QaReport(
+        run_id=None, overall_status="ok",
+        audio=AudioQa(integrated_lufs=-14.0, true_peak_dbtp=-2.0, measured=True),
+        visual=build_report(scenes).visual,
+    ))
+    types = [e.type for e in store.list_events(project.id)]
+    assert EVENT_QA_CLEARED in types
+    assert types.index(EVENT_QA_CLEARED) > types.index(EVENT_QA_FLAGGED)
+    # No timeline: cleared flag must not leave the project in needs_review.
+    assert store.get_state(project.id).status == "new"
+
+
+def test_continuity_only_save_preserves_measured_audio(store, project):
+    """Re-analysis must not erase a true-peak block by overwriting with visuals."""
+    from foleyflow.qa import (
+        AudioQa, QaIssue, QaReport, VisualQa, STATUS_BLOCKED, build_report,
+    )
+    from foleyflow.scenes import Scene, SceneStats
+
+    store.save_qa_report(project.id, QaReport(
+        run_id=None, overall_status=STATUS_BLOCKED,
+        audio=AudioQa(
+            integrated_lufs=-12.0, true_peak_dbtp=1.4, measured=True,
+            issues=[QaIssue(severity="blocking", code="true_peak_exceeded")]),
+        visual=VisualQa(),
+    ))
+
+    scenes = [
+        Scene(id="scene_01", index=1, start_s=0.0, end_s=1.0,
+              stats=SceneStats(mean_luma=40.0, mean_rgb=[40, 40, 40],
+                               luma_stddev=1.0, sample_count=4)),
+        Scene(id="scene_02", index=2, start_s=1.0, end_s=2.0,
+              stats=SceneStats(mean_luma=90.0, mean_rgb=[90, 90, 90],
+                               luma_stddev=1.0, sample_count=4)),
+    ]
+    store.save_qa_report(project.id, build_report(scenes))
+    loaded = store.load_qa_report(project.id)
+    assert loaded["audio"]["measured"] is True
+    assert loaded["audio"]["true_peak_dbtp"] == 1.4
+    assert any(i["code"] == "true_peak_exceeded" for i in loaded["audio"]["issues"])
+    assert any(i["code"] == "exposure_discontinuity" for i in loaded["visual"]["issues"])
+    assert loaded["overall_status"] == "blocked"
+
+
+def test_failed_analysis_is_not_masked_by_a_qa_flag(store, project):
+    """A mid-flight QA flag without a timeline must not become needs_review."""
+    run = store.start_run(project.id, "analyze")
+    store.append_event(project.id, EVENT_QA_FLAGGED, run_id=run.id,
+                       payload={"overall_status": "needs_review"})
+    store.fail_run(run, "boom")
+    assert store.get_state(project.id).status == STATUS_FAILED
+
+
+def test_load_qa_before_any_report_is_none(store, project):
+    assert store.load_qa_report(project.id) is None
