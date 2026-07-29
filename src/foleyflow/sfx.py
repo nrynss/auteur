@@ -12,9 +12,18 @@ runs; filename is the first 16 hex chars + ".wav". Same request always
 resolves to the same file; a changed endpoint, prompt, or duration (rounded
 to 2 decimals) changes the key and generates a fresh clip. Re-running the
 pipeline against an already-populated cache costs $0 (no ledger rows).
+
+A model's ``extra_arguments`` from providers.toml join the key when it declares
+any, because they change the audio: generating at num_inference_steps=50 and
+then at 100 must not resolve to the same file. They are looked up here rather
+than passed in, so every call site agrees without threading an argument through
+pipeline.py and sfx_cache.py — a missed site would silently report a cache miss.
+Models that declare no extras keep byte-identical keys, so nothing already
+cached is orphaned.
 """
 
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -73,10 +82,43 @@ def build_arguments(request: SfxRequest) -> dict:
     return args
 
 
+def _extras_segment(endpoint: str) -> str:
+    """Canonical '|x={...}' segment for a model's extra_arguments, or ''.
+
+    Sorted keys and compact separators so the segment is stable across runs and
+    across TOML key ordering. An unknown endpoint (or unreadable config) yields
+    '' rather than raising: the cache must keep working for endpoints that are
+    not declared, exactly as build_arguments falls back for them.
+    """
+    try:
+        from foleyflow.providers.config import get_model_spec
+        extras = get_model_spec(endpoint).extra_arguments
+    except Exception:
+        return ""
+    if not extras:
+        return ""
+    return "|x=" + json.dumps(extras, sort_keys=True, separators=(",", ":"))
+
+
+def cache_key_raw(endpoint: str, prompt: str, duration_s: float,
+                  variant: str = "") -> str:
+    """The exact string hashed into a cache key. Shared with sfx_cache so the
+    local and B2 caches cannot drift apart.
+
+    Segment order is load-bearing: extras before the variant salt, and both
+    omitted when empty, so a model with no extras and no variant hashes the
+    original 'endpoint|prompt|duration' and keeps its existing objects.
+    """
+    raw = f"{endpoint}|{prompt}|{duration_s:.2f}{_extras_segment(endpoint)}"
+    if variant:
+        raw = f"{raw}|v={variant}"
+    return raw
+
+
 def cache_key(endpoint: str, prompt: str, duration_s: float) -> str:
-    """sha256 over f'{endpoint}|{prompt}|{duration_s:.2f}', first 16 hex
-    chars. Documented, stable cache key rule — see module docstring."""
-    raw = f"{endpoint}|{prompt}|{duration_s:.2f}"
+    """sha256 over cache_key_raw(...), first 16 hex chars. Documented, stable
+    cache key rule — see module docstring."""
+    raw = cache_key_raw(endpoint, prompt, duration_s)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 

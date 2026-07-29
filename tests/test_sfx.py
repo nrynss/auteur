@@ -59,6 +59,71 @@ def test_cache_key_rounds_duration_to_two_decimals():
     assert k1 != k3
 
 
+# -- Cache key and extra_arguments --
+
+MOSS = "openmoss/moss-soundeffect-v2"
+
+
+def test_model_without_extras_keeps_the_original_key():
+    """The fal models declare no extra_arguments, so their keys must stay
+    byte-identical to the pre-extras rule — otherwise every cached clip is
+    orphaned."""
+    import hashlib
+    legacy = hashlib.sha256(
+        f"{CASSETTEAI}|footsteps on gravel|2.00".encode("utf-8")
+    ).hexdigest()[:16]
+    assert sfx.cache_key(CASSETTEAI, "footsteps on gravel", 2.0) == legacy
+
+
+def test_declared_extras_join_the_key():
+    """MOSS declares num_inference_steps/cfg_scale, which change the audio."""
+    import hashlib
+    without = hashlib.sha256(
+        f"{MOSS}|door creak|2.50".encode("utf-8")
+    ).hexdigest()[:16]
+    assert sfx.cache_key(MOSS, "door creak", 2.5) != without
+
+
+def test_changing_an_extra_changes_the_key(monkeypatch):
+    """Regenerating at a different step count must not resolve to the old clip."""
+    before = sfx.cache_key(MOSS, "door creak", 2.5)
+
+    from foleyflow.providers import config as provider_config
+    real = provider_config.get_model_spec
+
+    def patched(model_id, **kwargs):
+        spec = real(model_id, **kwargs)
+        if model_id == MOSS:
+            spec.extra_arguments = dict(spec.extra_arguments,
+                                        num_inference_steps=100)
+        return spec
+
+    monkeypatch.setattr(provider_config, "get_model_spec", patched)
+    assert sfx.cache_key(MOSS, "door creak", 2.5) != before
+
+
+def test_extras_segment_is_order_independent(monkeypatch):
+    """TOML key order must not change the key — the segment sorts its keys."""
+    from foleyflow.providers import config as provider_config
+    real = provider_config.get_model_spec
+
+    def reordered(model_id, **kwargs):
+        spec = real(model_id, **kwargs)
+        if model_id == MOSS:
+            spec.extra_arguments = {"cfg_scale": 4.0, "num_inference_steps": 50}
+        return spec
+
+    expected = sfx.cache_key(MOSS, "door creak", 2.5)
+    monkeypatch.setattr(provider_config, "get_model_spec", reordered)
+    assert sfx.cache_key(MOSS, "door creak", 2.5) == expected
+
+
+def test_unknown_endpoint_still_produces_a_key():
+    """Endpoints absent from providers.toml must not raise — build_arguments
+    falls back for them, and so must the cache."""
+    assert len(sfx.cache_key("not/declared", "hiss", 1.0)) == 16
+
+
 # -- Argument-builder shapes --
 
 def test_elevenlabs_argument_shape():

@@ -41,15 +41,20 @@ CACHE_PREFIX = "cache"
 
 
 def cache_key(endpoint: str, prompt: str, duration_s: float, variant: str = "") -> str:
-    """sha256 over 'endpoint|prompt|duration', first 16 hex chars.
+    """sha256 over foleyflow.sfx.cache_key_raw(...), first 16 hex chars.
 
     With variant="" this is identical to foleyflow.sfx.cache_key — the salt segment
     is appended only when a variant is actually requested, so existing cache
     objects keep resolving. Do not "tidy" this by always appending the segment.
+
+    Delegates the raw string to sfx rather than rebuilding it, so the two caches
+    cannot disagree about what a key covers (they previously duplicated the
+    format, which is how the model's extra_arguments could have been added to
+    one and not the other).
     """
-    raw = f"{endpoint}|{prompt}|{duration_s:.2f}"
-    if variant:
-        raw = f"{raw}|v={variant}"
+    from foleyflow.sfx import cache_key_raw
+
+    raw = cache_key_raw(endpoint, prompt, duration_s, variant)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 

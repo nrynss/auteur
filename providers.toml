@@ -86,10 +86,10 @@ prompt_field = "prompt"
 duration_field = "seconds"
 duration_type = "float"
 
-# WARNING: these are NOT part of the SFX cache key, which is
-# sha256(endpoint|prompt|duration_s) — see sfx.cache_key and cleanup.md §4.1.
-# Changing either value silently reuses clips generated under the old one.
-# Sweep the cache when you edit these.
+# These DO join the SFX cache key (sfx.cache_key_raw appends an 'x=' segment for
+# any model declaring extras), because they change the audio. Editing a value
+# here generates fresh clips rather than silently reusing the old ones; the
+# superseded entries become unreferenced and can be swept at leisure.
 [models."openmoss/moss-soundeffect-v2".extra_arguments]
 # 50 vs the model card's 100: judged indistinguishable by ear on a 2.5s creak
 # and a 15s rain bed (envelope correlation 0.998 / 0.999), and it halves cost
