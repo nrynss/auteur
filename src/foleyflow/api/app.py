@@ -26,6 +26,7 @@ from foleyflow.api.schemas import (
     CreateProjectResponse,
     EventListResponse,
     EventOut,
+    ExportRequest,
     HealthResponse,
     ModelQuotaOut,
     ProjectDetail,
@@ -34,6 +35,7 @@ from foleyflow.api.schemas import (
     QaReportResponse,
     QuotaResponse,
     ReadinessItem,
+    RemixRequest,
     RunAccepted,
     RunListResponse,
     RunOut,
@@ -203,6 +205,11 @@ def create_app(store: Optional[ProjectStore] = None,
             scene_count=len(scenes),
             event_count=state.event_count,
             has_export=state.has_export,
+            mix_run_id=(state.latest_mix or {}).get("run_id"),
+            # Signed, not a bare key: the point of the readiness screen is that
+            # the finished video is one click away, and B2 objects are private.
+            export_url=_sign(store, (state.export or {}).get("export_key")),
+            manifest_url=_sign(store, (state.export or {}).get("manifest_key")),
             readiness=readiness,
             readiness_percent=_readiness_percent(readiness),
             blocks_export=any(r.state == "blocked" for r in readiness),
@@ -284,6 +291,88 @@ def create_app(store: Optional[ProjectStore] = None,
             raise err.AlreadyRunning(project_id, e.existing.run_id,
                                      e.existing.kind) from e
         return RunAccepted(run_id=run.id, kind="ingest")
+
+    # -- mix and export ---------------------------------------------------
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/mixes",
+              response_model=RunAccepted, status_code=202, tags=["mix"])
+    def create_mix(project_id: str,
+                   body: RemixRequest = Body(default=RemixRequest())) -> RunAccepted:
+        """Render stems, mix, mux, and measure. Returns a run id to poll.
+
+        Not billed per call the way analysis is: every stem the shared cache
+        already holds is free, so a re-mix of an unchanged timeline costs
+        nothing and the quota gate that guards `/analyze` would be noise here.
+        """
+        from foleyflow.api.jobs import SlotTaken
+
+        _check_project_id(project_id)
+        state = _load_state(store, project_id)
+        if not state.timeline_version:
+            raise err.PreconditionFailed(
+                "The project has no timeline to mix",
+                detail={"project_id": project_id,
+                        "required": "POST /analyze"})
+
+        version = body.timeline_version or state.timeline_version
+        if version not in store.list_timeline_versions(project_id):
+            raise err.TimelineNotFound(project_id, version)
+
+        try:
+            run = runner.submit(project_id, "mix",
+                                _mix_work(store, project_id, body.tier, version),
+                                metadata={"tier": body.tier,
+                                          "timeline_version": version},
+                                actor="user")
+        except SlotTaken as e:
+            raise err.AlreadyRunning(project_id, e.existing.run_id,
+                                     e.existing.kind) from e
+        return RunAccepted(run_id=run.id, kind="mix")
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/exports",
+              response_model=RunAccepted, status_code=202, tags=["export"])
+    def create_export(project_id: str,
+                      body: ExportRequest = Body(default=ExportRequest())) -> RunAccepted:
+        """Publish a rendered mix: manifest, then the `exports/latest.json` pointer.
+
+        The QA gate is checked here as well as inside the run so a blocked
+        export fails at the front door with the blockers listed, rather than
+        202-ing and failing in a worker where the client has to poll to find
+        out why.
+        """
+        from foleyflow.api.jobs import SlotTaken
+        from foleyflow.render import blocking_qa_codes
+
+        _check_project_id(project_id)
+        state = _load_state(store, project_id)
+
+        mix = (store.get_mix(project_id, body.run_id) if body.run_id
+               else state.latest_mix)
+        if not mix:
+            raise err.PreconditionFailed(
+                "The project has no rendered mix to export",
+                detail={"project_id": project_id, "required": "POST /mixes"})
+
+        blockers = blocking_qa_codes(store.load_qa_report(project_id))
+        if blockers and not body.override_blocking:
+            raise err.PreconditionFailed(
+                "QA blocks this export",
+                detail={"project_id": project_id, "blockers": blockers,
+                        "override": "set override_blocking to publish anyway"})
+
+        try:
+            run = runner.submit(
+                project_id, "export",
+                _export_work(store, project_id, mix["run_id"],
+                             body.override_blocking),
+                parent_run_id=mix["run_id"],
+                metadata={"mix_run_id": mix["run_id"],
+                          "override_blocking": body.override_blocking},
+                actor="user")
+        except SlotTaken as e:
+            raise err.AlreadyRunning(project_id, e.existing.run_id,
+                                     e.existing.kind) from e
+        return RunAccepted(run_id=run.id, kind="export")
 
     # -- timeline ---------------------------------------------------------
 
@@ -438,9 +527,11 @@ def _load_state(store: ProjectStore, project_id: str):
         raise err.StorageUnavailable("Project storage is unreachable") from e
 
 
-def _sign(store: ProjectStore, key: str) -> Optional[str]:
-    """A thumbnail that cannot be signed is omitted rather than fatal —
+def _sign(store: ProjectStore, key: Optional[str]) -> Optional[str]:
+    """An artifact that cannot be signed is omitted rather than fatal —
     but only when the object is genuinely missing."""
+    if not key:
+        return None
     try:
         return store.backend.signed_url(key, ARTIFACT_URL_TTL_S)
     except ObjectNotFound:
@@ -483,12 +574,37 @@ def _readiness(state, scenes, qa_report=None) -> List[ReadinessItem]:
             state="ok" if state.timeline_version else "blocked",
             detail=f"timeline v{state.timeline_version}" if state.timeline_version
             else "required before export"),
+        _mix_readiness(state),
         _qa_readiness(qa_report),
         ReadinessItem(
             key="export", label="Final export approved",
             state="ok" if state.has_export else "pending"),
     ]
     return items
+
+
+def _mix_readiness(state) -> ReadinessItem:
+    """A mix is required before export, and stale once the plan moves past it.
+
+    A mix rendered from v1 is not evidence that v2 works — after a repair adds
+    a version, the checklist has to say so rather than reporting the old render
+    as satisfying the step.
+    """
+    mix = state.latest_mix
+    if not mix:
+        return ReadinessItem(
+            key="mix", label="Foley mix rendered", state="blocked",
+            detail="required before export")
+    version = mix.get("timeline_version")
+    if state.timeline_version and version and version != state.timeline_version:
+        return ReadinessItem(
+            key="mix", label="Foley mix rendered", state="warn",
+            detail=f"mixed from v{version}; timeline is now "
+                   f"v{state.timeline_version}")
+    stems = mix.get("stem_count") or 0
+    return ReadinessItem(
+        key="mix", label="Foley mix rendered", state="ok",
+        detail=f"{mix.get('tier')} tier, {stems} stems")
 
 
 def _qa_readiness(qa_report) -> ReadinessItem:
@@ -601,6 +717,49 @@ def _analysis_work(store: ProjectStore, project_id: str, model: str, force: bool
         store.complete_run(run, timeline_version=version,
                            metadata={"cached": cached, "model": model,
                                      "scene_count": len(scenes)})
+    return work
+
+
+def _mix_work(store: ProjectStore, project_id: str, tier: str,
+              timeline_version: int):
+    """The mix job body: stems, mix, mux, upload, QA."""
+    def work(run):
+        from foleyflow.render import render_mix
+
+        staged = _fetch_source(store, project_id)
+        result = render_mix(store, project_id, run=run, video_path=staged,
+                            tier=tier, timeline_version=timeline_version)
+        store.complete_run(
+            run, timeline_version=result.timeline_version,
+            metadata={"tier": result.tier, "mix_key": result.mix_key,
+                      "video_key": result.video_key,
+                      "stem_count": len(result.stems),
+                      "generated_count": result.generated_count,
+                      "ledger_delta_usd": round(result.ledger_delta, 4),
+                      "qa_status": (result.qa or {}).get("overall_status")})
+    return work
+
+
+def _export_work(store: ProjectStore, project_id: str, mix_run_id: str,
+                 override_blocking: bool):
+    """The export job body: manifest, then the pointer.
+
+    Re-checks the QA gate rather than trusting the route's check. The two are
+    separated by however long the mix run took to be selected, and a QA refresh
+    in between must not be able to slip a blocked mix past a stale decision.
+    """
+    def work(run):
+        from foleyflow.render import publish_export
+
+        pointer = publish_export(store, project_id, run=run,
+                                 mix_run_id=mix_run_id,
+                                 override_blocking=override_blocking,
+                                 actor="user")
+        store.complete_run(
+            run,
+            metadata={"export_key": pointer["export_key"],
+                      "manifest_key": pointer["manifest_key"],
+                      "overridden_blockers": pointer["overridden_blockers"]})
     return work
 
 

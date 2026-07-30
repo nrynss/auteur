@@ -426,6 +426,150 @@ def test_analyze_is_rejected_when_the_daily_budget_is_spent(client, project, mon
     assert detail["estimate"] is True
 
 
+# -- mix and export ---------------------------------------------------------
+
+def _stub_mix(store, project, monkeypatch, *, tier="full", version=1):
+    """Stand in for a completed mix run without rendering one.
+
+    The render itself is covered in test_render.py against real mix math; what
+    these assert is the contract around it.
+    """
+    import foleyflow.api.app as app_mod
+
+    def _work(_store, _pid, _tier, _version):
+        def run_it(run):
+            store.record_mix(project.id, run_id=run.id,
+                             mix_key=store.mix_key(project.id, run.id),
+                             video_key=store.mix_video_key(project.id, run.id),
+                             tier=_tier, timeline_version=_version,
+                             stem_count=3, generated_count=1)
+            store.complete_run(run)
+        return run_it
+
+    monkeypatch.setattr(app_mod, "_mix_work", _work)
+
+
+def _await_run(client, project_id, run_id, timeout_s=5.0):
+    """Poll a 202'd run to a terminal state.
+
+    Mutations are asynchronous by contract, so asserting on the state a run
+    produces immediately after the POST is a race — one that passes on a fast
+    machine and fails in CI.
+    """
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        body = client.get(f"{API_PREFIX}/projects/{project_id}/runs/{run_id}").json()
+        if body.get("status") in ("completed", "failed"):
+            return body
+        time.sleep(0.02)
+    raise AssertionError(f"run {run_id} did not finish within {timeout_s}s")
+
+
+def test_mix_is_refused_before_a_timeline_exists(client, project):
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/mixes")
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "precondition_failed"
+
+
+def test_mix_rejects_an_unknown_timeline_version(client, store, project):
+    store.save_timeline(project.id, _timeline())
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/mixes",
+                    json={"timeline_version": 7})
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "timeline_not_found"
+
+
+def test_mix_rejects_an_unknown_tier(client, store, project):
+    store.save_timeline(project.id, _timeline())
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/mixes",
+                    json={"tier": "cinematic"})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_request"
+
+
+def test_mix_returns_202_and_shows_up_in_readiness(client, store, project,
+                                                   monkeypatch):
+    store.save_timeline(project.id, _timeline())
+    _stub_mix(store, project, monkeypatch)
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/mixes")
+    assert r.status_code == 202
+    assert r.json()["kind"] == "mix"
+    assert _await_run(client, project.id, r.json()["run_id"])["status"] == "completed"
+
+    body = client.get(f"{API_PREFIX}/projects/{project.id}").json()
+    readiness = {i["key"]: i for i in body["readiness"]}
+    assert readiness["mix"]["state"] == "ok"
+    assert body["mix_run_id"] == r.json()["run_id"]
+
+
+def test_a_mix_from_a_superseded_timeline_warns(client, store, project,
+                                                monkeypatch):
+    """A mix of v1 is not evidence that v2 works."""
+    store.save_timeline(project.id, _timeline())
+    _stub_mix(store, project, monkeypatch, version=1)
+    started = client.post(f"{API_PREFIX}/projects/{project.id}/mixes").json()
+    _await_run(client, project.id, started["run_id"])
+    store.save_timeline(project.id, _timeline())            # v2, after the mix
+
+    body = client.get(f"{API_PREFIX}/projects/{project.id}").json()
+    readiness = {i["key"]: i for i in body["readiness"]}
+    assert readiness["mix"]["state"] == "warn"
+    assert "v2" in readiness["mix"]["detail"]
+
+
+def test_export_is_refused_before_a_mix_exists(client, store, project):
+    store.save_timeline(project.id, _timeline())
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/exports")
+    assert r.status_code == 422
+    assert r.json()["error"]["detail"]["required"] == "POST /mixes"
+
+
+def test_export_is_refused_while_qa_blocks_and_lists_the_blockers(
+        client, store, project, monkeypatch):
+    """The client is told what to fix, at the front door, not after polling."""
+    store.save_timeline(project.id, _timeline())
+    _stub_mix(store, project, monkeypatch)
+    started = client.post(f"{API_PREFIX}/projects/{project.id}/mixes").json()
+    _await_run(client, project.id, started["run_id"])
+    store.save_qa_report(project.id, {
+        "overall_status": "blocked",
+        "audio": {"target_lufs": -14, "target_true_peak_dbtp": -1.0,
+                  "measured": True,
+                  "issues": [{"severity": "blocking",
+                              "code": "true_peak_exceeded"}]},
+        "visual": {"luma_delta_threshold": 20, "issues": []}})
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/exports")
+    assert r.status_code == 422
+    assert r.json()["error"]["detail"]["blockers"] == ["true_peak_exceeded"]
+
+    override = client.post(f"{API_PREFIX}/projects/{project.id}/exports",
+                           json={"override_blocking": True})
+    assert override.status_code == 202
+    assert _await_run(client, project.id,
+                      override.json()["run_id"])["status"] == "completed"
+
+
+def test_export_publishes_the_pointer(client, store, project, monkeypatch):
+    store.save_timeline(project.id, _timeline())
+    _stub_mix(store, project, monkeypatch)
+    mix_run = client.post(f"{API_PREFIX}/projects/{project.id}/mixes").json()["run_id"]
+    _await_run(client, project.id, mix_run)
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/exports")
+    assert r.status_code == 202
+    assert r.json()["kind"] == "export"
+    assert _await_run(client, project.id, r.json()["run_id"])["status"] == "completed"
+
+    body = client.get(f"{API_PREFIX}/projects/{project.id}").json()
+    assert body["has_export"] is True
+    assert body["status"] == "ready"
+    assert store.get_latest_export(project.id)["run_id"] == mix_run
+
+
 # -- quota ------------------------------------------------------------------
 
 def test_quota_is_flagged_as_an_estimate(client):

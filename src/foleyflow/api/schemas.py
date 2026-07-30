@@ -97,6 +97,9 @@ class ProjectDetail(ProjectSummary):
     scene_count: int = 0
     event_count: int = 0
     has_export: bool = False
+    mix_run_id: Optional[str] = None
+    export_url: Optional[str] = None
+    manifest_url: Optional[str] = None
     readiness: List[ReadinessItem] = Field(default_factory=list)
     readiness_percent: Optional[int] = None
     blocks_export: bool = False
@@ -214,6 +217,10 @@ class RunOut(BaseModel):
     # A classification, never the exception text — see docs/api.md §3.6.
     error: Optional[str] = None
     error_code: Optional[str] = None
+    # What the run produced: artifact keys, counts, spend. Written by our own
+    # work functions, never from provider or user input, which is why it is
+    # safe to serve verbatim where `error` is not.
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RunListResponse(BaseModel):

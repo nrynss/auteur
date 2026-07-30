@@ -12,7 +12,7 @@
 
 Kept at the top because the rest of this document describes the intended
 product, and a reader needs to know which parts of it exist. Updated
-2026-07-28.
+2026-07-30.
 
 | Area | State | Notes |
 |---|---|---|
@@ -23,17 +23,20 @@ product, and a reader needs to know which parts of it exist. Updated
 | Timeline + SFX caches | **Built** | Content-addressed; protect the 20/day analysis budget |
 | Cost ledger + quota accounting | **Built** | Estimates, explicitly labelled as such |
 | Genblaze integration | **Partial** | Ingest + hash-verified manifest only; generation not yet orchestrated |
-| HTTP API | **Partial** | Read paths, project creation, analyze, QA; see §14 |
+| HTTP API | **Partial** | Everything but repair and the dossier; see §14 |
 | Throwaway dashboard | **Built** | One static file; the §6.1 control room replaces it |
 | Command-line client | **Built** | Single command `foleyflow` — project verbs over HTTP; `render` / `direct` file-scoped (§14.1) |
 | Self-hosted SFX worker | **Built** | MOSS-SoundEffect v2 behind HTTP; `LocalAdapter` + `get_sfx` verified end-to-end (§9.1) |
-| Foley generation (stems) | **Partial** | One stem generates, normalises, and caches on demand; not yet driven from a run |
-| Mix / export / dossier | **Not built** | |
+| Foley generation (stems) | **Built** | Driven from a mix run; shared B2 cache in front, so a re-mix generates nothing |
+| Mix / export | **Built** | `POST /mixes` renders and measures; `POST /exports` writes the §11.6 manifest and moves the pointer |
+| Artifact dossier | **Not built** | The one read view still missing (§14) |
 | QA (loudness, true peak, continuity) | **Built** | Continuity from scene stats; loudness via ebur128 when a mix is measured |
-| Targeted repair | **Not built** | The cache's variant nonce exists and is tested |
+| Targeted repair | **Partial** | `render_mix(variant_fn=…)` regenerates one stem and re-mixes; no per-event API route yet |
 | Deployment | **Not built** | Required by §16 |
 
-Test suite: 346 passing, 1 skipped, fully offline.
+Test suite: 376 passing, 1 skipped. Offline: the only stub in the render path
+is the billed provider call, so ffmpeg, the mix, the shared cache, and storage
+all run for real.
 
 The SFX worker is a separate CUDA process outside this repo and is **not** part
 of that suite — it needs a GPU and an 11 GB model. Nothing here imports torch.
@@ -742,9 +745,9 @@ implementation and treated as the source of truth. Base path `/api/v1`.
 | `GET` | `/projects/{id}/events` | The audit trail §6.3 calls History | **Built** |
 | `GET` | `/quota` | Provider budget, flagged as an estimate | **Built** |
 | `POST` | `/projects/{id}/events/{index}/regenerate` | Targeted stem regeneration | Not built |
-| `POST` | `/projects/{id}/mixes` | Re-mix from approved stems | Not built |
+| `POST` | `/projects/{id}/mixes` | Render stems, mix, mux, re-measure QA | **Built** |
 | `GET` | `/projects/{id}/qa` | Latest QA report | **Built** |
-| `POST` | `/projects/{id}/exports` | Final export + provenance manifest | Not built |
+| `POST` | `/projects/{id}/exports` | Publish a rendered mix + provenance manifest | **Built** |
 | `GET` | `/projects/{id}/dossier` | Every artifact with signed links | Not built |
 
 All mutation responses return a run ID so the UI can show stage-level status
@@ -774,7 +777,7 @@ versus *file-scoped*:
 
 | Scope | Commands | Path |
 |---|---|---|
-| Project — needs the record system, versions, and provenance | `create`, `show`, `list`, `analyze`, `timeline`, `scenes`, `runs`, `events`, `qa`, `regenerate`, `export`, `dossier` | HTTP to the API |
+| Project — needs the record system, versions, and provenance | `create`, `show`, `list`, `analyze`, `timeline`, `scenes`, `runs`, `events`, `qa`, `mix`, `export`, `regenerate`, `dossier` | HTTP to the API |
 | File — "render / edit this clip, now, with no server" | `render`, `direct` | The media core directly |
 
 `render` is not a duplicate of `analyze`; it is the offline, deterministic,
@@ -845,33 +848,33 @@ Delivered beyond the original scope, because everything downstream needed it:
 scene detection, the analysis and SFX caches, quota accounting, the provider
 adapter layer, and the API contract.
 
-### Milestone 2 — Core Foley workflow ⏳ in progress
+### Milestone 2 — Core Foley workflow ✅ complete
 
 | | |
 |---|---|
 | ✅ | Analysis stage: video → timeline, live, cached, recorded |
 | ✅ | Artifacts stored under the §10 layout |
-| ⏳ | **Self-hosted SFX worker** — the one hard blocker |
-| ☐ | Stem generation as a Genblaze stage |
-| ☐ | Mix + mux wired to stored stems |
-| ☐ | Live run status in the UI |
+| ✅ | Self-hosted SFX worker |
+| ✅ | Stem generation driven from a run, behind the shared B2 cache |
+| ✅ | Mix + mux wired to stored stems, with QA measured on the written mix |
+| ☐ | Live run status in the UI — the API serves it; nothing renders it yet |
 
-**Exit condition:** a short clip completes silent-video → B2-backed Foley export.
-
-**The critical path runs through the SFX worker.** Nothing else in this
-milestone can be finished without it, and it is the only work item in the whole
-plan with an external dependency. Everything below is unblocked and can proceed
-in parallel.
+**Exit condition met:** `test_silent_video_becomes_a_b2_backed_foley_export`
+takes a generated clip through mix, mux, upload, and publish, then pulls the
+published object back out of storage and probes it. Only the billed provider
+call is stubbed.
 
 ### Milestone 3 — QA and targeted repair
 
 - ✅ Loudness and true-peak metrics — ffmpeg `ebur128`. Self-contained.
 - ✅ Visual continuity warning — adjacent-shot mean-luma comparison; threshold
   20 so the demo clip's 31.7-luma jump between scenes 4 and 5 fires.
-- ☐ Per-event regenerate and versioned re-mix — the cache's variant nonce is built
-  and tested; it needs wiring to run and version lineage.
-- ☐ Provenance manifest with hashes and lineage — largely Genblaze's
-  `Manifest.from_run()`.
+- ✅ Provenance manifest with hashes and lineage — written at export from what
+  is actually in the bucket, and it admits to a QA override.
+- ⏳ Per-event regenerate and versioned re-mix — `render_mix(variant_fn=…)` does
+  the work and is tested; what is missing is the
+  `POST /events/{index}/regenerate` route that picks the event and the version
+  lineage that records why.
 
 **Exit condition:** one selected stem is regenerated without redoing the project,
 and its version lineage is visible.
@@ -897,18 +900,16 @@ repository instructions.
 
 ### Immediate next steps
 
-In order, with the parallel track called out:
+In order. Nothing left in the plan has an external dependency.
 
 1. **Collapse the two CLIs into `foleyflow`** (§14.1) — **done**.
 2. **QA module** (loudness + true peak, then continuity) — **done**.
-3. **Deployment skeleton.** Early, for the reasons above.
-4. **Mix and export wiring**, using cached stems where available — this can be
-   proved against the existing 161-clip cache before the self-hosted worker
-   lands. Re-measure audio QA when a mix is written.
-5. **Repair loop**, once mix and export exist.
-6. **Control-room UI** over the API.
-
-Running in parallel, unblocking Milestone 2: the **self-hosted SFX worker**.
+3. **Mix and export wiring** — **done**. `POST /mixes`, `POST /exports`,
+   `foleyflow mix`, `foleyflow export`.
+4. **Repair loop.** The variant seam is wired into the mix; it needs the
+   per-event route and version lineage.
+5. **Deployment skeleton.**
+6. **Control-room UI** over the API, and the artifact dossier it closes on.
 
 ---
 

@@ -281,6 +281,65 @@ def cmd_analyze(client: Client, args) -> int:
                     wait=args.wait, as_json=args.json)
 
 
+def cmd_mix(client: Client, args) -> int:
+    """Render stems, mix, and mux — the project-scoped counterpart to `render`."""
+    body = {"tier": args.tier}
+    if args.timeline_version:
+        body["timeline_version"] = args.timeline_version
+    accepted = client.post(f"/projects/{args.project_id}/mixes", json=body)
+
+    if args.json and not args.wait:
+        print(json.dumps(accepted, indent=2))
+        return EXIT_OK
+
+    print(f"mix run {accepted['run_id']}  (tier {args.tier})")
+    if not args.wait:
+        print(f"poll: foleyflow run {args.project_id} {accepted['run_id']}")
+        return EXIT_OK
+
+    run = _poll_run(client, args.project_id, accepted["run_id"], quiet=args.json)
+    meta = run.get("metadata") or {}
+    if run["status"] == "completed" and not args.json:
+        # Spend first: it is the number a user is deciding on, and every stem
+        # the shared cache already held cost nothing.
+        print(f"  {meta.get('generated_count', 0)} of "
+              f"{meta.get('stem_count', 0)} stems generated  "
+              f"(${meta.get('ledger_delta_usd', 0):.4f} this run)")
+        print(f"  QA: {meta.get('qa_status') or 'unknown'}")
+        print(f"\nnext: foleyflow export {args.project_id} --wait")
+    return _report_run(run)
+
+
+def cmd_export(client: Client, args) -> int:
+    """Publish a rendered mix: manifest, then the exports/latest.json pointer."""
+    accepted = client.post(f"/projects/{args.project_id}/exports",
+                           json={"override_blocking": args.override_blocking})
+
+    if args.json and not args.wait:
+        print(json.dumps(accepted, indent=2))
+        return EXIT_OK
+
+    print(f"export run {accepted['run_id']}")
+    if not args.wait:
+        print(f"poll: foleyflow run {args.project_id} {accepted['run_id']}")
+        return EXIT_OK
+
+    run = _poll_run(client, args.project_id, accepted["run_id"], quiet=args.json)
+    if run["status"] != "completed":
+        return _report_run(run)
+
+    if not args.json:
+        meta = run.get("metadata") or {}
+        overridden = meta.get("overridden_blockers") or []
+        if overridden:
+            print(f"  published over QA blockers: {', '.join(overridden)}")
+        detail = client.get(f"/projects/{args.project_id}")
+        print(f"  manifest: {meta.get('manifest_key')}")
+        if detail.get("export_url"):
+            print(f"\n{detail['export_url']}")
+    return EXIT_OK
+
+
 def cmd_timeline(client: Client, args) -> int:
     params = {"version": args.version} if args.version else None
     data = client.get(f"/projects/{args.project_id}/timeline", params=params)
@@ -560,6 +619,21 @@ def build_parser() -> argparse.ArgumentParser:
                    help="bypass the timeline cache and spend a request")
     p.add_argument("--wait", action="store_true")
     p.set_defaults(func=cmd_analyze)
+
+    p = project_arg(sub.add_parser("mix", help="render stems, mix, and mux"))
+    p.add_argument("--tier", default="full",
+                   choices=("ambience", "discrete", "full"))
+    p.add_argument("--timeline-version", type=int,
+                   help="mix an earlier plan instead of the latest")
+    p.add_argument("--wait", action="store_true")
+    p.set_defaults(func=cmd_mix)
+
+    p = project_arg(sub.add_parser("export", help="publish the rendered mix"))
+    p.add_argument("--override-blocking", action="store_true",
+                   help="publish despite blocking QA findings (§13); recorded "
+                        "in the event log")
+    p.add_argument("--wait", action="store_true")
+    p.set_defaults(func=cmd_export)
 
     p = project_arg(sub.add_parser("timeline", help="show the event timeline"))
     p.add_argument("--version", type=int)

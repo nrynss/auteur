@@ -219,7 +219,12 @@ GET /api/v1/projects/{id}/runs/{run_id}
 ```
 
 `200` — run record with `status` (`running` | `completed` | `failed`), `kind`,
-`error_code`, `parent_run_id`, and `genblaze_run_id`.
+`error_code`, `parent_run_id`, `genblaze_run_id`, and `metadata`.
+
+`metadata` is what the run produced — artifact keys, stem and scene counts,
+`ledger_delta_usd`, `qa_status` — and is served verbatim because it is written
+by the server's own work functions. It is not a stable contract field by field:
+each `kind` puts different keys in it.
 
 This is the polling target for every `202`. A running run is reported from the
 event log; a terminal run from its immutable record.
@@ -262,10 +267,22 @@ cannot spend money it never displayed.
 
 ```
 POST /api/v1/projects/{id}/mixes
-{ "timeline_version": 2, "stem_selection": {…} }
+{ "timeline_version": 2, "tier": "full" }
 ```
 
-`202` — re-mix from approved stems, producing a new mix version.
+`202` — `{"run_id": "run_01K…", "kind": "mix"}`
+
+Renders every stem the timeline needs, mixes, muxes against the source, uploads
+`mix.wav` and `foley.mp4` under `runs/{run_id}/`, and re-measures QA against the
+WAV that was actually written. `timeline_version` defaults to the latest;
+`tier` is `ambience` | `discrete` | `full` and is the §9 degradation ladder.
+
+No quota gate, unlike `/analyze`: stems come from the shared content-addressed
+cache, so a re-mix of an unchanged timeline generates nothing and costs nothing.
+What a run did spend is in its `metadata.ledger_delta_usd`.
+
+`422 precondition_failed` before a timeline exists. `404 timeline_not_found`
+for a version that does not.
 
 ---
 
@@ -297,12 +314,20 @@ POST /api/v1/projects/{id}/exports
 { "run_id": "run_01K…", "override_blocking": false }
 ```
 
-`202` — renders the final MP4, writes the provenance manifest, and moves the
-`exports/latest.json` pointer.
+`202` — `{"run_id": "run_01K…", "kind": "export"}`
 
-`422 precondition_failed` when readiness blocks export, listing the blockers.
-`override_blocking: true` is the explicit human override §13 allows, and is
-recorded in the event log with the actor.
+Writes the §11.6 provenance manifest and moves the `exports/latest.json`
+pointer. It does **not** re-render: it publishes the MP4 a mix run already
+produced and QA already measured, so the bytes a judge downloads are the bytes
+that passed. `run_id` selects which mix to publish and defaults to the latest.
+
+`422 precondition_failed` when readiness blocks export, listing the blockers
+under `detail.blockers`. `override_blocking: true` is the explicit human
+override §13 allows; it is recorded in the event log with the actor and the
+manifest carries `qa_override: true`.
+
+The published video and manifest come back as signed `export_url` and
+`manifest_url` on `GET /projects/{id}`.
 
 ```
 GET /api/v1/projects/{id}/dossier

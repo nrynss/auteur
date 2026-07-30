@@ -9,14 +9,15 @@ post-production checks, and preserves the full production record in Backblaze B2
 
 ## Status
 
-Milestone 2 in progress. One package (`src/foleyflow`), one command (`foleyflow`).
+Milestone 2 complete: a silent clip goes in and a B2-backed Foley export comes
+out, over the API. One package (`src/foleyflow`), one command (`foleyflow`).
 
 | Layer | State |
 |---|---|
 | Media pipeline — VLM analysis, routing, SFX, mix, mux | Built |
 | Storage — content-addressed cache, B2 artifacts | Built |
 | Projects, runs, versions | Built |
-| HTTP API + CLI | Partial (read paths, analyze, CLI) |
+| HTTP API + CLI | Partial (analyze, mix, export; repair and dossier pending) |
 | QA — loudness, true peak, visual continuity | Built (audio when mix measured) |
 | Self-hosted SFX worker — MOSS-SoundEffect v2 | Built (separate GPU process) |
 | Control room UI | Not started |
@@ -67,6 +68,8 @@ uv run foleyflow show proj_…
 uv run foleyflow timeline proj_…
 uv run foleyflow scenes proj_…
 uv run foleyflow qa proj_…
+uv run foleyflow mix proj_… --wait
+uv run foleyflow export proj_… --wait
 uv run foleyflow quota
 ```
 

@@ -226,6 +226,68 @@ def test_a_failed_run_is_a_nonzero_exit(client, store, project, capsys, monkeypa
     assert "failed" in capsys.readouterr().err
 
 
+# -- mix and export ----------------------------------------------------------
+
+def _stub_mix_work(store, monkeypatch, *, tier="full", version=1):
+    import foleyflow.api.app as app_mod
+
+    def _work(_store, project_id, _tier, _version):
+        def run_it(job):
+            store.record_mix(project_id, run_id=job.id,
+                             mix_key=store.mix_key(project_id, job.id),
+                             video_key=store.mix_video_key(project_id, job.id),
+                             tier=_tier, timeline_version=_version,
+                             stem_count=4, generated_count=1)
+            store.complete_run(job, metadata={
+                "tier": _tier, "stem_count": 4, "generated_count": 1,
+                "ledger_delta_usd": 0.02, "qa_status": "ok"})
+        return run_it
+
+    monkeypatch.setattr(app_mod, "_mix_work", _work)
+
+
+def test_mix_reports_spend_and_qa(client, store, project, capsys, monkeypatch):
+    """The cost of the run is the number the user is deciding on."""
+    store.save_timeline(project.id, _timeline())
+    _stub_mix_work(store, monkeypatch)
+
+    assert run(client, "mix", project.id, "--wait") == EXIT_OK
+    out = capsys.readouterr().out
+    assert "1 of 4 stems generated" in out
+    assert "$0.0200" in out
+    assert "QA: ok" in out
+    assert "foleyflow export" in out, "it must name the next step"
+
+
+def test_mix_without_a_timeline_exits_nonzero(client, project, capsys):
+    assert run(client, "mix", project.id) == EXIT_API_ERROR
+    assert "timeline" in capsys.readouterr().err.lower()
+
+
+def test_export_is_blocked_until_a_mix_exists(client, store, project, capsys):
+    store.save_timeline(project.id, _timeline())
+    assert run(client, "export", project.id) == EXIT_API_ERROR
+    assert "mix" in capsys.readouterr().err.lower()
+
+
+def test_export_publishes_and_show_reports_ready(client, store, project, capsys,
+                                                 monkeypatch):
+    store.save_timeline(project.id, _timeline())
+    _stub_mix_work(store, monkeypatch)
+    assert run(client, "mix", project.id, "--wait") == EXIT_OK
+    capsys.readouterr()
+
+    assert run(client, "export", project.id, "--wait") == EXIT_OK
+    assert "manifest" in capsys.readouterr().out
+
+    assert run(client, "--json", "show", project.id) == EXIT_OK
+    body = json.loads(capsys.readouterr().out)
+    assert body["status"] == "ready"
+    readiness = {i["key"]: i["state"] for i in body["readiness"]}
+    assert readiness["mix"] == "ok"
+    assert readiness["export"] == "ok"
+
+
 def test_create_rejects_a_missing_file(client, capsys):
     assert run(client, "create", "does/not/exist.mp4") == 2
     assert "no such file" in capsys.readouterr().err

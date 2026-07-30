@@ -26,6 +26,10 @@ cannot clobber each other, and ULID names make a sorted listing an ordered log.
       events/{evt_ulid}.json        append-only lifecycle log
       timelines/timeline.v{n}.json  immutable versions
       runs/{run_id}/run.json        immutable, written at terminal state
+      runs/{run_id}/mix.wav         the rendered mix, and the bytes QA measured
+      runs/{run_id}/foley.mp4       the muxed video that export publishes
+      runs/{run_id}/stems.json      what the mix is made of, for the manifest
+      runs/{run_id}/manifest.json   §11.6 provenance, written once at export
       scenes/scenes.json            deterministic, refreshable
       qa/qa-report.json             latest QA report; refreshable like scenes
       exports/latest.json           the single mutable pointer (§10)
@@ -59,6 +63,7 @@ EVENT_ANALYSIS_COMPLETED = "postproduction.analysis.completed"
 EVENT_PLAN_PROPOSED = "postproduction.foley.plan.proposed"
 EVENT_REPAIR_APPROVED = "postproduction.repair.approved"
 EVENT_STEM_GENERATED = "postproduction.stem.generated"
+EVENT_MIX_COMPLETED = "postproduction.mix.completed"
 EVENT_QA_FLAGGED = "postproduction.qa.flagged"
 EVENT_QA_CLEARED = "postproduction.qa.cleared"
 EVENT_EXPORT_APPROVED = "postproduction.export.approved"
@@ -84,7 +89,7 @@ RUN_LEASE_S = 15 * 60
 _VERSION_RACE_RETRIES = 25
 
 
-def _utcnow() -> str:
+def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -172,6 +177,8 @@ class ProjectState:
     source_sha256: Optional[str] = None
     duration_s: Optional[float] = None
     stale_run_ids: List[str] = field(default_factory=list)
+    latest_mix: Optional[Dict[str, Any]] = None
+    export: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> dict:
         payload = {
@@ -182,6 +189,8 @@ class ProjectState:
             "event_count": self.event_count,
             "has_export": self.has_export,
             "stale_run_ids": self.stale_run_ids,
+            "latest_mix": self.latest_mix,
+            "export": self.export,
         }
         # The event log wins over the frozen identity record: sha256 and
         # duration are only known after the upload is confirmed, which happens
@@ -241,6 +250,29 @@ class ProjectStore:
     def latest_export_key(self, project_id: str) -> str:
         return f"{self._root(project_id)}/exports/latest.json"
 
+    def run_artifact_key(self, project_id: str, run_id: str, name: str) -> str:
+        """Anything a run produces, addressed under that run.
+
+        Mixes, muxed videos, and manifests all live beside the run record that
+        made them, which is what keeps §10's "never overwrite a completed
+        generation" free: a re-mix is a new run, so it cannot collide with an
+        earlier one's artifacts, and `exports/latest.json` stays the only
+        mutable pointer.
+        """
+        if not name or "/" in name:
+            raise ValueError(f"not a valid run artifact name: {name!r}")
+        return (f"{self._root(project_id)}/runs/"
+                f"{self._check_id(run_id, 'run')}/{name}")
+
+    def mix_key(self, project_id: str, run_id: str) -> str:
+        return self.run_artifact_key(project_id, run_id, "mix.wav")
+
+    def mix_video_key(self, project_id: str, run_id: str) -> str:
+        return self.run_artifact_key(project_id, run_id, "foley.mp4")
+
+    def manifest_key(self, project_id: str, run_id: str) -> str:
+        return self.run_artifact_key(project_id, run_id, "manifest.json")
+
     def scenes_key(self, project_id: str) -> str:
         return f"{self._root(project_id)}/scenes/scenes.json"
 
@@ -294,7 +326,7 @@ class ProjectStore:
         project = Project(
             id=project_id or new_project_id(),
             title=title,
-            created_at=_utcnow(),
+            created_at=utcnow(),
             input_key=input_key,
             source_sha256=source_sha256,
             source_filename=source_filename,
@@ -344,7 +376,7 @@ class ProjectStore:
             id=new_event_id(),
             project_id=self._check_id(project_id, "proj"),
             type=event_type,
-            created_at=_utcnow(),
+            created_at=utcnow(),
             actor=actor,
             run_id=run_id,
             payload=payload or {},
@@ -375,7 +407,7 @@ class ProjectStore:
             id=new_run_id(),
             project_id=self._check_id(project_id, "proj"),
             kind=kind,
-            created_at=_utcnow(),
+            created_at=utcnow(),
             status="running",
             parent_run_id=parent_run_id,
             metadata=metadata or {},
@@ -610,7 +642,99 @@ class ProjectStore:
         except ObjectNotFound:
             return None
 
+    # -- mixes ------------------------------------------------------------
+
+    def record_stem(self, project_id: str, *, run_id: str, cache_key: str,
+                    endpoint: str, prompt: str, duration_s: float,
+                    variant: str = "", actor: str = "system") -> Event:
+        """Record one *billed* stem generation.
+
+        Cache hits are deliberately not logged. A full render touches every
+        event in the timeline and the demo clip's stems are almost all cached,
+        so logging hits would bury the handful of real generations — and the
+        thing this log exists to answer is "what did this run actually spend".
+        The manifest inventories every stem, hit or miss; this records the spend.
+        """
+        return self.append_event(
+            project_id, EVENT_STEM_GENERATED, actor=actor, run_id=run_id,
+            payload={"cache_key": cache_key, "endpoint": endpoint,
+                     "prompt": prompt, "duration_s": duration_s,
+                     "variant": variant})
+
+    def record_mix(self, project_id: str, *, run_id: str, mix_key: str,
+                   video_key: str, tier: str, timeline_version: int,
+                   stem_count: int = 0, generated_count: int = 0,
+                   actor: str = "system") -> Event:
+        """Announce a finished mix. The artifacts are already in storage."""
+        return self.append_event(
+            project_id, EVENT_MIX_COMPLETED, actor=actor, run_id=run_id,
+            payload={"mix_key": mix_key, "video_key": video_key, "tier": tier,
+                     "timeline_version": timeline_version,
+                     "stem_count": stem_count,
+                     "generated_count": generated_count})
+
+    def save_stem_inventory(self, project_id: str, run_id: str,
+                            stems: List[Dict[str, Any]]) -> str:
+        """Every stem a mix used, cache hits included.
+
+        Separate from the `stem.generated` events, which record only spend.
+        This is the inventory the provenance manifest is built from, so it has
+        to list what the mix is *made of*, not what it paid for.
+        """
+        return self._put_json(
+            self.run_artifact_key(project_id, run_id, "stems.json"),
+            {"stems": stems})
+
+    def load_stem_inventory(self, project_id: str, run_id: str) -> List[Dict[str, Any]]:
+        try:
+            key = self.run_artifact_key(project_id, run_id, "stems.json")
+            return self._get_json(key).get("stems", [])
+        except ObjectNotFound:
+            return []
+
+    def get_mix(self, project_id: str, run_id: str) -> Optional[dict]:
+        """The recorded mix for one run, or None if that run produced none."""
+        for event in self.list_events(project_id):
+            if event.type == EVENT_MIX_COMPLETED and event.run_id == run_id:
+                return {"run_id": run_id, **event.payload}
+        return None
+
+    def get_latest_mix(self, project_id: str) -> Optional[dict]:
+        """The most recent mix, read from the log rather than a pointer.
+
+        There is no `mixes/latest.json`: §10 allows exactly one mutable pointer
+        and `exports/latest.json` is it. Event ULIDs already sort in creation
+        order, so the newest mix is the last matching event.
+        """
+        latest = None
+        for event in self.list_events(project_id):
+            if event.type == EVENT_MIX_COMPLETED:
+                latest = {"run_id": event.run_id, **event.payload}
+        return latest
+
     # -- exports ----------------------------------------------------------
+
+    def save_manifest(self, project_id: str, run_id: str, manifest: dict) -> str:
+        """Write a run's provenance manifest (§11.6), once.
+
+        Immutable: the manifest is the auditable claim about what a run
+        produced, and a second export of the same run must not be able to
+        rewrite history. Re-exporting the same mix is therefore a no-op here,
+        which the caller treats as success rather than a conflict.
+        """
+        key = self.manifest_key(project_id, run_id)
+        try:
+            return self._put_json_immutable(key, manifest)
+        except StorageError:
+            if self.backend.exists(key):
+                return key
+            raise
+
+    def load_manifest(self, project_id: str, run_id: str) -> Optional[dict]:
+        try:
+            return self._get_json(self.manifest_key(project_id, run_id))
+        except ObjectNotFound:
+            return None
 
     def set_latest_export(self, project_id: str, *, run_id: str, export_key: str,
                           manifest_key: Optional[str] = None,
@@ -624,7 +748,7 @@ class ProjectStore:
             "run_id": run_id,
             "export_key": export_key,
             "manifest_key": manifest_key,
-            "updated_at": _utcnow(),
+            "updated_at": utcnow(),
         }
         self._put_json(self.latest_export_key(project_id), payload)
         self.append_event(project_id, EVENT_EXPORT_APPROVED, actor=actor,
@@ -660,6 +784,8 @@ class ProjectStore:
         duration_s = None
         latest_run_id = None
         qa_flagged = False
+        latest_mix = None
+        export = None
 
         for event in events:
             if event.run_id:
@@ -686,8 +812,11 @@ class ProjectStore:
                 qa_flagged = True
             elif event.type == EVENT_QA_CLEARED:
                 qa_flagged = False
+            elif event.type == EVENT_MIX_COMPLETED:
+                latest_mix = {"run_id": event.run_id, **event.payload}
             elif event.type == EVENT_EXPORT_APPROVED:
                 has_export = True
+                export = {"run_id": event.run_id, **event.payload}
 
         # A run still marked running past its lease had its process die; nothing
         # will ever write its terminal record.
@@ -713,6 +842,8 @@ class ProjectStore:
             source_sha256=source_sha256,
             duration_s=duration_s,
             stale_run_ids=sorted(stale),
+            latest_mix=latest_mix,
+            export=export,
         )
 
     @staticmethod
