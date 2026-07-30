@@ -214,29 +214,39 @@ cost_per_call_usd = 0.02
 #   from matchbox", which must stay in the default category. "strike" alone
 #   already covers "match strike".
 
+# Every category routes to the self-hosted tier (SPEC §9.1). The fal endpoints
+# above stay declared — historical ledger rows and cached clips resolve through
+# them, and ElevenLabs is still the hero tier — but nothing routes there by
+# default: those credits are gone, so a default fal route is a run that fails on
+# a missing key rather than a production choice.
+#
+# The categories are kept distinct even though they now share an endpoint. The
+# name travels into provenance and the UI, and it is the seam a per-event hero
+# override selects on.
+
 [[routing.categories]]
 name = "ambience"
-endpoint = "cassetteai/sound-effects-generator"
+endpoint = "openmoss/moss-soundeffect-v2"
 keywords = ["wind"]
 
 [[routing.categories]]
 name = "footsteps"
-endpoint = "cassetteai/sound-effects-generator"
+endpoint = "openmoss/moss-soundeffect-v2"
 keywords = ["footstep", "walking", "tread", "boot"]
 
 [[routing.categories]]
 name = "door_creak"
-endpoint = "fal-ai/elevenlabs/sound-effects/v2"
+endpoint = "openmoss/moss-soundeffect-v2"
 keywords = ["door", "gate", "latch", "hinge", "creak", "squeak"]
 
 [[routing.categories]]
 name = "impact_strike"
-endpoint = "fal-ai/mmaudio-v2/text-to-audio"
+endpoint = "openmoss/moss-soundeffect-v2"
 keywords = ["strike", "ignite", "glass", "shatter", "impact", "break"]
 
 [routing.default]
 name = "default"
-endpoint = "cassetteai/sound-effects-generator"
+endpoint = "openmoss/moss-soundeffect-v2"
 
 # ---------------------------------------------------------------- defaults --
 [defaults]

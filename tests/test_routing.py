@@ -1,14 +1,22 @@
+"""Routing: event name -> category -> endpoint, prompt, and duration.
+
+Categories now all resolve to the self-hosted tier (SPEC §9.1), so what these
+assert is the **category** — the decision routing actually makes. Endpoint is
+checked once, in test_every_category_routes_to_the_self_hosted_tier, so that
+re-pointing the table is one edit here rather than ten.
+"""
+
 from foleyflow.models import Event
 from foleyflow.routing import (
     RHYTHMIC_LOOP_S,
+    _clamp_duration,
     _get_duration_limits,
     route_ambience,
     route_event,
 )
 
-CASSETTEAI = "cassetteai/sound-effects-generator"
+SELF_HOSTED = "openmoss/moss-soundeffect-v2"
 ELEVENLABS = "fal-ai/elevenlabs/sound-effects/v2"
-MMAUDIO = "fal-ai/mmaudio-v2/text-to-audio"
 
 
 def _ev(name, kind="discrete", intensity="med", duration=1.0, start_time=0.0):
@@ -17,44 +25,36 @@ def _ev(name, kind="discrete", intensity="med", duration=1.0, start_time=0.0):
 
 # -- All event names from samples/timelines/clip_1.json, clip_2.json, clip_3.json --
 
-def test_footsteps_on_gravel_routes_cassetteai():
+def test_footsteps_on_gravel_is_the_footsteps_category():
     req = route_event(_ev("footsteps on gravel", kind="rhythmic"))
-    assert req.endpoint == CASSETTEAI
     assert req.category == "footsteps"
 
-def test_match_strike_routes_mmaudio():
+def test_match_strike_is_the_impact_category():
     req = route_event(_ev("match strike"))
-    assert req.endpoint == MMAUDIO
     assert req.category == "impact_strike"
 
-def test_wooden_door_creaking_routes_elevenlabs():
+def test_wooden_door_creaking_is_the_door_category():
     req = route_event(_ev("wooden door creaking", kind="continuous"))
-    assert req.endpoint == ELEVENLABS
     assert req.category == "door_creak"
 
-def test_wooden_door_closing_routes_elevenlabs():
+def test_wooden_door_closing_is_the_door_category():
     req = route_event(_ev("wooden door closing"))
-    assert req.endpoint == ELEVENLABS
     assert req.category == "door_creak"
 
-def test_glass_on_wooden_table_rolling_routes_mmaudio():
+def test_glass_rolling_is_the_impact_category():
     req = route_event(_ev("glass on wooden table rolling", kind="continuous"))
-    assert req.endpoint == MMAUDIO
     assert req.category == "impact_strike"
 
-def test_glass_on_wooden_table_stopping_routes_mmaudio():
+def test_glass_stopping_is_the_impact_category():
     req = route_event(_ev("glass on wooden table stopping"))
-    assert req.endpoint == MMAUDIO
     assert req.category == "impact_strike"
 
-def test_footsteps_on_snow_routes_cassetteai():
+def test_footsteps_on_snow_is_the_footsteps_category():
     req = route_event(_ev("footsteps on snow", kind="rhythmic"))
-    assert req.endpoint == CASSETTEAI
     assert req.category == "footsteps"
 
-def test_metal_gate_squeak_routes_elevenlabs():
+def test_metal_gate_squeak_is_the_door_category():
     req = route_event(_ev("metal gate squeak"))
-    assert req.endpoint == ELEVENLABS
     assert req.category == "door_creak"
 
 def test_unmatched_event_names_hit_default_category():
@@ -68,7 +68,6 @@ def test_unmatched_event_names_hit_default_category():
     ]:
         req = route_event(_ev(name, kind=kind))
         assert req.category == "default"
-        assert req.endpoint == CASSETTEAI
 
 
 # -- Intensity qualifier behavior --
@@ -108,7 +107,6 @@ def test_rhythmic_events_get_loop_duration_regardless_of_event_duration():
 def test_route_ambience_returns_full_duration_plus_headroom():
     req = route_ambience("light wind rustling dry leaves", clip_duration=6.12)
     assert req.category == "ambience"
-    assert req.endpoint == CASSETTEAI
     assert req.prompt == "light wind rustling dry leaves"
     assert abs(req.duration_s - 6.62) < 1e-9  # 6.12 + 0.5 headroom
 
@@ -116,20 +114,30 @@ def test_route_ambience_returns_full_duration_plus_headroom():
 # -- Clamping --
 
 def test_clamping_fires_and_warns_on_absurd_durations(capsys):
-    lo, hi = _get_duration_limits(MMAUDIO)
+    lo, hi = _get_duration_limits(SELF_HOSTED)
 
     # Way over max: a huge continuous event.
     req = route_event(_ev("glass on wooden table rolling", kind="continuous", duration=999.0))
     assert req.duration_s == hi
-    out = capsys.readouterr().out
-    assert "clamping" in out.lower()
+    assert "clamping" in capsys.readouterr().out.lower()
 
-    # Way under min: a tiny discrete event with negative headroom impossible,
-    # but duration + headroom can still land below the placeholder floor if
-    # the floor is raised later — exercise the clamp path directly via a
-    # near-zero duration event.
-    req_low = route_event(_ev("match strike", kind="discrete", duration=0.0))
-    # 0.0 + 0.5 headroom = 0.5s, below the 1.0s placeholder floor.
-    assert req_low.duration_s == lo
-    out_low = capsys.readouterr().out
-    assert "clamping" in out_low.lower()
+    # The floor is exercised directly. route_event cannot reach it any more:
+    # the smallest request it can build is 0.0 + 0.5 headroom, and the
+    # self-hosted model's floor is 0.3 — below which there is not enough audio
+    # for trim_onset to find a transient. Going through route_event here would
+    # assert nothing while looking like it did.
+    assert _clamp_duration(SELF_HOSTED, 0.05) == lo
+    assert "clamping" in capsys.readouterr().out.lower()
+
+
+def test_every_category_routes_to_the_self_hosted_tier():
+    """§9.1: free local inference is the default; the paid tier is opt-in.
+
+    A category pointing at fal is a run that dies on a missing key — those
+    credits are gone — so this is a config assertion worth making loudly.
+    """
+    names = ["desert wind", "footsteps on gravel", "wooden door creaking",
+             "match strike", "fabric rustling from jacket"]
+    for name in names:
+        assert route_event(_ev(name)).endpoint == SELF_HOSTED
+    assert route_ambience("desert wind", 10.0).endpoint == SELF_HOSTED

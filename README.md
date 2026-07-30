@@ -27,8 +27,10 @@ out, over the API. One package (`src/foleyflow`), one command (`foleyflow`).
 - Python 3.14+ and [uv](https://docs.astral.sh/uv/)
 - `ffmpeg` and `ffprobe` on `PATH`
 - A [Google AI Studio](https://aistudio.google.com/apikey) key (`GEMINI_API_KEY`) for analysis
-- For SFX, the self-hosted worker (see below). A [fal.ai](https://fal.ai) key
-  (`FAL_KEY`) is needed only for the paid hero-sound tier
+- For SFX, the self-hosted worker (see below) — every routing category resolves
+  to it, so it must be reachable for any render that is not fully cached. A
+  [fal.ai](https://fal.ai) key (`FAL_KEY`) is needed only for the paid
+  hero-sound tier, which nothing routes to by default
 - A Backblaze B2 bucket and an application key scoped to it
 
 ## Setup

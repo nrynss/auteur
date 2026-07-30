@@ -110,7 +110,9 @@ def test_routing_config_default():
     config = load_config(TOML_PATH)
     routing = get_routing_config(_config=config)
     assert routing["default"]["name"] == "default"
-    assert routing["default"]["endpoint"] == "cassetteai/sound-effects-generator"
+    # The default tier is self-hosted (SPEC §9.1): free per generation, and the
+    # fal credits it used to point at are gone.
+    assert routing["default"]["endpoint"] == "openmoss/moss-soundeffect-v2"
 
 
 # -- defaults --

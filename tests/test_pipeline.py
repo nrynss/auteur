@@ -91,7 +91,7 @@ def test_run_events_report_covers_ambience_plus_all_events(monkeypatch, tmp_path
     assert len(result.events) == 6
     amb = result.events[0]
     assert amb["kind"] == "ambience"
-    assert amb["endpoint"] == "cassetteai/sound-effects-generator"
+    assert amb["endpoint"] == "openmoss/moss-soundeffect-v2"
     # NOTE: deliberately does not assert amb["cached"] is True. Cache state is
     # environment, not behavior — upstream this passed only because a populated
     # local sfx_cache/ happened to sit next to the test. The per-row isinstance
@@ -102,7 +102,9 @@ def test_run_events_report_covers_ambience_plus_all_events(monkeypatch, tmp_path
                             "cost_est", "status", "state"}
         assert isinstance(row["cached"], bool)
     by_name = {r["name"]: r for r in result.events}
-    assert by_name["match strike"]["endpoint"] == "fal-ai/mmaudio-v2/text-to-audio"
+    # The category is the routing decision; every category resolves to the
+    # self-hosted tier (SPEC §9.1), asserted once in test_routing.py.
+    assert by_name["match strike"]["category"] == "impact_strike"
     assert by_name["footsteps on gravel"]["kind"] == "rhythmic"
 
 

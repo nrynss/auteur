@@ -26,7 +26,7 @@ product, and a reader needs to know which parts of it exist. Updated
 | HTTP API | **Partial** | Everything but repair and the dossier; see §14 |
 | Throwaway dashboard | **Built** | One static file; the §6.1 control room replaces it |
 | Command-line client | **Built** | Single command `foleyflow` — project verbs over HTTP; `render` / `direct` file-scoped (§14.1) |
-| Self-hosted SFX worker | **Built** | MOSS-SoundEffect v2 behind HTTP; `LocalAdapter` + `get_sfx` verified end-to-end (§9.1) |
+| Self-hosted SFX worker | **Built** | MOSS-SoundEffect v2 behind HTTP; every routing category resolves to it (§9.1) |
 | Foley generation (stems) | **Built** | Driven from a mix run; shared B2 cache in front, so a re-mix generates nothing |
 | Mix / export | **Built** | `POST /mixes` renders and measures; `POST /exports` writes the §11.6 manifest and moves the pointer |
 | Artifact dossier | **Not built** | The one read view still missing (§14) |
@@ -410,8 +410,16 @@ base URL resolves from `$FOLEYFLOW_SFX_WORKER_URL`, then
 `[adapters.local] base_url`, then localhost — so pointing at a tunnel needs no
 code edit. The worker lives outside this repo and is not covered by its tests.
 
-Not yet done: the tunnel itself, and driving stem generation from a run. Today
-`get_sfx` produces one stem on demand.
+**Routing points at it.** Every category in `providers.toml` resolves to
+`openmoss/moss-soundeffect-v2`; the fal endpoints stay declared so historical
+ledger rows and cached clips still resolve, but nothing routes there by default.
+Until 2026-07-30 the table still named fal for every category, which — with the
+credits gone — meant the default path was a run that died on a missing key. The
+categories are kept distinct despite sharing an endpoint: the name travels into
+provenance and the UI, and it is the seam a per-event hero override selects on.
+
+Not yet done: the tunnel itself, and the explicit per-event escalation to the
+paid hero tier — §9.3's approval flow needs the repair route to hang off.
 
 Prices are planning estimates, not guarantees. FoleyFlow records the estimate
 actually presented to the user at approval time.
