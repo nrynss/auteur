@@ -336,3 +336,129 @@ def test_event_log_order_survives_rapid_appends(store, project):
     seq = [e.type for e in store.list_events(project.id)
            if e.type.startswith("postproduction.seq.")]
     assert seq == [f"postproduction.seq.{i:02d}" for i in range(40)]
+
+
+# -- found by the first live run against real B2 -----------------------------
+#
+# None of these could fail offline: LocalBackend implements conditional writes
+# correctly, so the suite exercised a code path that no shipped backend takes.
+
+def _b2_stub(*, conditional_status):
+    """A B2Backend wired to a fake S3 client.
+
+    `conditional_status` is what the endpoint answers to a PutObject carrying
+    `If-None-Match: *` — 501 is what Backblaze B2 really returns.
+    """
+    import foleyflow.storage.b2 as b2mod
+
+    code = "NotImplemented" if conditional_status == 501 else "AccessDenied"
+
+    class Refused(Exception):
+        response = {"ResponseMetadata": {"HTTPStatusCode": conditional_status},
+                    "Error": {"Code": code}}
+
+    class Client:
+        def __init__(self):
+            self.objects = {}
+            self.conditional_attempts = 0
+
+        def put_object(self, **kw):
+            if "IfNoneMatch" in kw:
+                self.conditional_attempts += 1
+                raise Refused()
+            self.objects[kw["Key"]] = kw["Body"]
+
+        def head_object(self, **kw):
+            if kw["Key"] not in self.objects:
+                raise _NotFound()
+            return {}
+
+    class _NotFound(Exception):
+        response = {"ResponseMetadata": {"HTTPStatusCode": 404},
+                    "Error": {"Code": "404"}}
+
+    backend = b2mod.B2Backend.__new__(b2mod.B2Backend)
+    backend.bucket, backend.prefix = "b", ""
+    backend._conditional_put = True
+    backend._client = Client()
+    return backend, b2mod, (Refused, _NotFound)
+
+
+def test_b2_falls_back_when_the_endpoint_rejects_conditional_writes():
+    """Backblaze answers 501 to `If-None-Match: *`. Propagating that as a
+    StorageError meant every immutable write failed against the only backend
+    that ships: no run ever recorded a terminal state, no timeline version
+    could be allocated, and a mix could not complete."""
+    backend, b2mod, errors = _b2_stub(conditional_status=501)
+    original = b2mod._boto_errors
+    b2mod._boto_errors = lambda: errors
+    try:
+        backend.put_if_absent("projects/p/runs/r/run.json", b"{}")
+        assert backend._client.objects, "the object must still be written"
+
+        # Already present: the guard has to survive the downgrade, or the
+        # immutability rule quietly becomes "last writer wins".
+        with pytest.raises(PreconditionFailed):
+            backend.put_if_absent("projects/p/runs/r/run.json", b"{}")
+
+        # And the doomed conditional round trip is not repeated per write.
+        assert backend._client.conditional_attempts == 1
+    finally:
+        b2mod._boto_errors = original
+
+
+def test_b2_still_fails_closed_on_an_unexpected_conditional_error():
+    """Only 501 downgrades. A 403 must not be read as "no conditional support"
+    and turned into an unconditional overwrite."""
+    backend, b2mod, errors = _b2_stub(conditional_status=403)
+    original = b2mod._boto_errors
+    b2mod._boto_errors = lambda: errors
+    try:
+        with pytest.raises(StorageError):
+            backend.put_if_absent("projects/p/runs/r/run.json", b"{}")
+        assert not backend._client.objects
+    finally:
+        b2mod._boto_errors = original
+
+
+def test_a_write_failure_is_not_filed_as_already_completed(store, project):
+    """`fail_run` caught every StorageError as "the run already finished", so a
+    genuine write failure left no run.json and no `run.failed` event."""
+    class Broken(LocalBackend):
+        def put_if_absent(self, key, data, content_type=None):
+            raise StorageError("backend unreachable")
+
+    run = store.start_run(project.id, "mix")
+    store.backend = Broken(store.backend.root)
+
+    with pytest.raises(StorageError):
+        store.fail_run(run, "boom")
+
+    types = [e.type for e in store.list_events(project.id)]
+    assert EVENT_RUN_FAILED_AFTER_COMPLETION not in types, \
+        "a broken backend is not evidence that the run completed"
+
+
+def test_a_failed_run_with_no_record_does_not_poll_as_running(store, project):
+    """`GET /runs/{id}` fell back to "running" whenever run.json was missing, so
+    a `--wait` client polled a dead run until it was killed."""
+    from fastapi.testclient import TestClient
+
+    from foleyflow.api.app import API_PREFIX, create_app
+    from foleyflow.api.jobs import JobRunner
+
+    run = store.start_run(project.id, "mix")
+    # The state fail_run leaves behind when the record write itself fails.
+    store.append_event(project.id, EVENT_RUN_FAILED_AFTER_COMPLETION,
+                       run_id=run.id,
+                       payload={"kind": "mix", "error": "MissingCredentialsError",
+                                "error_code": "internal_error"})
+
+    runner = JobRunner(store, max_workers=1)
+    with TestClient(create_app(store, runner),
+                    raise_server_exceptions=False) as c:
+        body = c.get(f"{API_PREFIX}/projects/{project.id}/runs/{run.id}").json()
+    runner.shutdown(wait=True)
+
+    assert body["status"] == "failed"
+    assert body["error_code"] == "internal_error"

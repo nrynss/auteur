@@ -455,19 +455,45 @@ def create_app(store: Optional[ProjectStore] = None,
     def get_run(project_id: str, run_id: str) -> RunOut:
         """Answered from storage for a finished run, and from the event log for
         one still in flight — a terminal record is only written at the end, so
-        a running job has no run.json to read."""
+        a running job has no run.json to read.
+
+        The log is also consulted for a *terminal* event, not just a start.
+        Assuming "no record means still running" made a run whose record could
+        not be written poll as running forever, which is what a `--wait` client
+        does until it is killed. If the log says it ended, it ended.
+        """
+        from foleyflow.projects import (EVENT_RUN_COMPLETED, EVENT_RUN_FAILED,
+                                        EVENT_RUN_FAILED_AFTER_COMPLETION,
+                                        EVENT_RUN_STARTED)
+
         _check_project_id(project_id)
         try:
             return RunOut(**store.get_run(project_id, run_id).to_dict())
         except StorageError:
             pass
 
+        seen = None
+        status = "running"
+        error = error_code = None
         for event in store.list_events(project_id):
-            if event.run_id == run_id:
-                return RunOut(id=run_id, project_id=project_id,
-                              kind=event.payload.get("kind", "unknown"),
-                              status="running", created_at=event.created_at)
-        raise err.RunNotFound(run_id)
+            if event.run_id != run_id:
+                continue
+            if seen is None or event.type == EVENT_RUN_STARTED:
+                seen = event
+            if event.type == EVENT_RUN_COMPLETED:
+                status = "completed"
+            elif event.type in (EVENT_RUN_FAILED,
+                                EVENT_RUN_FAILED_AFTER_COMPLETION):
+                status = "failed"
+                error = event.payload.get("error") or "run failed"
+                error_code = event.payload.get("error_code") or "run_failed"
+
+        if seen is None:
+            raise err.RunNotFound(run_id)
+        return RunOut(id=run_id, project_id=project_id,
+                      kind=seen.payload.get("kind", "unknown"),
+                      status=status, created_at=seen.created_at,
+                      error=error, error_code=error_code)
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/events",
              response_model=EventListResponse, tags=["runs"])

@@ -313,7 +313,13 @@ class ProjectStore:
                 key, json.dumps(payload, indent=2, sort_keys=True).encode("utf-8"),
                 content_type="application/json")
         except PreconditionFailed as e:
-            raise StorageError(
+            # Re-raised as PreconditionFailed, not a bare StorageError: it is a
+            # StorageError subclass either way, so `except StorageError` callers
+            # are unaffected, but "this key is already written" stays
+            # distinguishable from "storage is broken". fail_run turns on that
+            # difference, and flattening the two made a B2 outage look like a
+            # run that had already completed.
+            raise PreconditionFailed(
                 f"refusing to overwrite immutable object {key!r} — "
                 "completed artifacts are never rewritten (SPEC.md §10)") from e
         return key
@@ -444,6 +450,14 @@ class ProjectStore:
         from inside the error handler, and the run would stay recorded as
         `completed`: SPEC.md §12's "never a silently incomplete complete
         project", exactly inverted.
+
+        Only `PreconditionFailed` means already-terminal. Catching every
+        StorageError here filed genuine write failures as
+        `failed_after_completion` and left no run.json at all — and since
+        `GET /runs/{id}` falls back to the event log for a run with no record,
+        the run then read as *running* forever, so a `--wait` client polled a
+        dead run indefinitely. Anything else propagates to the job runner,
+        which logs that the failure could not be recorded.
         """
         failed = Run(
             id=run.id, project_id=run.project_id, kind=run.kind,
@@ -456,7 +470,7 @@ class ProjectStore:
         try:
             self._put_json_immutable(self.run_key(run.project_id, run.id),
                                      failed.to_dict())
-        except StorageError:
+        except PreconditionFailed:
             self.append_event(run.project_id, EVENT_RUN_FAILED_AFTER_COMPLETION,
                               actor=actor, run_id=run.id,
                               payload={"kind": run.kind, "error_code": error_code,

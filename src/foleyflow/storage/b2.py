@@ -22,6 +22,7 @@ endpoint URLs) escaped to callers written against the StorageError contract.
 """
 
 import os
+import sys
 from typing import Optional
 
 from foleyflow.storage.base import (
@@ -71,6 +72,10 @@ class B2Backend:
 
         self.bucket = bucket
         self.prefix = prefix.strip("/")
+        # Cleared the first time the endpoint answers 501 to a conditional
+        # write, so the unsupported round trip is attempted once per process
+        # rather than on every immutable put. See put_if_absent.
+        self._conditional_put = True
         self._client = boto3.client(
             "s3",
             endpoint_url=endpoint_url,
@@ -159,24 +164,55 @@ class B2Backend:
 
     def put_if_absent(self, key: str, data: bytes,
                       content_type: Optional[str] = None) -> str:
-        """Conditional create via `If-None-Match: *`.
+        """Create only if absent, atomically where the service allows it.
 
-        S3-compatible conditional writes make this a single atomic operation,
-        so two writers racing to allocate the same version cannot both win.
-        A backend that rejects the header fails closed — the error propagates
-        rather than silently degrading to an unconditional overwrite.
+        `If-None-Match: *` makes this one operation, so two writers racing to
+        allocate the same version cannot both win. **Backblaze B2's S3 API does
+        not implement it** — PutObject answers `501 NotImplemented` — so on B2
+        the atomic path is unavailable no matter how much we would prefer it.
+
+        The previous version propagated that 501 as a StorageError, on the
+        principle that a backend rejecting the header should fail closed rather
+        than silently overwrite. Against B2 that meant *every* immutable write
+        failed: no run ever recorded a terminal state, no timeline version could
+        be allocated, and a failed run was misfiled as `failed_after_completion`
+        because `fail_run` reads a StorageError here as "already terminal". The
+        offline suite could not see it — LocalBackend implements the condition
+        correctly.
+
+        So a 501 downgrades, once, to check-then-write, and the capability is
+        remembered so the doomed round trip is not repeated. That is not atomic:
+        two writers can both pass `exists` and the second overwrites the first.
+        The deployment target is a single instance (docs/api.md §4), which is
+        what makes the window acceptable — but it is a real weakening of §10's
+        guarantee, and it is announced on stderr rather than left to be
+        discovered.
         """
-        try:
-            self._client.put_object(
-                Bucket=self.bucket, Key=self._key(key), Body=data,
-                ContentType=content_type or "application/octet-stream",
-                IfNoneMatch="*")
-        except _boto_errors() as e:
-            code = getattr(e, "response", {}).get("Error", {}).get("Code")
-            if _status_of(e) == 412 or code in ("PreconditionFailed", "412"):
-                raise PreconditionFailed(f"object already exists at {key!r}") from e
-            raise StorageError(f"conditional upload failed for {key!r} "
-                               f"(status {_status_of(e)})") from e
+        if self._conditional_put:
+            try:
+                self._client.put_object(
+                    Bucket=self.bucket, Key=self._key(key), Body=data,
+                    ContentType=content_type or "application/octet-stream",
+                    IfNoneMatch="*")
+                return key
+            except _boto_errors() as e:
+                code = getattr(e, "response", {}).get("Error", {}).get("Code")
+                if _status_of(e) == 412 or code in ("PreconditionFailed", "412"):
+                    raise PreconditionFailed(
+                        f"object already exists at {key!r}") from e
+                if _status_of(e) != 501 and code != "NotImplemented":
+                    raise StorageError(f"conditional upload failed for {key!r} "
+                                       f"(status {_status_of(e)})") from e
+                self._conditional_put = False
+                print("[b2] WARNING: this endpoint rejects conditional writes "
+                      "(501); immutable artifacts fall back to a non-atomic "
+                      "check-then-write. Safe for a single instance only.",
+                      file=sys.stderr, flush=True)
+
+        # Fallback: not atomic, deliberately. See the docstring.
+        if self.exists(key):
+            raise PreconditionFailed(f"object already exists at {key!r}")
+        self.put_bytes(key, data, content_type)
         return key
 
     def list_keys(self, prefix: str):
