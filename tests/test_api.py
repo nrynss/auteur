@@ -1162,6 +1162,131 @@ def test_put_budget_rejects_non_positive(client, store):
         assert r.status_code == 400, r.text
 
 
+def test_put_budget_below_spend_emits_alerts(client, store, budget_ledger):
+    """Task 17: lowering the budget beneath existing spend alerts immediately.
+
+    Alerts fire only on ledger append without this path — setting $3 against
+    $4 already spent must announce every crossed threshold once, with
+    reason=budget_set so History can say why.
+    """
+    from foleyflow.projects import EVENT_BUDGET_ALERT, EVENT_BUDGET_SET
+
+    budget_ledger.invalidate_project_spend_cache()
+    budget_ledger.invalidate_budget_cache()
+
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4", budget_usd=None)
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 4.0)
+    assert not any(e.type == EVENT_BUDGET_ALERT
+                   for e in store.list_events(project.id))
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/budget",
+                   json={"budget_usd": 3.0})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["budget_usd"] == 3.0
+    assert body["spent"] == pytest.approx(4.0)
+    assert body["remaining"] == pytest.approx(-1.0)
+    # Panel is honest either way; the lifecycle events are the point.
+    assert all(t["crossed"] for t in body["thresholds"])
+
+    alerts = [e for e in store.list_events(project.id)
+              if e.type == EVENT_BUDGET_ALERT]
+    thresholds = sorted(e.payload["threshold"] for e in alerts)
+    assert thresholds == [0.5, 0.8, 1.0, 1.2]
+    assert all(e.payload.get("reason") == "budget_set" for e in alerts)
+    assert all(e.payload.get("spent") == pytest.approx(4.0) for e in alerts)
+
+    # Same value again: no-op — no new set event, no re-alerts.
+    sets_before = sum(1 for e in store.list_events(project.id)
+                      if e.type == EVENT_BUDGET_SET)
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/budget",
+                   json={"budget_usd": 3.0})
+    assert r.status_code == 200
+    sets_after = sum(1 for e in store.list_events(project.id)
+                     if e.type == EVENT_BUDGET_SET)
+    assert sets_after == sets_before
+    assert sum(1 for e in store.list_events(project.id)
+               if e.type == EVENT_BUDGET_ALERT) == 4
+
+
+def test_put_budget_clear_and_raise_emit_nothing(client, store, budget_ledger):
+    """Clearing removes the figure; raising above spend crosses nothing."""
+    from foleyflow.projects import EVENT_BUDGET_ALERT
+
+    budget_ledger.invalidate_project_spend_cache()
+    budget_ledger.invalidate_budget_cache()
+
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4", budget_usd=5.0)
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 1.0)
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/budget",
+                   json={"budget_usd": 10.0})
+    assert r.status_code == 200
+    assert not any(e.type == EVENT_BUDGET_ALERT
+                   for e in store.list_events(project.id))
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/budget",
+                   json={"budget_usd": None})
+    assert r.status_code == 200
+    assert r.json()["budget_usd"] is None
+    assert not any(e.type == EVENT_BUDGET_ALERT
+                   for e in store.list_events(project.id))
+
+
+def test_put_budget_lower_again_alerts_under_new_generation(
+        client, store, budget_ledger):
+    """Lower → raise → lower again: the second lower is a genuine re-cross."""
+    from foleyflow.projects import EVENT_BUDGET_ALERT
+
+    budget_ledger.invalidate_project_spend_cache()
+    budget_ledger.invalidate_budget_cache()
+
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4", budget_usd=None)
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 4.0)
+
+    client.put(f"{API_PREFIX}/projects/{project.id}/budget",
+               json={"budget_usd": 3.0})
+    first = [e for e in store.list_events(project.id)
+             if e.type == EVENT_BUDGET_ALERT]
+    assert len(first) == 4
+
+    client.put(f"{API_PREFIX}/projects/{project.id}/budget",
+               json={"budget_usd": 10.0})
+    # Raise is silent; prior alerts remain.
+    assert sum(1 for e in store.list_events(project.id)
+               if e.type == EVENT_BUDGET_ALERT) == 4
+
+    client.put(f"{API_PREFIX}/projects/{project.id}/budget",
+               json={"budget_usd": 2.0})
+    second = [e for e in store.list_events(project.id)
+              if e.type == EVENT_BUDGET_ALERT
+              and e.payload.get("budget_usd") == 2.0]
+    assert len(second) == 4
+    assert all(e.payload.get("reason") == "budget_set" for e in second)
+
+
+def test_put_budget_survives_alert_failure(client, store, budget_ledger,
+                                           monkeypatch):
+    """An alerting bug must not fail a durable budget.set."""
+    import foleyflow.ledger as ledger_mod
+
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4", budget_usd=None)
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 4.0)
+
+    def boom(*a, **k):
+        raise RuntimeError("alert path exploded")
+
+    monkeypatch.setattr(ledger_mod, "evaluate_budget_alerts", boom)
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/budget",
+                   json={"budget_usd": 3.0})
+    assert r.status_code == 200, r.text
+    assert r.json()["budget_usd"] == 3.0
+
+
 def test_budget_alert_fires_once_per_threshold(client, store, budget_ledger):
     """Task 9b: crossing 80% during fan-out emits exactly one alert event."""
     from foleyflow.projects import EVENT_BUDGET_ALERT

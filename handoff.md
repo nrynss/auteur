@@ -16,16 +16,14 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   `docs/api.md` is written ahead of the code and treated as source of truth;
   every endpoint in it is live and covered by tests.
 - Task numbers are the current queue; DONE items keep their titles. Remaining:
-  **10–17**, then **7 (control-room UI)** last. Task 9 (budget alerts) is
-  **DONE** — advisory mutable budget; task 6 is history. **17 is a small
-  follow-up to 9 found in review**; whoever holds the task-9 context should
-  take it, since it is one call site and the traps are all in that code.
+  **10–16**, then **7 (control-room UI)** last. Task 9 (budget alerts) and
+  **17** (alert on budget set below spend) are **DONE**.
 - **10, 11 and 12 are independent and unblock the rest** — CI, build provenance,
   and a post-deploy smoke check. Do those first when running several agents in
   parallel: with no CI, two agents can each be green locally and broken
   together, and a human finds out. 13 depends on 11. 14 and 15 are demo-risk
   work and can run alongside.
-- `uv run pytest -q` → **522 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **526 passed, 1 skipped**. No provider credentials
   required: the billed calls are stubbed at two seams, `stems.generate_many`
   and `sfx_cache.generate_canonical_wav`. Everything else — ffmpeg, the mix, the
   shared cache, storage, the Genblaze pipelines — runs for real.
@@ -114,28 +112,22 @@ honest without double-billing a successful generation.
 
 ## 6. Per-project budgets — M — **DONE**
 
-A project is approved with a dollar cap and every billed row is attributed
+*(Superseded by task 9: the budget is now advisory and mutable, not a hard
+cap frozen at creation. Analyze/regenerate are not refused on budget
+grounds. Mix pre-flight projection via `project_mix_cost` prices cache
+misses at the door — read 9, not this paragraph, for current behaviour.)*
+
+A project carries an advisory dollar figure and every billed row is attributed
 back to it. `log_transaction` rows carry `project_id` from a contextvar the
 job runner sets per run — analysis, mix and repair all tag their rows with no
 call-site change; a direct `foleyflow render` stays unattributed (global)
-unless `--project` opts it in. `budget_usd` is set at creation (create body
-or `providers.toml [budgets]` default) and fixed on the frozen project
-record. `GET /projects/{id}/budget` reports configured, spent (failed calls
-counted), remaining, per-model breakdown, `estimate: true` and
-`ledger_writable`; the dossier carries a compact block. Analyze and
-regenerate are gated at the route (422 with the numbers when `remaining <
-estimate`); free calls and cap-less projects are never refused; no reservation
-(documented). Mix is deliberately NOT gated — its cost depends on cache hits
-and is unknowable at the door, so a paid-tier mix can outspend the cap (the
-overage is reported, not prevented; the UI must not imply the cap covers
-every dollar).
-
-The CLI has a first-class current project — positional id > `--project` >
-`$FOLEYFLOW_PROJECT` > `foleyflow use`'s persisted default — and `foleyflow
-budget` reads the same endpoint the UI will. Project-less rows are never
-stranded: `POST /projects/{id}/attributions` (and `foleyflow attribute`)
-writes an immutable rescue override claiming unattributed rows written before
-a time, first-come by `before` so a row can never land in two projects.
+unless `--project` opts it in. The CLI has a first-class current project —
+positional id > `--project` > `$FOLEYFLOW_PROJECT` > `foleyflow use`'s
+persisted default — and `foleyflow budget` reads the same endpoint the UI
+will. Project-less rows are never stranded: `POST /projects/{id}/attributions`
+(and `foleyflow attribute`) writes an immutable rescue override claiming
+unattributed rows written before a time, first-come by `before` so a row can
+never land in two projects.
 
 ## 7. Control room UI — L
 
@@ -302,91 +294,12 @@ README's deploy section, which currently documents the `--env-vars-file` form.
 **Acceptance:** `gcloud run services describe` shows secret references, not
 values.
 
-## 17. Alert when a budget is set below what is already spent — S
+## 17. Alert when a budget is set below what is already spent — S — **DONE**
 
-Follow-up to task 9, found in review. Task 9 is otherwise sound: sequential
-spend fires 50/80/100/120 once each, and twelve concurrent rows crossing every
-threshold at once produce exactly four alerts with no duplicates.
-
-### The gap
-
-Alerts fire only on ledger append (`_maybe_emit_budget_alerts`, called from
-`log_transaction`). `put_budget` → `store.set_budget` appends the
-`budget.set` event and returns the panel; it never evaluates thresholds. So
-lowering a budget past current spend announces nothing.
-
-Reproduced against a `LocalBackend` store:
-
-```
-spent: $4.00
-alerts before setting budget: 0
-budget set to $3.00 against $4.00 already spent
-alerts after setting budget:  0
-```
-
-Every threshold is crossed at 133%. `GET /budget` is correct — `remaining:
--1.0`, all four `crossed: true` — so a UI that polls sees the truth. The
-lifecycle event the History view renders never happens, and a user who sets a
-budget and then stops spending is never told.
-
-This is the feature's headline case. The whole point is a figure the user can
-set *whenever they like* and be alerted against; the moment they set it is the
-moment they asked to be told.
-
-### What to build
-
-Evaluate thresholds after a successful `set_budget`, reusing
-`_maybe_emit_budget_alerts` rather than writing a second evaluator.
-
-### Traps
-
-- **Use the full `project_spend`, not `_running_spend`.** The running total is
-  seeded per project per process by the *ledger write* path. The API process
-  handling a `PUT /budget` may never have seeded for that project — it has
-  written no rows — so the cache would read zero and alert on nothing. This is
-  a metadata route, not a hot loop; one accurate scan is the right cost.
-- **Clearing must not alert.** `budget_usd: null` removes the figure; there is
-  nothing to cross.
-- **Raising must not alert.** Setting a budget comfortably above spend crosses
-  nothing and must stay silent.
-- **Never raise.** Task 9 holds the line that an alerting bug must not become a
-  render bug; the same applies here — a failed alert must not fail the `PUT`,
-  which has already durably appended the budget event.
-- **Setting the same value twice.** `set_budget` appends an event every call,
-  and generation is the latest event id, so an unchanged re-`PUT` mints a new
-  generation and re-fires every crossed threshold. Decide deliberately: either
-  make `set_budget` a no-op when the value is unchanged, or key generation on
-  the value rather than the event id. Do not leave a UI that saves an unedited
-  form able to spam the log.
-- Keep the file-mode ledger skip consistent with task 9 — no project event log
-  on that backend, so no alerts.
-
-### Worth considering
-
-The payload could say *why* a threshold was crossed — spending into it versus
-lowering the budget beneath it. Same event, materially different sentence for a
-UI to render, and the information is free at the call site.
-
-### Acceptance
-
-- Spending $4.00 then setting a $3.00 budget emits alerts for every crossed
-  threshold, once each.
-- Setting $3.00 again immediately does not double-announce (subject to the
-  same-value decision above).
-- Clearing the budget emits nothing.
-- Raising the budget above spend emits nothing.
-- Lowering it again below spend alerts again — that is a genuinely new
-  crossing, not a duplicate.
-- An alert failure does not fail the `PUT`.
-- `522 passed` does not regress.
-
-### While in there
-
-`handoff.md` task 6 still reads "its cost depends on cache hits and is
-unknowable at the door". Task 9c disproved it — the pre-flight probe in
-`project_mix_cost` prices exactly that. Orientation already says to read 6 as
-history, so this is cosmetic, but strike the sentence rather than leave a wrong
-claim in the file agents are told to trust.
+`set_budget` evaluates thresholds via `evaluate_budget_alerts` (full
+`project_spend` scan, not the process-local running total). Same-value re-PUT
+is a no-op. Clear/raise silent; lower beneath spend emits once per threshold
+with `reason: "budget_set"`. Alert failures never fail the PUT.
 
 ## Out of scope
 

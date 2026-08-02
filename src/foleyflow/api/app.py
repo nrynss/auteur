@@ -761,6 +761,9 @@ def create_app(store: Optional[ProjectStore] = None,
 
         Appends a ``postproduction.budget.set`` event — latest-wins, never
         rewrites the project record. ``budget_usd: null`` clears the figure.
+        Unchanged values are a no-op. Lowering beneath current spend emits
+        threshold alerts immediately (task 17); the PUT still succeeds if
+        alerting fails.
         """
         _check_project_id(project_id)
         _load_state(store, project_id)   # 404 before doing any work

@@ -523,15 +523,19 @@ provider balance):
 `budget_usd` is latest-wins from `postproduction.budget.set` events (seeded at
 creation from the body or `providers.toml [budgets] default`); `None` when
 cleared or never set. `PUT` appends a new set event with the actor — the
-project record is never rewritten. `spent` sums every attributed ledger row
-(failed calls included). `remaining` is `budget_usd - spent` and may be
-negative when overspent. `spent_estimated` / `spent_actual` split by
-`cost_source`. Threshold fractions default to 50/80/100/120%
-(`providers.toml [budgets] thresholds`); each newly crossed threshold emits
-exactly one `postproduction.budget.alert` lifecycle event (idempotent under
-concurrent fan-out via `put_if_absent`). Alerts carry the estimated-vs-actual
-split. `ledger_writable: false` means figures are fiction and alerts are
-unreliable — work is not blocked.
+project record is never rewritten. An unchanged re-`PUT` is a no-op (no new
+event, no re-alerts). Lowering the figure beneath current spend evaluates
+thresholds immediately and emits alerts with `reason: "budget_set"`; clearing
+or raising above spend is silent. Alert failures never fail the `PUT`.
+`spent` sums every attributed ledger row (failed calls included). `remaining`
+is `budget_usd - spent` and may be negative when overspent. `spent_estimated`
+/ `spent_actual` split by `cost_source`. Threshold fractions default to
+50/80/100/120% (`providers.toml [budgets] thresholds`); each newly crossed
+threshold emits exactly one `postproduction.budget.alert` lifecycle event
+(idempotent under concurrent fan-out via `put_if_absent`). Alerts carry the
+estimated-vs-actual split and a `reason` of `"spend"` or `"budget_set"`.
+`ledger_writable: false` means figures are fiction and alerts are unreliable
+— work is not blocked.
 
 CLI: `foleyflow budget`, `foleyflow budget --set 5`, `foleyflow budget --clear`.
 

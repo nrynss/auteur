@@ -653,12 +653,40 @@ def _cached_budget(project_id: str) -> tuple:
     return budget, generation
 
 
-def _maybe_emit_budget_alerts(project_id: str, *, spend: Dict[str, float]) -> None:
+def evaluate_budget_alerts(project_id: str, *,
+                           reason: str = "spend") -> None:
+    """Evaluate thresholds against a full ``project_spend`` scan.
+
+    Used by ``PUT /budget`` (task 17): the API process may never have seeded
+    the running total for this project, so the hot-path cache would read
+    zero. One accurate scan is the right cost for a metadata route.
+
+    Never raises — an alerting bug must not fail a durable budget.set.
+    """
+    try:
+        if _file_ledger_path() is not None:
+            return
+        spend = project_spend(project_id)
+        _maybe_emit_budget_alerts(project_id, spend=spend, reason=reason)
+    except Exception as exc:
+        print(f"[ledger] WARNING: budget alert evaluation failed for "
+              f"{project_id}: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+
+
+def _maybe_emit_budget_alerts(project_id: str, *, spend: Dict[str, float],
+                              reason: str = "spend") -> None:
     """Emit lifecycle alerts for newly crossed thresholds.
 
-    Caller holds the per-project lock and has already updated running spend.
-    Increment always runs (even with no budget) so clear→set does not lose
-    history. Idempotent under concurrent fan-out: in-process claim set plus
+    On the ledger append path the caller holds the per-project lock and has
+    already updated running spend. ``PUT /budget`` calls via
+    :func:`evaluate_budget_alerts` with a full scan instead.
+
+    ``reason`` is ``"spend"`` (crossed by a billed row) or ``"budget_set"``
+    (figure lowered beneath existing spend) — same event, different sentence
+    for the History view.
+
+    Idempotent under concurrent fan-out: in-process claim set plus
     ``put_if_absent`` marker keyed by (project, generation, threshold).
     Never raises — see ``log_transaction``.
     """
@@ -705,6 +733,7 @@ def _maybe_emit_budget_alerts(project_id: str, *, spend: Dict[str, float]) -> No
             "spent": round(total, 4),
             "spent_estimated": round(float(spend["estimated"]), 4),
             "spent_actual": round(float(spend["actual"]), 4),
+            "reason": reason,
             "created_at": time.time(),
         }
         body = json.dumps(marker, separators=(",", ":")).encode("utf-8")
@@ -734,6 +763,7 @@ def _maybe_emit_budget_alerts(project_id: str, *, spend: Dict[str, float]) -> No
                     "spent_estimated": round(float(spend["estimated"]), 4),
                     "spent_actual": round(float(spend["actual"]), 4),
                     "fraction": round(total / budget, 4) if budget else None,
+                    "reason": reason,
                 })
         except Exception as exc:
             print(f"[ledger] WARNING: budget alert event failed for "

@@ -373,23 +373,50 @@ class ProjectStore:
         return project
 
     def set_budget(self, project_id: str, budget_usd: Optional[float], *,
-                   actor: str = "user") -> Event:
+                   actor: str = "user") -> Optional[Event]:
         """Set or clear the project's advisory budget (latest-wins event).
 
         ``None`` clears the budget — no alerts fire and remaining is null.
         The project record is never rewritten (SPEC.md §10).
+
+        Unchanged re-PUTs are a no-op (no new event, no re-alerts): a UI that
+        saves an unedited form must not spam the log. When the figure does
+        change to a positive value, thresholds are evaluated against a full
+        ``project_spend`` so lowering the budget beneath existing spend
+        alerts immediately (task 17) — the running-total cache is process-
+        local and the API process may never have written a row for this
+        project.
         """
         if budget_usd is not None and budget_usd <= 0:
             raise ValueError("budget_usd must be > 0 when set")
+
+        # Same-value no-op: generation is the event id, so an unchanged re-PUT
+        # would mint a new generation and re-fire every crossed threshold.
+        current = self.get_state(project_id).budget_usd
+        if budget_usd is None and current is None:
+            return None
+        if (budget_usd is not None and current is not None
+                and abs(float(budget_usd) - float(current)) < 1e-9):
+            return None
+
         event = self.append_event(
             project_id, EVENT_BUDGET_SET, actor=actor,
             payload={"budget_usd": budget_usd})
-        # Drop the ledger's short-lived budget cache so the next stem sees
-        # the new figure (alert marker keys include the budget amount).
+        # Drop the ledger's short-lived budget cache so the next evaluation
+        # sees the new figure and generation (alert marker keys include both).
         try:
-            from foleyflow.ledger import invalidate_budget_cache
+            from foleyflow.ledger import (
+                evaluate_budget_alerts,
+                invalidate_budget_cache,
+            )
             invalidate_budget_cache(project_id)
+            # Clearing removes the figure — nothing to cross. Raising above
+            # spend is silent inside evaluate (no threshold met). Lowering
+            # beneath spend is the headline case task 17 covers.
+            if budget_usd is not None:
+                evaluate_budget_alerts(project_id, reason="budget_set")
         except Exception:
+            # Never let an alerting bug fail a durable budget.set.
             pass
         return event
 
