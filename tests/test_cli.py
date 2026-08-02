@@ -220,6 +220,18 @@ def test_events_shows_the_audit_trail(client, store, project, capsys):
     assert "foley.plan.proposed" in out
 
 
+def test_dossier_lists_artifacts_with_signed_urls(client, store, project, capsys):
+    """The CLI surfaces the §15 closing-beat call: every artifact, sizes, and
+    the signed URLs rather than the raw keys a client could misuse."""
+    store.save_timeline(project.id, _timeline())
+    assert run(client, "dossier", project.id) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "artifacts" in out
+    assert "Signed URLs" in out
+    assert "timeline.v1.json" in out
+    assert "file:///" in out
+
+
 # -- error handling ----------------------------------------------------------
 
 def test_unknown_project_reports_the_api_error_code(client, capsys):

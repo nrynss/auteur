@@ -18,6 +18,7 @@ on its own. Pipeline modules (analyze, sfx, routing) read model config from
 
 from foleyflow.storage.base import (
     Backend,
+    ObjectHead,
     ObjectNotFound,
     PreconditionFailed,
     StorageError,
@@ -25,5 +26,5 @@ from foleyflow.storage.base import (
 from foleyflow.storage.local import LocalBackend
 from foleyflow.storage.factory import get_backend
 
-__all__ = ["Backend", "StorageError", "ObjectNotFound", "PreconditionFailed",
+__all__ = ["Backend", "ObjectHead", "StorageError", "ObjectNotFound", "PreconditionFailed",
            "LocalBackend", "get_backend"]

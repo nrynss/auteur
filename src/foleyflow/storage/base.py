@@ -19,7 +19,24 @@ into permanent run records. Messages here name the *key* — which the caller
 already knows — never the resolved local path, bucket, or provider URL.
 """
 
+from dataclasses import dataclass
 from typing import List, Optional, Protocol, runtime_checkable
+
+
+@dataclass(frozen=True)
+class ObjectHead:
+    """What `Backend.head` knows about one stored object.
+
+    `size_bytes` is always known — that is the point of a head request.
+    `sha256` is a full-content hash *of the stored object*, supplied when the
+    backend can produce one without a download: LocalBackend hashes the local
+    file, B2's S3 API does not expose one for objects uploaded without S3
+    checksums. Callers must not treat `None` as a gap in their own records —
+    it means the backend itself does not know.
+    """
+
+    size_bytes: int
+    sha256: Optional[str] = None
 
 
 class StorageError(RuntimeError):
@@ -77,6 +94,17 @@ class Backend(Protocol):
         Must raise rather than return False when the answer is unknown — a
         permission or network failure is not evidence of absence, and callers
         use this to guard immutable writes and cache lookups.
+        """
+
+    def head(self, key: str) -> ObjectHead:
+        """Size — and a content hash where the backend can supply one cheaply
+        — for the object at `key`.
+
+        Absent and unknown stay distinct, as everywhere else in this
+        interface: a missing object raises `ObjectNotFound`; a backend that
+        cannot answer raises `StorageError`. A caller building an artifact
+        listing must not fill it with zeros because storage is having a bad
+        moment.
         """
         ...
 

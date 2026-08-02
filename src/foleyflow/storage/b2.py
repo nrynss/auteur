@@ -26,6 +26,7 @@ import sys
 from typing import Optional
 
 from foleyflow.storage.base import (
+    ObjectHead,
     ObjectNotFound,
     PreconditionFailed,
     StorageError,
@@ -114,6 +115,26 @@ class B2Backend:
                 return False
             raise StorageError(f"could not determine whether {key!r} exists "
                                f"(status {_status_of(e)})") from e
+
+    def head(self, key: str) -> ObjectHead:
+        """Size of a stored object via one HeadObject call.
+
+        sha256 is deliberately None. B2's S3-compatible API returns the ETag —
+        an MD5 for single-part uploads — not a sha256, and objects uploaded
+        without S3 checksum headers expose no sha256 at all. Reporting an MD5
+        under the contract's sha256 field would be a lie; where the system has
+        recorded a real hash (the source video, each stem), the dossier carries
+        that value instead.
+        """
+        try:
+            response = self._client.head_object(Bucket=self.bucket, Key=self._key(key))
+        except _boto_errors() as e:
+            if _status_of(e) == 404 or getattr(e, "response", {}).get(
+                    "Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+                raise ObjectNotFound(f"no object at {key!r}") from e
+            raise StorageError(f"head failed for {key!r} "
+                               f"(status {_status_of(e)})") from e
+        return ObjectHead(size_bytes=int(response.get("ContentLength") or 0))
 
     def get(self, key: str, dest_path: str) -> str:
         os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)

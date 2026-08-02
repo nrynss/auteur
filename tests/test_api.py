@@ -6,6 +6,8 @@ credentials, no provider calls. These assert the *contract* in docs/api.md
 written against; the domain behaviour underneath has its own tests.
 """
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -657,6 +659,170 @@ def test_export_publishes_the_pointer(client, store, project, monkeypatch):
     assert body["has_export"] is True
     assert body["status"] == "ready"
     assert store.get_latest_export(project.id)["run_id"] == mix_run
+
+
+# -- dossier ----------------------------------------------------------------
+
+def _seed_full_project(store):
+    """A project with every artifact kind a dossier can list, plus the bytes
+    behind them — built through the store exactly as the API's own runs would
+    (the render math itself is covered in test_render.py)."""
+    from foleyflow.qa import build_report
+    from foleyflow.scenes import Scene
+
+    project = store.create_project(
+        title="Western standoff", input_key="source.mp4",
+        source_sha256="a" * 64, source_filename="standoff.mp4",
+        duration_s=15.04)
+    store.backend.put_bytes(project.input_key, b"FAKEVIDEO" * 64,
+                            content_type="video/mp4")
+
+    version = store.save_timeline(project.id, _timeline())
+    store.save_scenes(project.id, [
+        Scene(id="scene_0001", index=0, start_s=0.0, end_s=15.04)])
+    # Thumbnails are written at analysis time beside the scene record; the
+    # dossier reads them from `thumbnail_key` on each scene. extract_thumbnail
+    # needs a real video, so the contract test stands in for it directly.
+    store.backend.put_bytes(
+        store.scene_thumbnail_key(project.id, "scene_0001"),
+        b"JPEGDATA", content_type="image/jpeg")
+    store.backend.put_bytes(
+        store.scenes_key(project.id),
+        json.dumps({"scenes": [{
+            "id": "scene_0001", "index": 0, "start_s": 0.0, "end_s": 15.04,
+            "duration_s": 15.04,
+            "thumbnail_key": store.scene_thumbnail_key(project.id,
+                                                        "scene_0001")}]}
+        ).encode(), content_type="application/json")
+    store.save_qa_report(project.id, build_report([]))
+
+    run = store.start_run(project.id, "mix")
+    stem = {"cache_key": "abc",
+            "b2_key": "cache/0123456789abcdef.wav",
+            "endpoint": "openmoss/moss-soundeffect-v2",
+            "prompt": "gunshot", "duration_s": 2.0, "variant": "",
+            "cached": True, "sha256": "c" * 64}
+    store.save_stem_inventory(project.id, run.id, [stem])
+    store.backend.put_bytes(store.mix_key(project.id, run.id), b"MIXWAV" * 8,
+                            content_type="audio/wav")
+    store.backend.put_bytes(store.mix_video_key(project.id, run.id),
+                            b"MP4DATA" * 8, content_type="video/mp4")
+    store.backend.put_bytes("cache/0123456789abcdef.wav", b"STEM" * 8,
+                            content_type="audio/wav")
+    store.record_mix(project.id, run_id=run.id,
+                     mix_key=store.mix_key(project.id, run.id),
+                     video_key=store.mix_video_key(project.id, run.id),
+                     tier="full", timeline_version=version,
+                     stem_count=1, generated_count=0)
+    store.complete_run(run, timeline_version=version)
+
+    export = store.start_run(project.id, "export")
+    store.save_manifest(project.id, export.id, {"manifest_version": "1.0"})
+    store.set_latest_export(project.id, run_id=run.id,
+                            export_key=store.mix_video_key(project.id, run.id),
+                            manifest_key=store.manifest_key(project.id,
+                                                            export.id))
+    store.complete_run(export)
+    return project
+
+
+def test_dossier_lists_every_artifact_kind(client, store):
+    project = _seed_full_project(store)
+    body = client.get(f"{API_PREFIX}/projects/{project.id}/dossier").json()
+    assert body["project_id"] == project.id
+    kinds = [a["kind"] for a in body["artifacts"]]
+    for expected in ("source", "timeline", "scene_index", "scene_thumbnail",
+                     "qa_report", "event", "run_record", "stems", "stem",
+                     "mix", "final_export", "manifest", "export_pointer"):
+        assert expected in kinds, kinds
+    assert body["artifact_count"] == len(body["artifacts"])
+    # Every artifact is addressable through a signed URL, never a raw key a
+    # client could use directly (docs/api.md §1), and carries a real size.
+    for a in body["artifacts"]:
+        assert a["key"]
+        assert a["url"].startswith("file:///")
+        assert a["size_bytes"] > 0
+    assert body["total_bytes"] == sum(a["size_bytes"]
+                                       for a in body["artifacts"])
+
+
+def test_dossier_carries_recorded_hashes_not_recomputed_ones(client, store):
+    """sha256 is provenance where the system has one: the source's recorded
+    hash must not change even though the object it names is stubbed bytes, and
+    the stem hash comes from the inventory record."""
+    project = _seed_full_project(store)
+    body = client.get(f"{API_PREFIX}/projects/{project.id}/dossier").json()
+    by_key = {a["key"]: a for a in body["artifacts"]}
+    assert by_key["source.mp4"]["sha256"] == "a" * 64
+    assert by_key["cache/0123456789abcdef.wav"]["sha256"] == "c" * 64
+    # Whatever fills the column, it is a sha256 hexdigest or an honest None.
+    assert all(a["sha256"] is None or len(a["sha256"]) == 64
+               for a in body["artifacts"])
+
+
+def test_dossier_counts_physical_objects_not_references(client, store):
+    """Two runs sharing one content-addressed stem list one artifact: the
+    dossier lists what exists, not how often it is referenced."""
+    project = _seed_full_project(store)
+    run2 = store.start_run(project.id, "mix")
+    store.save_stem_inventory(project.id, run2.id, [{
+        "cache_key": "abc", "b2_key": "cache/0123456789abcdef.wav",
+        "endpoint": "openmoss/moss-soundeffect-v2", "prompt": "gunshot",
+        "duration_s": 2.0, "variant": "", "cached": True,
+        "sha256": "c" * 64}])
+    store.record_mix(project.id, run_id=run2.id,
+                     mix_key=store.mix_key(project.id, run2.id),
+                     video_key=store.mix_video_key(project.id, run2.id),
+                     tier="full", timeline_version=1, stem_count=1)
+    store.complete_run(run2, timeline_version=1)
+    body = client.get(f"{API_PREFIX}/projects/{project.id}/dossier").json()
+    stems = [a for a in body["artifacts"] if a["kind"] == "stem"]
+    assert len(stems) == 1
+
+
+def test_dossier_omits_artifacts_whose_objects_are_absent(client, project):
+    """A project record without its bytes lists only what exists: the upload
+    was never confirmed, so there is no source artifact."""
+    body = client.get(f"{API_PREFIX}/projects/{project.id}/dossier").json()
+    kinds = [a["kind"] for a in body["artifacts"]]
+    assert "source" not in kinds
+    assert all(k == "event" for k in kinds)   # the event log is all there is
+
+
+def test_dossier_404s_for_unknown_project(client):
+    r = client.get(f"{API_PREFIX}/projects/{VALID_ID}/dossier")
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "project_not_found"
+
+
+def test_dossier_503s_when_storage_cannot_answer(client, store, monkeypatch):
+    """A listing assembled during an outage would be a confident half-truth:
+    absent and unknown must stay distinct, so the route says storage is down
+    rather than returning a dossier full of holes."""
+    project = _seed_full_project(store)
+
+    def _boom(key):
+        raise StorageError("credentials rejected")
+
+    monkeypatch.setattr(store.backend, "head", _boom)
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/dossier")
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "storage_unavailable"
+
+
+def test_dossier_503s_when_signing_fails_after_a_successful_head(
+        client, store, monkeypatch):
+    """A head that succeeded and a sign that failed is a storage fault, not an
+    absent object: the dossier must never list an artifact with url: null."""
+    project = _seed_full_project(store)
+
+    def _boom(key, expires_s=3600):
+        raise StorageError("presign failed")
+
+    monkeypatch.setattr(store.backend, "signed_url", _boom)
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/dossier")
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "storage_unavailable"
 
 
 # -- quota ------------------------------------------------------------------

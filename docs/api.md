@@ -10,12 +10,11 @@ Base path: `/api/v1`
 Deployed at <https://foleyflow-142385844755.us-east4.run.app>.
 
 > **Not everything here is built.** This document is the contract and is
-> deliberately written ahead of the code, so two endpoints below describe
-> intent rather than behaviour. Both are marked **NOT IMPLEMENTED** at their
-> definition, and both are tracked in [../handoff.md](../handoff.md):
-> `POST /projects/{id}/events/{index}/regenerate` and
-> `GET /projects/{id}/dossier`. Everything else in this file is live and
-> covered by tests.
+> deliberately written ahead of the code, so one endpoint below describes
+> intent rather than behaviour. It is marked **NOT IMPLEMENTED** at its
+> definition, and it is tracked in [../handoff.md](../handoff.md):
+> `POST /projects/{id}/events/{index}/regenerate`. Everything else in this
+> file is live and covered by tests.
 
 ---
 
@@ -404,18 +403,24 @@ manifest carries `qa_override: true`.
 The published video and manifest come back as signed `export_url` and
 `manifest_url` on `GET /projects/{id}`.
 
-> **NOT IMPLEMENTED.** Every artifact it would assemble is already in B2 and
-> reachable through `ProjectStore`; this is composition, not new storage. See
-> handoff.md task 5.
-
 ```
 GET /api/v1/projects/{id}/dossier
 ```
 
-`200` — every artifact: source, scenes, timeline versions, stems, mixes,
-exports, QA reports, workflow logs, and the manifest — each with its B2 key,
-sha256, size, and a signed URL. This is the §15 demo's closing beat, so it is a
-single call that returns everything rather than something the UI assembles.
+`200` — every artifact: source, scene index and thumbnails, timeline versions,
+stem inventories and the stem clips themselves, mixes, the QA report, run
+records, the event log, manifests, and the export pointer — each with its
+storage key (provenance only), `size_bytes`, `sha256` where the system records
+one, and a signed URL. This is the §15 demo's closing beat, so it is a single
+call that returns everything rather than something the UI assembles.
+
+Composition only: nothing here writes, and nothing is downloaded to build the
+listing. Size comes from one backend HEAD per object; sha256 comes from
+provenance where one is recorded (the source video, each stem) or from a local
+backend's own hash. B2's S3 API exposes no sha256, so in a deployed store that
+column is the recorded value or absent — never a guess. `url` is signed with
+the same TTL as every other artifact link, so a dossier is browsable but never
+a durable public handle.
 
 ---
 
@@ -431,7 +436,9 @@ status, the next reset time, and `ledger_writable`.
 `ledger_writable: false` means the figures are fiction rather than merely
 imprecise: nothing is being recorded, so usage reads zero no matter how much
 budget is actually spent. A UI seeing this must stop presenting the numbers at
-all.
+all. The ledger itself is one immutable object per call under
+`ledger/{ulid}.json` on the shared storage backend (not a process-local file),
+so a healthy deploy keeps counting across restarts.
 
 **These figures are estimates and the response says so** (`"estimate": true`).
 Google exposes no remaining-balance field, so they are counted from our own

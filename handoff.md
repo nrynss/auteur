@@ -13,9 +13,9 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
 ## Orientation
 
 - One package, `src/foleyflow`. One CLI, `foleyflow`. The HTTP contract in
-  `docs/api.md` is written ahead of the code and treated as source of truth; two
-  endpoints in it are marked **NOT IMPLEMENTED** and are tasks 2 and 3 below.
-- `uv run pytest -q` → **440 passed, 1 skipped**. No provider credentials
+  `docs/api.md` is written ahead of the code and treated as source of truth; one
+  endpoint in it is marked **NOT IMPLEMENTED** and is task 2 below.
+- `uv run pytest -q` → **461 passed, 1 skipped**. No provider credentials
   required: the billed calls are stubbed at two seams, `stems.generate_many`
   and `sfx_cache.generate_canonical_wav`. Everything else — ffmpeg, the mix, the
   shared cache, storage, the Genblaze pipelines — runs for real.
@@ -74,15 +74,20 @@ regularise that.
 Acceptance: one stem's bytes change, every other stem's `b2_key` is identical
 across the two runs, and the lineage names the superseded version.
 
-## 3. `GET /projects/{id}/dossier` — M
+## 3. `GET /projects/{id}/dossier` — M — **DONE**
 
-Documented at `docs/api.md:357`. Composition, not new storage — source, scenes,
-timeline versions, stem inventory, mixes, QA report, event log and the §11.6
-manifest are all already in B2 and reachable through `ProjectStore`.
+`GET /api/v1/projects/{id}/dossier` composes every artifact already in B2 —
+source, scene index and thumbnails, every timeline version, stem inventories and
+the stem clips themselves, mixes, the QA report, the event log, run records,
+manifests, and the export pointer — each with its storage key (provenance
+only), size, recorded sha256, and a signed URL at the standard TTL.
 
-Return signed URLs, never raw storage keys — `docs/api.md` §1 is explicit that a
-client never sees a key it could use. Reuse the existing `_sign` helper in
-`api/app.py` and its expiry policy.
+Composition only: nothing writes, nothing downloads. Size comes from one
+backend HEAD per object via the new `Backend.head` (`LocalBackend` hashes the
+local file; B2's S3 API exposes no sha256, so that column is the recorded value
+or absent in a deployed store). Hashes are provenance where the system records
+one — the source video and each stem — never recomputed or invented. One entry
+per physical object: content-addressed stems shared across runs are listed once.
 
 ## 4. Route analysis through Genblaze — M
 
@@ -96,21 +101,13 @@ than inventing a second one. Two things must survive unchanged: the tuned
 re-analysing a clip that is already cached must stay free, because the free tier
 is 20 calls/day and that budget is the binding constraint on all development.
 
-## 5. Move the cost ledger into B2 — M
+## 5. Move the cost ledger into B2 — M — **DONE**
 
-`FOLEYFLOW_LEDGER_PATH` currently points into `/tmp` on Cloud Run because the
-container filesystem is read-only elsewhere. `/tmp` is per-instance, so quota
-counting silently resets on restart and the ledger is not durable — which makes
-it the only cost record in the system that is not an artifact.
-
-Every other canonical artifact lives in B2. The wrinkle is that the ledger is
-append-only and concurrent: `log_transaction` currently swallows write failures
-by design, and that must not become a silent no-op against object storage.
-`storage/local.py`'s `put_if_absent` write-then-link pattern is the precedent for
-getting atomicity right.
-
-Keep `ledger_writable()` honest — its whole purpose is to expose the case where
-quota figures are fiction.
+Default ledger is `ledger/{ulid}.json` on the shared storage backend (one
+immutable object per call via `put_if_absent`). `FOLEYFLOW_LEDGER_PATH` remains
+as an optional local-JSONL override for tests; it is not the deploy path.
+Failed storage writes mark the process unwritable so `ledger_writable()` is
+honest without double-billing a successful generation.
 
 ## 6. Control room UI — L
 

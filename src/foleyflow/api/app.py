@@ -22,8 +22,10 @@ from foleyflow.api import errors as err
 from foleyflow.api.jobs import JobRunner
 from foleyflow.api.schemas import (
     AnalyzeRequest,
+    ArtifactOut,
     CreateProjectRequest,
     CreateProjectResponse,
+    DossierResponse,
     EventListResponse,
     EventOut,
     ExportRequest,
@@ -385,6 +387,36 @@ def create_app(store: Optional[ProjectStore] = None,
                                      e.existing.kind) from e
         return RunAccepted(run_id=run.id, kind="export")
 
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/dossier",
+             response_model=DossierResponse, tags=["projects"])
+    def get_dossier(project_id: str) -> DossierResponse:
+        """Every artifact the project has produced, in one call (docs/api.md §3.9).
+
+        Composition only — nothing here writes, and nothing is downloaded to
+        build the listing. Size comes from one cheap backend HEAD per object;
+        sha256 comes from provenance where the system records one (the source
+        video, each stem) and from the backend where it can produce one
+        locally. Keys appear for provenance, exactly as docs/api.md §1
+        allows; every `url` is the signed, time-limited way to actually read
+        the object, so a dossier is browsable but never a durable public
+        handle.
+        """
+        _check_project_id(project_id)
+        state = _load_state(store, project_id)   # 404 before doing any work
+        try:
+            artifacts = _dossier_artifacts(store, project_id, state)
+        except StorageError as e:
+            # A listing assembled during an outage would be a confident
+            # half-truth; say storage is down instead (same as every other
+            # read that cannot proceed).
+            raise err.StorageUnavailable("Project storage is unreachable") from e
+        return DossierResponse(
+            project_id=project_id,
+            artifact_count=len(artifacts),
+            total_bytes=sum(a.size_bytes or 0 for a in artifacts),
+            artifacts=artifacts,
+        )
+
     # -- timeline ---------------------------------------------------------
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/timeline",
@@ -667,6 +699,102 @@ def _sign(store: ProjectStore, key: Optional[str]) -> Optional[str]:
         return None
     except StorageError:
         return None
+
+
+def _head(store: ProjectStore, key: str):
+    """Metadata for one artifact, or None when it is genuinely absent.
+
+    Mirrors `_sign`'s contract: absent -> None, so the dossier omits the
+    object rather than listing a hole. A backend that cannot answer raises,
+    because dropping artifacts silently during a B2 outage would present a
+    partial dossier as the whole truth.
+    """
+    try:
+        return store.backend.head(key)
+    except ObjectNotFound:
+        return None
+
+
+def _sign_strict(store: ProjectStore, key: str) -> str:
+    """Signed URL for an artifact the dossier is about to list.
+
+    `_sign` swallows StorageError so an unsigned link is omitted elsewhere
+    (a missing thumbnail on the scenes rail is fine). For the dossier, a head
+    that succeeded and a sign that failed is a storage fault, not an absent
+    object — listing an artifact with no way to read it would contradict the
+    "every artifact has a signed URL" contract. So this raises, and the route
+    reports 503 like any other storage fault. An ObjectNotFound here is a
+    vanished-between-head-and-sign race, which is the same fault class.
+    """
+    try:
+        return store.backend.signed_url(key, ARTIFACT_URL_TTL_S)
+    except ObjectNotFound as e:
+        raise StorageError(f"object vanished while signing {key!r}") from e
+
+
+def _dossier_artifacts(store: ProjectStore, project_id: str, state) -> List[ArtifactOut]:
+    """The artifact listing behind `GET /dossier`. Composition only.
+
+    Raises StorageError when storage cannot answer; the route maps that to the
+    same 503 every other read uses. Absent objects are skipped, not listed as
+    holes, and the same content-addressed stem referenced by several runs is
+    listed once — the dossier counts physical objects, not references.
+    """
+    artifacts: List[ArtifactOut] = []
+    seen: set = set()
+
+    def _add(kind: str, key: str, *, sha256: Optional[str] = None) -> None:
+        if key in seen:
+            return
+        seen.add(key)
+        head = _head(store, key)
+        if head is None:
+            return
+        artifacts.append(ArtifactOut(
+            kind=kind, key=key, url=_sign_strict(store, key),
+            size_bytes=head.size_bytes, sha256=sha256 or head.sha256))
+
+    # Source first, then the derived record sets, then per-run artifacts —
+    # creation order throughout, so the listing is deterministic.
+    _add("source", state.project.input_key,
+         sha256=state.source_sha256 or state.project.source_sha256 or None)
+
+    for version in store.list_timeline_versions(project_id):
+        _add("timeline", store.timeline_key(project_id, version))
+
+    scenes = store.load_scenes(project_id)
+    if scenes:
+        _add("scene_index", store.scenes_key(project_id))
+        for scene in scenes:
+            thumb = scene.get("thumbnail_key")
+            if thumb:
+                _add("scene_thumbnail", thumb)
+
+    if store.load_qa_report(project_id) is not None:
+        _add("qa_report", store.qa_report_key(project_id))
+
+    for event in store.list_events(project_id):
+        _add("event", f"{store.events_prefix(project_id)}{event.id}.json")
+
+    for run in store.list_runs(project_id):
+        _add("run_record", store.run_key(project_id, run.id))
+        stems = store.load_stem_inventory(project_id, run.id)
+        if stems:
+            _add("stems", store.run_artifact_key(project_id, run.id,
+                                                  "stems.json"))
+            for stem in stems:
+                b2_key = stem.get("b2_key")
+                if b2_key:
+                    _add("stem", b2_key, sha256=stem.get("sha256"))
+        _add("mix", store.mix_key(project_id, run.id))
+        _add("final_export", store.mix_video_key(project_id, run.id))
+        if store.load_manifest(project_id, run.id) is not None:
+            _add("manifest", store.manifest_key(project_id, run.id))
+
+    if store.get_latest_export(project_id) is not None:
+        _add("export_pointer", store.latest_export_key(project_id))
+
+    return artifacts
 
 
 def _scene_ids_for(store: ProjectStore, project_id: str, timeline) -> List[Optional[str]]:

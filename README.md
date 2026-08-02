@@ -21,7 +21,7 @@ the deployed app. One package (`src/foleyflow`), one command (`foleyflow`).
 | Storage — content-addressed cache, B2 artifacts | Built |
 | Projects, runs, versions | Built |
 | Deployment — Cloud Run + tunnelled GPU worker | Built |
-| HTTP API + CLI | Partial (analyze, mix, export; repair and dossier pending) |
+| HTTP API + CLI | Partial (repair pending) |
 | QA — loudness, true peak, visual continuity | Built (audio when mix measured) |
 | Self-hosted SFX worker — MOSS-SoundEffect v2 | Built (separate GPU process, bearer-auth) |
 | Control room UI | Not started |
@@ -165,13 +165,13 @@ Four of those flags are load-bearing, not defaults worth tuning:
 | `--min-instances 1` | Scale-to-zero would kill in-flight jobs. This bills continuously — delete the service after judging. |
 | `--memory 4Gi` | `/tmp` is tmpfs and counts against memory. The source video, every stem, the mix WAV and the muxed MP4 all live there during a run. |
 
-`env.yaml` carries the same variables as `.env` (see `.env.example`), plus
-`FOLEYFLOW_LEDGER_PATH=/tmp/foleyflow/ledger.jsonl`. That last one is not
-optional: the container filesystem is read-only outside `/tmp`, and an
-unwritable ledger makes `GET /quota` report a full budget while the real
-20-analyses/day allowance drains. Check `ledger_writable` in that response after
-any deploy. Note `/tmp` is per-instance, so the counting window is the
-instance's life rather than all time.
+`env.yaml` carries the same variables as `.env` (see `.env.example`). The cost
+ledger lives on the shared storage backend under `ledger/{ulid}.json` — the
+same B2 bucket as every other artifact — so quota counting survives restarts
+and does not need a writable container filesystem. Do not set
+`FOLEYFLOW_LEDGER_PATH` to a path under `/tmp`: that is per-instance and resets
+on every cold start. Check `ledger_writable` in `GET /quota` after any deploy;
+`false` means the figures are fiction and the UI must stop presenting them.
 
 The image is built from the `Dockerfile` rather than buildpacks, because the
 pipeline needs `ffmpeg` at runtime. `providers.toml` is resolved relative to the

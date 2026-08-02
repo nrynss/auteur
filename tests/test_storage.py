@@ -67,6 +67,27 @@ def test_signed_url_is_a_file_url_locally(tmp_path):
     assert backend.signed_url("cache/x.wav").startswith("file:///")
 
 
+def test_head_reports_size_and_local_sha256(tmp_path):
+    """LocalBackend hashes the file it owns, so the dossier's size and hash
+    columns can be full without a second read of the bytes by the caller."""
+    import hashlib
+
+    backend = LocalBackend(str(tmp_path / "store"))
+    data = b"canonical-wav-bytes"
+    backend.put("cache/x.wav", _write(str(tmp_path / "s.wav"), data))
+    head = backend.head("cache/x.wav")
+    assert head.size_bytes == len(data)
+    assert head.sha256 == hashlib.sha256(data).hexdigest()
+
+
+def test_head_missing_key_raises_object_not_found(tmp_path):
+    from foleyflow.storage.base import ObjectNotFound
+
+    backend = LocalBackend(str(tmp_path / "store"))
+    with pytest.raises(ObjectNotFound):
+        backend.head("cache/nope.wav")
+
+
 # -- factory --
 
 def test_factory_defaults_to_local(monkeypatch):

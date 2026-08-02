@@ -1,8 +1,8 @@
 """Rate-limit accounting for the UI.
 
 Google's API does not tell you how much of a free-tier quota remains — there is
-no "requests left today" field to read. So this counts what *we* did, from
-`ledger.jsonl`, which already records every provider call with its endpoint,
+no "requests left today" field to read. So this counts what *we* did, from the
+cost ledger, which already records every provider call with its endpoint,
 timestamp, and success flag. Limits come from providers.toml.
 
 ## This is an estimate, and the UI must say so
@@ -16,14 +16,11 @@ Local counting can drift from Google's accounting in at least three ways:
   * the daily window is assumed to reset at midnight in `RESET_TZ` (Pacific,
     Google's convention for AI Studio free-tier quotas). A different reset
     boundary shifts every daily figure;
-  * the ledger may not be writable at all. `log_transaction` swallows write
-    failures, and LEDGER_PATH defaults to a path derived from __file__ — in a
-    container with a read-only layer, every row is lost and this module then
-    reports a full budget while the real one drains. That failure is systematic
-    rather than noisy, so `ledger_writable()` exposes it and the API surfaces
-    it. Set `FOLEYFLOW_LEDGER_PATH` to somewhere writable (on Cloud Run, under
-    /tmp) to make the counting real. Note that /tmp is per-instance and does not
-    survive a restart, so the window is the instance's life, not all time.
+  * the ledger may not be writable at all. `log_transaction` does not raise on
+    write failure (a successful generation must not be retried for a cost-
+    record fault), but marks the process unwritable so `ledger_writable()`
+    returns False and the API stops presenting the figures as real. Against
+    the storage backend a failed write is never a silent no-op.
 
 Treat the numbers as a guard rail — "you have roughly 6 analysis runs left
 today" — never as an authoritative balance. Label them as estimates wherever
@@ -32,17 +29,28 @@ they are displayed.
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from foleyflow.ledger import LEDGER_PATH
+from foleyflow.ledger import iter_transactions, ledger_writable
 from foleyflow.providers.config import load_config
 
 DEFAULT_RESET_TZ = "America/Los_Angeles"
+
+# Re-export so existing `from foleyflow.quota import ledger_writable` keeps
+# working — the API and CLI import it from here.
+__all__ = [
+    "QuotaWindow",
+    "ModelQuota",
+    "ledger_writable",
+    "get_quota",
+    "get_all_quotas",
+    "can_call",
+    "RESET_TZ",
+]
 
 
 def _resolve_reset_tz():
@@ -114,52 +122,19 @@ class ModelQuota:
         return payload
 
 
-def ledger_writable(path: str = LEDGER_PATH) -> bool:
-    """Whether quota counting can actually observe anything.
-
-    False means every figure here is fiction: no rows are being recorded, so
-    usage always reads zero no matter how much budget is spent.
-    """
-    try:
-        directory = os.path.dirname(path) or "."
-        os.makedirs(directory, exist_ok=True)
-        with open(path, "a", encoding="utf-8"):
-            return True
-    except OSError:
-        return False
-
-
-def _next_daily_reset(now: datetime) -> datetime:
-    local = now.astimezone(RESET_TZ)
-    tomorrow = (local + timedelta(days=1)).date()
-    return datetime.combine(tomorrow, datetime.min.time(), tzinfo=RESET_TZ)
-
-
-def _read_calls(path: str) -> List[dict]:
-    """Ledger rows, oldest first. A truncated final line is skipped rather than
-    raising — the ledger is append-only and may be read mid-write."""
-    if not os.path.exists(path):
-        return []
-    rows = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return rows
-
-
 def get_quota(model_id: str, *, now: Optional[datetime] = None,
-              ledger_path: str = LEDGER_PATH) -> ModelQuota:
+              ledger_path: Optional[str] = None,
+              rows: Optional[List[dict]] = None) -> ModelQuota:
     """Current usage for one model.
 
     Failed calls are counted. A request rejected by the provider generally
     still consumed quota, and under-reporting is the dangerous direction for a
     limit whose daily budget is 20.
+
+    ``ledger_path`` forces a local JSONL file (unit tests). ``None`` reads the
+    configured default — storage backend, or the file named by
+    ``FOLEYFLOW_LEDGER_PATH`` when that is set. ``rows`` is a pre-loaded
+    snapshot for callers that already paid for one full scan (``get_all_quotas``).
     """
     now = now or datetime.now(RESET_TZ)
     config = load_config()
@@ -171,7 +146,7 @@ def get_quota(model_id: str, *, now: Optional[datetime] = None,
     ).timestamp()
 
     per_minute = per_day = 0
-    for row in _read_calls(ledger_path):
+    for row in (rows if rows is not None else iter_transactions(ledger_path)):
         if row.get("endpoint") != model_id:
             continue
         ts = row.get("timestamp")
@@ -190,13 +165,25 @@ def get_quota(model_id: str, *, now: Optional[datetime] = None,
     )
 
 
+def _next_daily_reset(now: datetime) -> datetime:
+    local = now.astimezone(RESET_TZ)
+    tomorrow = (local + timedelta(days=1)).date()
+    return datetime.combine(tomorrow, datetime.min.time(), tzinfo=RESET_TZ)
+
+
 def get_all_quotas(*, now: Optional[datetime] = None,
-                   ledger_path: str = LEDGER_PATH) -> List[ModelQuota]:
+                   ledger_path: Optional[str] = None) -> List[ModelQuota]:
     """Every model that declares a limit, worst status first so a UI can show
-    the problem without sorting."""
+    the problem without sorting.
+
+    The ledger is read once and shared across models — against object storage
+    a per-model scan would be one listing + one GET per row, times every model
+    that declares a limit.
+    """
     config = load_config()
+    rows = iter_transactions(ledger_path)
     quotas = [
-        get_quota(model_id, now=now, ledger_path=ledger_path)
+        get_quota(model_id, now=now, ledger_path=ledger_path, rows=rows)
         for model_id, raw in config.get("models", {}).items()
         if raw.get("requests_per_minute") or raw.get("requests_per_day")
     ]
@@ -205,7 +192,7 @@ def get_all_quotas(*, now: Optional[datetime] = None,
 
 
 def can_call(model_id: str, *, now: Optional[datetime] = None,
-             ledger_path: str = LEDGER_PATH) -> bool:
+             ledger_path: Optional[str] = None) -> bool:
     """Whether a call would fit within the estimated remaining budget.
 
     A guard for the UI to disable an Analyze button, not a hard gate — this

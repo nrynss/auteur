@@ -194,8 +194,8 @@ cost_per_call_usd = 0.01
 # Video-generation models — used by the retired hero-clip scripts, not by
 # FoleyFlow itself. Priced per second, so each declares the duration to assume
 # when a call omits one; without that, estimate_cost would report $0.
-# (These are NOT needed to read historical ledger.jsonl rows: summarize_ledger
-# sums the cost recorded on each row and never consults this file.)
+# (These are NOT needed to read historical ledger rows: summarize_ledger sums
+# the cost recorded on each row and never consults this file.)
 [models."fal-ai/ltx-2.3/text-to-video"]
 adapter = "fal"
 role = "video"

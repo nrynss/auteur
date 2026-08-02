@@ -23,16 +23,16 @@ product, and a reader needs to know which parts of it exist. Updated
 | Scene detection, per-scene stats, thumbnails | **Built** | ffmpeg-based; deterministic |
 | VLM analysis → timeline | **Built** | Gemini direct; verified end-to-end on a real clip |
 | Timeline + SFX caches | **Built** | Content-addressed; protect the 20/day analysis budget |
-| Cost ledger + quota accounting | **Built** | Estimates, explicitly labelled as such |
+| Cost ledger + quota accounting | **Built** | One object per call under `ledger/` on B2; estimates, explicitly labelled as such |
 | Genblaze integration | **Built** | Every provider call and every deterministic local stage runs as a Genblaze step; stems fan out, failures retry per-stem across tiers |
-| HTTP API | **Partial** | Everything but repair and the dossier; see §14 |
+| HTTP API | **Partial** | Everything but repair; see §14 |
 | Throwaway dashboard | **Built** | One static file; the §6.1 control room replaces it |
 | Command-line client | **Built** | Single command `foleyflow` — project verbs over HTTP; `render` / `direct` file-scoped (§14.1) |
 | Self-hosted SFX worker | **Built** | MOSS-SoundEffect v2 behind HTTP + bearer auth; every routing category resolves to it (§9.1) |
 | SFX tier selection | **Built** | paid / fallback / test, chosen by config; all three go through Genblaze, so the tier is a config difference not a code one |
 | Foley generation (stems) | **Built** | Driven from a mix run; shared B2 cache in front, so a re-mix generates nothing |
 | Mix / export | **Built** | `POST /mixes` renders and measures; `POST /exports` writes the §11.6 manifest and moves the pointer |
-| Artifact dossier | **Not built** | The one read view still missing (§14) |
+| Artifact dossier | **Built** | `GET /projects/{id}/dossier`; every artifact with signed URLs |
 | QA (loudness, true peak, continuity) | **Built** | Continuity from scene stats; loudness via ebur128 when a mix is measured |
 | Targeted repair | **Partial** | `render_mix(variant_fn=…)` regenerates one stem and re-mixes; no per-event API route yet |
 | Deployment | **Built** | Cloud Run `us-east4`, single instance, CPU always allocated; SFX worker reached over a Cloudflare tunnel at `sfx.nryn.dev` |
@@ -548,6 +548,7 @@ foleyflow/
     exports/latest.json             the single mutable pointer
   cache/{content_hash}.wav          SFX, shared across every project
   timelines/{content_hash}.json     analysis results, keyed by video+model+prompt
+  ledger/{ulid}.json                cost ledger, one object per provider call
   assets/{sha}/{sha}/{sha}.ext      Genblaze content-addressable sink
   manifests/{genblaze_run_id}.json  Genblaze provenance manifests
 ```
@@ -559,6 +560,14 @@ run, so republishing does not destroy the previous export.
 so a shared log means read-concatenate-put, and two concurrent writers silently
 lose one of the events. Per-event objects have no read-modify-write at all, and
 monotonic ULID names make a sorted listing an ordered log.
+
+**The cost ledger uses the same pattern.** Each provider call is
+`ledger/{ulid}.json`, written with a conditional put, shared across every
+project on the same backend. A process-local file under `/tmp` was the previous
+default on Cloud Run; that path is per-instance, so quota counting reset on
+every cold start and the ledger was the only cost record that was not a durable
+artifact. It lives next to `cache/` and `projects/` now. `FOLEYFLOW_LEDGER_PATH`
+still forces a local JSONL file for offline tests; it is not the deploy path.
 
 **Immutable artifacts are written with a conditional put**, not an existence
 check followed by a write. The latter is two operations, and two writers racing
@@ -759,7 +768,10 @@ Three consequences, all implemented:
 - **The API refuses a model with no declared budget.** An undeclared limit means
   *unknown*, not *unlimited*.
 - **`GET /quota` reports usage as an explicit estimate**, counted from our own
-  ledger because Google exposes no remaining-balance field.
+  ledger because Google exposes no remaining-balance field. The ledger is the
+  durable B2 log under `ledger/` (§10), not a process-local file. The response
+  carries `ledger_writable`: when that is false the figures are fiction (writes
+  are not landing) and a UI must stop presenting them as a remaining budget.
 
 **Flash Lite is not a substitute for development.** It has 500/day, but measured
 against the same clip it produced 4 events to Flash's 7, collapsed a three-shot
@@ -810,7 +822,7 @@ implementation and treated as the source of truth. Base path `/api/v1`.
 | `POST` | `/projects/{id}/mixes` | Render stems, mix, mux, re-measure QA | **Built** |
 | `GET` | `/projects/{id}/qa` | Latest QA report | **Built** |
 | `POST` | `/projects/{id}/exports` | Publish a rendered mix + provenance manifest | **Built** |
-| `GET` | `/projects/{id}/dossier` | Every artifact with signed links | Not built |
+| `GET` | `/projects/{id}/dossier` | Every artifact with signed links | **Built** |
 
 All mutation responses return a run ID so the UI can show stage-level status
 rather than pretending work completed synchronously.

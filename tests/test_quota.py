@@ -193,11 +193,11 @@ def test_ledger_attributes_usage_to_the_model_actually_called(tmp_path, monkeypa
 
 
 def test_ledger_path_is_overridable_by_environment(tmp_path, monkeypatch):
-    """A read-only container layer must not silently disable quota counting.
+    """FOLEYFLOW_LEDGER_PATH forces the historical local JSONL path.
 
-    LEDGER_PATH is resolved at import, so this reimports the module under a
-    patched environment rather than poking the constant — the point is that a
-    process started with the variable set picks it up.
+    The variable is resolved at import, so this reimports under a patched
+    environment rather than poking the constant — the point is that a process
+    started with it set picks it up.
     """
     import importlib
 
@@ -208,6 +208,7 @@ def test_ledger_path_is_overridable_by_environment(tmp_path, monkeypatch):
     reloaded = importlib.reload(ledger_module)
     try:
         assert reloaded.LEDGER_PATH == str(target)
+        assert reloaded.uses_storage_ledger() is False
 
         import foleyflow.quota as quota_module
         quota_reloaded = importlib.reload(quota_module)
@@ -223,12 +224,20 @@ def test_ledger_path_is_overridable_by_environment(tmp_path, monkeypatch):
         importlib.reload(quota_module)
 
 
-def test_ledger_path_falls_back_to_the_repo_root(monkeypatch):
-    """Unset means the historical default, so local runs are unaffected."""
+def test_default_ledger_uses_the_shared_storage_backend(monkeypatch):
+    """Unset FOLEYFLOW_LEDGER_PATH → B2 (or LocalBackend), not a repo-root file.
+
+    The previous default wrote to ledger.jsonl next to the package source. On
+    Cloud Run that path is unwritable, so quota silently read zero forever.
+    The storage backend is the same place every other artifact already lives.
+    """
     import importlib
 
     monkeypatch.delenv("FOLEYFLOW_LEDGER_PATH", raising=False)
     import foleyflow.ledger as ledger_module
     reloaded = importlib.reload(ledger_module)
-    assert reloaded.LEDGER_PATH.endswith("ledger.jsonl")
-    assert "src" not in reloaded.LEDGER_PATH.split(os.sep)
+    try:
+        assert reloaded.LEDGER_PATH is None
+        assert reloaded.uses_storage_ledger() is True
+    finally:
+        importlib.reload(ledger_module)

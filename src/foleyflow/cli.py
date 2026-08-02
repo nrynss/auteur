@@ -118,6 +118,14 @@ def _state_marker(state: str) -> str:
         state, "?   ")
 
 
+def _human_bytes(n: int) -> str:
+    """Sizes for the dossier table: bytes under 1 KiB, then one decimal."""
+    for unit, divisor in (("GiB", 1 << 30), ("MiB", 1 << 20), ("KiB", 1 << 10)):
+        if n >= divisor:
+            return f"{n / divisor:.1f}{unit}"
+    return f"{n}B"
+
+
 # -- run polling ------------------------------------------------------------
 
 def _poll_run(client: Client, project_id: str, run_id: str,
@@ -466,6 +474,30 @@ def cmd_runs(client: Client, args) -> int:
     return EXIT_OK
 
 
+def cmd_dossier(client: Client, args) -> int:
+    data = client.get(f"/projects/{args.project_id}/dossier")
+
+    def render(d):
+        print(f"{d['artifact_count']} artifacts, "
+              f"{_human_bytes(d['total_bytes'])} total")
+        print()
+        for a in d["artifacts"]:
+            size = (_human_bytes(a["size_bytes"])
+                    if a.get("size_bytes") is not None else "?")
+            line = f"  {a['kind']:<15} {size:>8}  {a['key']}"
+            if a.get("sha256"):
+                line += f"  sha256={a['sha256'][:12]}"
+            print(line)
+        print()
+        print("Signed URLs:")
+        for a in d["artifacts"]:
+            if a.get("url"):
+                print(f"  {a['key']} -> {a['url']}")
+
+    _emit(data, args.json, render)
+    return EXIT_OK
+
+
 def cmd_run(client: Client, args) -> int:
     run = (_poll_run(client, args.project_id, args.run_id, quiet=args.json)
            if args.wait
@@ -778,6 +810,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     project_arg(sub.add_parser("scenes", help="scene breakdown")).set_defaults(
         func=cmd_scenes)
+    project_arg(sub.add_parser("dossier", help="every artifact, signed URLs")
+                ).set_defaults(func=cmd_dossier)
     project_arg(sub.add_parser("qa", help="latest QA report")).set_defaults(
         func=cmd_qa)
     project_arg(sub.add_parser("events", help="the project's audit trail")
