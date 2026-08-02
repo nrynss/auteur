@@ -4,7 +4,14 @@
    * (TypeScript-enforced: a screen that shows a QA number must name the
    * artifact it was measured from, or it does not compile). The source row
    * reads "measured from <artifact>" by default, overridable for evidence
-   * that is not a measurement. */
+   * that is not a measurement.
+   *
+   * `warn` is a *note*, not a boolean (control-room.md §2: colour never
+   * carries meaning alone). Passing a truthy note turns the value warn-toned
+   * AND renders an alert glyph with the note — there is no way to get the
+   * colour without the word. The note is the measured comparison ("7.4 LU
+   * under target"), never a synthesised verdict (§8). */
+  import Icon from "./Icon.svelte";
   import type { Snippet } from "svelte";
 
   interface Props {
@@ -15,8 +22,9 @@
     source: string;
     /** Override the "measured from" phrasing (budget spend is not measured). */
     sourcePhrase?: string;
-    /** Warn tone for values past a threshold (e.g. loudness under target). */
-    warn?: boolean;
+    /** Measured comparison when the value is past its threshold — present
+     * means warn-tone + glyph + word. */
+    warn?: string | null;
     /** Extra row below the value (e.g. a meter bar with a threshold). */
     children?: Snippet;
   }
@@ -26,7 +34,7 @@
     value,
     source,
     sourcePhrase = "measured from",
-    warn = false,
+    warn = null,
     children,
   }: Props = $props();
 </script>
@@ -34,7 +42,15 @@
 <div class="evidence">
   <div class="row">
     <span class="name">{label}</span>
-    <span class="val num" class:warn>{value}</span>
+    <span class="valwrap">
+      {#if warn}
+        <Icon name="alert" size={11} />
+      {/if}
+      <span class="val num" class:warn={!!warn}>{value}</span>
+      {#if warn}
+        <span class="warn-note">{warn}</span>
+      {/if}
+    </span>
   </div>
   {#if children}<div class="bar">{@render children()}</div>{/if}
   <div class="src">
@@ -64,6 +80,19 @@
     font-weight: var(--w-500);
   }
 
+  .valwrap {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .valwrap :global(svg) {
+    color: var(--warn);
+    flex: 0 0 auto;
+    align-self: center;
+  }
+
   .val {
     font-size: var(--text-13);
     font-weight: var(--w-590);
@@ -71,6 +100,15 @@
 
   .val.warn {
     color: var(--warn);
+  }
+
+  .warn-note {
+    font-size: var(--text-11);
+    font-weight: var(--w-500);
+    color: var(--warn);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .bar {

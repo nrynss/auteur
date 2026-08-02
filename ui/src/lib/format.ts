@@ -3,8 +3,10 @@
  * Pure functions; every consumer renders through them so digits never jitter
  * between components. */
 
-/** "m:ss.mmm" (or "h:mm:ss.mmm" past the hour). Null/non-finite → "—" so a
- * number that does not exist renders as an absent value, never a fake one. */
+/** "mm:ss.mmm" ("h:mm:ss.mmm" past the hour) — minutes always zero-padded
+ * like the mockup's transport (00:11.420), so digits never jitter as the
+ * playhead moves. Null/non-finite → "—" so a number that does not exist
+ * renders as an absent value, never a fake one. */
 export function formatTimecode(
   seconds: number | null | undefined,
   opts: { ms?: boolean; hours?: boolean } = {},
@@ -21,7 +23,7 @@ export function formatTimecode(
   const min = Math.floor(totalSec / 60) % 60;
   const hr = Math.floor(totalSec / 3600);
   const showH = hours || hr > 0;
-  const minPart = showH ? String(min).padStart(2, "0") : String(min);
+  const minPart = String(min).padStart(2, "0");
   const out = `${showH ? `${hr}:` : ""}${minPart}:${String(sec).padStart(2, "0")}`;
   return neg + out + (ms ? "." + String(milli).padStart(3, "0") : "");
 }

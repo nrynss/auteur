@@ -43,13 +43,24 @@ describe("Chip", () => {
     expect(body).not.toContain(">OK<");
   });
 
-  it("renders a real button when used as a toggle — keyboard support", () => {
-    const { body } = render(Chip, {
-      props: { state: "ok", pressed: true },
-    });
-    expect(body).toMatch(/<button[^>]*type="button"/);
-    expect(body).toContain('aria-pressed="true"');
+  it("renders a real button when used as a toggle — even when off", () => {
+    // An OFF toggle is the one you click to turn on: it must still be a
+    // focusable, keyboard-activatable button, not an inert span.
+    const on = render(Chip, { props: { state: "ok", toggle: true, pressed: true } });
+    expect(on.body).toMatch(/<button[^>]*type="button"/);
+    expect(on.body).toContain('aria-pressed="true"');
+
+    const off = render(Chip, { props: { state: "ok", toggle: true, pressed: false } });
+    expect(off.body).toMatch(/<button[^>]*type="button"/);
+    expect(off.body).toContain('aria-pressed="false"');
     // Never a span pretending to be a button.
-    expect(body).not.toMatch(/<span[^>]*role="button"/);
+    expect(on.body).not.toMatch(/<span[^>]*role="button"/);
+    expect(off.body).not.toMatch(/<span[^>]*role="button"/);
+  });
+
+  it("renders a status span when not a toggle", () => {
+    const { body } = render(Chip, { props: { state: "pending" } });
+    expect(body).toMatch(/<span[^>]*role="status"/);
+    expect(body).not.toMatch(/<button/);
   });
 });

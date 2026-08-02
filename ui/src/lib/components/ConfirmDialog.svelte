@@ -1,3 +1,14 @@
+<script module lang="ts">
+  // Module-scope counter: ids must be document-unique across every instance
+  // (two dialogs mounted together would otherwise both be "dialog-title-1"
+  // and aria-labelledby would resolve to the wrong one).
+  let uidCounter = 0;
+  function uid(prefix: string) {
+    uidCounter += 1;
+    return `${prefix}-${uidCounter}`;
+  }
+</script>
+
 <script lang="ts">
   /** ConfirmDialog — cost confirmation for anything that spends money
    * (7.11's contract: the UI cannot spend money it never displayed, so the
@@ -7,14 +18,6 @@
    * separates with border + backdrop. */
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
-
-  // No useId() in this Svelte build; ids only need document-local uniqueness
-  // (this app mounts, never hydrates), so a per-render counter suffices.
-  let uidCounter = 0;
-  function uid(prefix: string) {
-    uidCounter += 1;
-    return `${prefix}-${uidCounter}`;
-  }
 
   interface Props {
     open: boolean;

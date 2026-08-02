@@ -106,6 +106,15 @@ describe("ConfirmDialog", () => {
     expect(target.textContent ?? "").not.toContain("This will cost");
   });
 
+  it("ids are unique across simultaneous dialogs", () => {
+    const a = openDialog();
+    const b = openDialog();
+    const idA = a.target.querySelector(".dialog")!.getAttribute("aria-labelledby")!;
+    const idB = b.target.querySelector(".dialog")!.getAttribute("aria-labelledby")!;
+    expect(idA).toBeTruthy();
+    expect(idA).not.toBe(idB);
+  });
+
   it("moves focus to the confirm button on open", async () => {
     openDialog();
     // The focus effect runs on a setTimeout after mount.

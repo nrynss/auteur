@@ -52,7 +52,7 @@
     <Evidence
       label="True peak"
       value="−2.1 dBTP"
-      warn
+      warn="7.4 LU under target"
       source="runs/run_01KZ0JYN9M6Y4Q2WQTV3X8ZHD0/mix.wav"
     />
   </section>

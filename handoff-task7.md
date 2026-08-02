@@ -457,6 +457,27 @@ m:ss); ConfirmDialog's Escape/backdrop handlers are inert while `busy`, and
 Escape is handled once (a backdrop keydown would double-fire via bubbling —
 the jsdom test caught it).
 
+**Second review pass fixed:**
+
+- **StageRow inverts its default** — only `succeeded` earns the ok/"Done"
+  chip; failed → blocked/"Failed", running → pending/"Running", and any
+  unknown status falls to pending/"Pending" (it used to render everything
+  that was not running/failed as a green "Done", the exact failure mode
+  §7 exists to prevent). New SSR tests cover "", "queued", "starting".
+- **Chip separates toggle from pressed** — `toggle` renders a real button
+  regardless of its state (an OFF toggle is the one you click to turn on);
+  `pressed` is just its state; `onclick` + data-* passthrough added. jsdom
+  tests click on/off toggles and confirm a display chip is inert.
+- **Evidence's warn is a note, not a boolean** — `warn` now takes the
+  measured comparison ("7.4 LU under target") and renders an alert glyph + the
+  word with the warn colour: no way to get the colour without the word (§2).
+- **ConfirmDialog ids are document-unique** — the counter moved to `<script
+  module>`, so two dialogs mounted together no longer both emit
+  `dialog-title-1` (test asserts differing aria-labelledby).
+- **Transport timecode matches the mockup** — `formatTimecode` zero-pads
+  minutes (`00:11.420`, not `0:11.420`), same class of divergence the
+  SceneThumb fix caught one component over.
+
 **Not in this unit:** any screen (7.8+), timelines/waveforms (7.9/7.10), and
 the §9 states (loading/empty/error, run lock, draft-vs-committed, director
 diff, keyboard map) — those are design work for the units that need them, and

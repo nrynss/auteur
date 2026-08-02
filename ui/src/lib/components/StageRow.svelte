@@ -2,7 +2,9 @@
   /** Stage row — one workflow stage: name, status, elapsed, retries,
    * provider. Renders live mid-flight (7.11 polls runs; stages arrive as
    * they happen). Status vocabulary from StageOut: succeeded | failed |
-   * running; anything else reads as pending. */
+   * running; anything else reads as pending. Only succeeded earns the ok
+   * chip — an unknown status must never be presented as a confident
+   * success (control-room.md §7). */
   import Chip from "./Chip.svelte";
   import Spinner from "./Spinner.svelte";
   import Timecode from "./Timecode.svelte";
@@ -19,9 +21,14 @@
     $props();
 
   const running = $derived(status === "running");
+  const succeeded = $derived(status === "succeeded");
   const failed = $derived(status === "failed");
-  const chipState = $derived(running ? "pending" : failed ? "blocked" : "ok");
-  const chipLabel = $derived(running ? "Running" : failed ? "Failed" : "Done");
+  const chipState = $derived(
+    succeeded ? "ok" : failed ? "blocked" : "pending",
+  );
+  const chipLabel = $derived(
+    succeeded ? "Done" : failed ? "Failed" : running ? "Running" : "Pending",
+  );
 </script>
 
 <div class="stage" class:running class:failed>

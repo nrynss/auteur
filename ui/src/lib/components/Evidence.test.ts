@@ -37,15 +37,29 @@ describe("Evidence", () => {
     expect(body).not.toContain("measured from");
   });
 
-  it("applies the warn tone to values past a threshold", () => {
+  it("warn is a note with a glyph — colour never alone", () => {
     const { body } = render(Evidence, {
       props: {
         label: "True peak",
         value: "−2.1 dBTP",
         source: "runs/run_01KZ0JYN9M6Y4Q2WQTV3X8ZHD0/mix.wav",
-        warn: true,
+        warn: "7.4 LU under target",
       },
     });
+    // The warn colour, the glyph, and the word all arrive together.
     expect(body).toMatch(/class="val[^"]*\swarn(\s|")/);
+    expect(body).toContain("7.4 LU under target");
+  });
+
+  it("no warn tone without a warn note", () => {
+    const { body } = render(Evidence, {
+      props: {
+        label: "True peak",
+        value: "−2.1 dBTP",
+        source: "runs/run_01KZ0JYN9M6Y4Q2WQTV3X8ZHD0/mix.wav",
+      },
+    });
+    expect(body).not.toMatch(/class="val[^"]*\swarn(\s|")/);
+    expect(body).not.toContain("under target");
   });
 });
