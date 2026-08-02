@@ -6,6 +6,7 @@
   import EnvelopeCanvas from "./EnvelopeCanvas.svelte";
   import { groupLanes, placeEvent } from "./helpers";
   import { timelineGrip } from "./timeline-grip";
+  import { transientOffset } from "./preview";
   import type { TimelineEventOut } from "../api/projects";
 
   interface Props {
@@ -80,6 +81,20 @@
             <i class="tick" class:major={major} style={`left:${left}%`}></i>
             {#if major && i < timeline.duration}
               <span class="tlabel num" style={`left:${left}%`}>{i}s</span>
+            {/if}
+          {/each}
+          <!-- Hit points at the TRANSIENT, not start_time (control-room.md §7,
+               unit 7.9): discrete events are placed at start + 50 ms bias −
+               onset in the mix; onset is per-clip and not exposed, so the
+               marker is bias-adjusted only and says so. -->
+          {#each lanes.flatMap((l) => l.events) as ev (ev.index)}
+            {#if ev.kind === "discrete"}
+              {@const t = (transientOffset(ev) / timeline.duration) * 100}
+              <i
+                class="transient"
+                style={`left:${t.toFixed(3)}%`}
+                title="transient — start + 50 ms bias (onset trim not exposed)"
+              ></i>
             {/if}
           {/each}
         {/if}
@@ -235,6 +250,14 @@
     top: 11px;
     height: 8px;
     background: var(--faint);
+  }
+
+  .transient {
+    position: absolute;
+    top: 2px;
+    width: 1.5px;
+    height: 7px;
+    background: var(--accent);
   }
 
   .tlabel {

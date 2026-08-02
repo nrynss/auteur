@@ -109,6 +109,42 @@ def test_event_seed_non_int_is_rejected():
 
 # -- source_duration_s (unit 7.2) --
 
+# -- stem_key (unit 7.9) --
+
+def test_stem_key_round_trip_dict():
+    """The stamped event→audio link survives timeline_to_dict →
+    dict_to_timeline (the A.4 trap: an unlisted key is silently dropped)."""
+    t = Timeline(
+        duration=4.0,
+        ambience="wind",
+        events=[
+            Event(name="match striking", start_time=1.0, duration=0.5,
+                  intensity="high", kind="discrete",
+                  stem_key="cache/fa1d803456c3c126.wav"),
+            Event(name="footsteps on gravel", start_time=0.0, duration=2.0,
+                  intensity="med", kind="rhythmic"),  # never mixed
+        ],
+    )
+    d = timeline_to_dict(t)
+    assert d["events"][0]["stem_key"] == "cache/fa1d803456c3c126.wav"
+    assert "stem_key" not in d["events"][1]
+    back = dict_to_timeline(d)
+    assert back.events[0].stem_key == "cache/fa1d803456c3c126.wav"
+    assert back.events[1].stem_key is None
+    assert back == t
+
+
+def test_stem_key_rejects_non_strings():
+    import pytest
+    from foleyflow.timeline_io import _coerce_stem_key
+    assert _coerce_stem_key(None) is None
+    assert _coerce_stem_key(" cache/x.wav ") == "cache/x.wav"
+    with pytest.raises(TypeError):
+        _coerce_stem_key(42)
+    with pytest.raises(TypeError):
+        _coerce_stem_key("")
+
+
 def test_source_duration_s_round_trip_dict():
     """Frozen source_duration_s survives timeline_to_dict → dict_to_timeline."""
     t = Timeline(

@@ -22,6 +22,8 @@ def timeline_to_dict(t: Timeline) -> dict:
             ed["seed"] = ev.seed
         if ev.source_duration_s is not None:
             ed["source_duration_s"] = ev.source_duration_s
+        if ev.stem_key is not None:
+            ed["stem_key"] = ev.stem_key
         events.append(ed)
     d = {
         "duration": t.duration,
@@ -85,6 +87,19 @@ def _coerce_source_duration_s(raw) -> float | None:
     return val
 
 
+def _coerce_stem_key(raw) -> str | None:
+    """Optional stem storage key. JSON null / missing → None. Reject
+    non-strings — a stem key is an address, and a mangled one would make the
+    preview fetch the wrong audio or none."""
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise TypeError(
+            f"event stem_key must be a non-empty string or null, "
+            f"got {type(raw).__name__}")
+    return raw.strip()
+
+
 def dict_to_timeline(d: dict) -> Timeline:
     events = [
         Event(
@@ -95,6 +110,7 @@ def dict_to_timeline(d: dict) -> Timeline:
             kind=ev["kind"],
             seed=_coerce_seed(ev.get("seed")),
             source_duration_s=_coerce_source_duration_s(ev.get("source_duration_s")),
+            stem_key=_coerce_stem_key(ev.get("stem_key")),
         ) for ev in d["events"]
     ]
     # Identify history and extra fields in input dictionary

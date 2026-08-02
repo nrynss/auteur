@@ -17,7 +17,7 @@ import re
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
-from fastapi import Body, FastAPI, Query
+from fastapi import Body, FastAPI, Query, Response
 
 from foleyflow.api import errors as err
 from foleyflow.api.jobs import JobRunner
@@ -838,6 +838,46 @@ def create_app(store: Optional[ProjectStore] = None,
             audio_key = store.mix_key(project_id, mix["run_id"])
 
         return _peaks_response(store, audio_key)
+
+    @app.get(
+        f"{API_PREFIX}/projects/{{project_id}}/preview/stems/{{key:path}}",
+        tags=["preview"],
+    )
+    def get_preview_stem(project_id: str, key: str) -> Response:
+        """Stream a stem the browser preview plays (unit 7.9, docs/api.md
+        §3.13).
+
+        Same-origin, so no CORS needed: the UI fetches this route and the API
+        re-serves the object from storage. B2's own signed URLs carry no CORS
+        headers, so the browser cannot decode them directly. ``key`` must be a
+        stem in this project's inventories (same rule as the peaks stem route)
+        — arbitrary bucket keys are refused. The client already has the key
+        from each event's stamped ``stem_key``.
+        """
+        from foleyflow.peaks import is_project_stem_key
+        from foleyflow.storage.base import validate_key
+
+        _check_project_id(project_id)
+        _load_state(store, project_id)
+        try:
+            validate_key(key)
+        except StorageError as e:
+            raise err.InvalidRequest(f"Invalid storage key: {key}",
+                                     detail={"key": key}) from e
+        if not is_project_stem_key(store, project_id, key):
+            raise err.InvalidRequest(
+                "Stem key is not in this project's inventories",
+                detail={"key": key, "project_id": project_id},
+            )
+        try:
+            data = store.backend.get_bytes(key)
+        except ObjectNotFound as e:
+            raise err.NotFound(f"Stem object not found: {key}",
+                               detail={"key": key}) from e
+        except StorageError as e:
+            raise err.StorageUnavailable(
+                "Project storage is unreachable") from e
+        return Response(content=data, media_type="audio/wav")
 
     # -- runs and events --------------------------------------------------
 
@@ -1982,11 +2022,11 @@ def _repair_work(store: ProjectStore, project_id: str, version: int,
                                 "duration_s": request.duration_s,
                                 "tier": request.tier},
                      "superseded": superseded, "variant": variant,
-                     "timeline_version": new_version,
+                     "timeline_version": result.timeline_version,
                      "provider": provider, "note": note})
 
         store.complete_run(
-            run, timeline_version=new_version,
+            run, timeline_version=result.timeline_version,
             genblaze_run_id=result.genblaze_run_id,
             metadata={"event_index": event_index, "event_name": event.name,
                       "variant": variant, "superseded": superseded,

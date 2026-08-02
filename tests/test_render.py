@@ -404,15 +404,26 @@ def test_repair_route_changes_only_the_target_stem(store, project, stub_ffmpeg,
                                      "b2_key": gunshot["b2_key"],
                                      "variant": ""}
     assert payload["variant"] == repaired_gunshot["variant"]
-    # v3, not v2: the baseline mix stamped its generated durations onto v2, so
-    # the repair branches from there. The repair's own mix adds no further
-    # version — every event is already frozen, and a stamp that changes nothing
-    # allocates nothing.
-    assert payload["timeline_version"] == 3
+    # v4, not v3: the baseline mix stamped its generated durations onto v2, so
+    # the repair branches from there (v3 = the repair document). The repair's
+    # mix then re-stamps the document — the repaired event's stem_key moves to
+    # the new variant's address, so a new version records the truth rather
+    # than letting v3 name an address that no longer exists.
+    assert payload["timeline_version"] == 4
     assert payload["note"] == "thin take"
 
     # The new version is a real generation of the project, not an overwrite.
-    assert store.list_timeline_versions(project.id) == [1, 2, 3]
+    assert store.list_timeline_versions(project.id) == [1, 2, 3, 4]
+
+    # The stamped stem_key follows the address: the repaired event now names
+    # the repaired stem, every other event keeps its key.
+    repaired_timeline = store.load_timeline(project.id, 4)
+    assert repaired_timeline.events[2].stem_key == repaired_gunshot["b2_key"]
+    baseline_timeline = store.load_timeline(project.id, 2)
+    for i in range(len(baseline_timeline.events)):
+        if i != 2:
+            assert (repaired_timeline.events[i].stem_key
+                    == baseline_timeline.events[i].stem_key)
 
 
 # -- the export gate ---------------------------------------------------------
@@ -691,9 +702,13 @@ def test_mix_stamps_generated_durations_and_renders_identically(
     # round-trips through `source_duration_s` unchanged.
     inventory = store.load_stem_inventory(project.id, first.run_id)
     frozen_durations = {round(s["duration_s"], 6) for s in inventory}
+    inventory_keys = {s["b2_key"] for s in inventory}
     for before, after in zip(v1.events, v2.events):
         assert route_event(after) == route_event(before)
         assert round(after.source_duration_s, 6) in frozen_durations
+        # Every stamped stem_key is an address this run really recorded — the
+        # honest event→audio link the preview trusts.
+        assert after.stem_key in inventory_keys
         # Discrete one-shots also get their placement span widened to the
         # source length: with a freeze present the renderer windows them to
         # `duration`, so leaving the old span would silently cut the headroom.

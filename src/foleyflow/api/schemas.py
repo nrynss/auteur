@@ -252,6 +252,10 @@ class TimelineEventOut(BaseModel):
     duration: float
     seed: Optional[int] = None
     source_duration_s: Optional[float] = None
+    # The stem's storage key, stamped at mix time (unit 7.9) — the honest
+    # event→audio link for the browser preview. Names repeat and stems dedupe,
+    # so this is the only address the client should trust. None = never mixed.
+    stem_key: Optional[str] = None
     scene_id: Optional[str] = None
 
 

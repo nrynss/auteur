@@ -417,26 +417,39 @@ def stamp_source_durations(timeline, inventory: List[Dict[str, Any]], *,
     is the one value that leaves the mix byte-identical, and it is also the
     truthful statement of how long that one-shot occupies the timeline.
     Shortening it afterwards is then a free edit, which is the whole point.
+
+    **Stem keys are refreshed on every run, freezes are not.** Each event's
+    `stem_key` is looked up every time (a repair re-rolls the variant, which
+    moves the cache address — the stamped key must follow). `source_duration_s`
+    is only *written* on the first freeze; once frozen it is preserved, as is
+    the widened discrete placement span (a later nudge of it is a free edit the
+    stamp must not undo). `changed` is True only when something actually
+    moved, so an unchanged re-mix allocates no version.
     """
     by_key = {s.get("b2_key"): s for s in inventory if s.get("b2_key")}
     events = []
     changed = False
     for event in timeline.events:
-        stem = None
-        if event.source_duration_s is None:
-            request = route_event(event)
-            variant = (variant_fn(request) if variant_fn else "") or ""
-            stem = by_key.get(cache_object_key(
-                request.endpoint, request.prompt, request.duration_s, variant))
+        request = route_event(event)
+        variant = (variant_fn(request) if variant_fn else "") or ""
+        stem = by_key.get(cache_object_key(
+            request.endpoint, request.prompt, request.duration_s, variant))
         frozen = (stem or {}).get("duration_s")
         if stem is None or frozen is None:
             events.append(event)
             continue
         frozen = float(frozen)
-        events.append(dataclass_replace(
-            event, source_duration_s=frozen,
-            duration=frozen if event.kind == "discrete" else event.duration))
-        changed = True
+        first_freeze = event.source_duration_s is None
+        updated = dataclass_replace(
+            event,
+            source_duration_s=frozen if first_freeze else event.source_duration_s,
+            stem_key=stem["b2_key"],
+            duration=(frozen if (first_freeze and event.kind == "discrete")
+                      else event.duration),
+        )
+        if updated != event:
+            changed = True
+        events.append(updated)
 
     if not changed:
         return timeline, False

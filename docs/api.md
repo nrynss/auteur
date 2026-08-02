@@ -284,6 +284,7 @@ round-trips:
       "duration": 1.0,
       "seed": null,
       "source_duration_s": 1.5,
+      "stem_key": "cache/fa1d803456c3c126.wav",
       "scene_id": "scene_01"
     }
   ]
@@ -299,6 +300,13 @@ set it on a previously-unfrozen event **only at the value that event already
 routes to** — recording an address that exists, never inventing one — and may
 never change or clear an existing freeze on content that is still in the
 document. Full rules under Commit below.
+
+`stem_key` is the storage address of the audio the event's stem lives at,
+stamped at the same time and the same way (`source: "mix_freeze"`). Names
+repeat and stems dedupe, so this is the only honest event→audio link — the
+browser preview uses it via §3.13. It is refreshed when a repair moves the
+address (new variant), and is `null` for an event that has never been mixed.
+A commit may not write it (read-only; the server owns the address).
 
 ```
 GET /api/v1/projects/{id}/timeline/versions
@@ -825,6 +833,32 @@ The route-level `404`s match the mix route: `mix_not_found` when the project
 | `404 run_not_found` | Mix route: unknown `run_id` |
 | `400 invalid_request` | Stem key not in this project's inventories (foreign keys refused); or authorised key is not a valid WAV |
 | `400 invalid_id` | Malformed project or run id |
+
+### 3.13 Browser preview stems
+
+```
+GET /api/v1/projects/{id}/preview/stems/{key}
+```
+
+`200` — the stem WAV streamed server-side, `Content-Type: audio/wav`.
+
+This is the same-origin fetch the browser preview (unit 7.9) uses to play
+stems in Web Audio. B2's signed URLs carry no CORS headers, so a browser
+cannot decode them directly; this route re-serves the object from storage,
+and because the UI and the API are same-origin no CORS is needed here either.
+The client already holds `key` from the event's stamped `stem_key` (§3.4).
+
+`key` must appear as a `b2_key` in some stem inventory for this project —
+the same rule as the peaks stem route (§3.12). Arbitrary bucket keys are
+refused: the preview may only ever play audio this project actually generated.
+
+| Status | When |
+|---|---|
+| `200` | WAV streamed |
+| `404 project_not_found` | Unknown project |
+| `404 not_found` | Authorised key but the object is not in storage |
+| `400 invalid_request` | Stem key not in this project's inventories (foreign keys refused) |
+| `400 invalid_id` | Malformed project id |
 
 `min` and `max` are the same length: `ceil(duration_s * peaks_per_second)`
 bins (empty audio → empty arrays). The client draws a two-sided waveform

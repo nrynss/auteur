@@ -2347,6 +2347,44 @@ def test_stem_peaks_404_unknown_project(client):
     assert r.json()["error"]["code"] == "project_not_found"
 
 
+def test_preview_stem_200_streams_the_wav(client, store, project):
+    """The browser preview's same-origin stem fetch (unit 7.9, §3.13)."""
+    stem_key = "cache/previewstem.wav"
+    store.backend.put_bytes(stem_key, b"RIFF\x00\x00\x00\x00WAVEfmt\x00",
+                            content_type="audio/wav")
+    _seed_stem_inventory(store, project, stem_key)
+
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/preview/stems/{stem_key}")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("audio/wav")
+    assert r.content.startswith(b"RIFF")
+
+
+def test_preview_stem_404_unknown_project(client):
+    r = client.get(f"{API_PREFIX}/projects/{VALID_ID}/preview/stems/cache/x.wav")
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "project_not_found"
+
+
+def test_preview_stem_rejects_foreign_key(client, store, project):
+    r = client.get(
+        f"{API_PREFIX}/projects/{project.id}/preview/stems/cache/not-ours.wav")
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_request"
+
+
+def test_preview_stem_404_when_object_missing(client, store, project):
+    """Authorised key (in the inventory) but no object in storage."""
+    stem_key = "cache/ghost.wav"
+    _seed_stem_inventory(store, project, stem_key)
+    assert not store.backend.exists(stem_key)
+
+    r = client.get(
+        f"{API_PREFIX}/projects/{project.id}/preview/stems/{stem_key}")
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "not_found"
+
+
 def test_stem_peaks_rejects_foreign_key(client, store, project):
     """A key not in any stem inventory for this project is refused."""
     r = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/stem",

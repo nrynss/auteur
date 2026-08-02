@@ -9,6 +9,7 @@
   import EvidencePanel from "./EvidencePanel.svelte";
   import HistoryPanel from "./HistoryPanel.svelte";
   import Meter from "../components/Meter.svelte";
+  import Player from "./Player.svelte";
   import ReadinessPanel from "./ReadinessPanel.svelte";
   import SceneRail from "./SceneRail.svelte";
   import Spinner from "../components/Spinner.svelte";
@@ -147,7 +148,16 @@
 
     <div class="stage">
       <section class="viewer">
-        <ViewerPlaceholder />
+        {#if project.source_url || project.mix_url}
+          <Player
+            id={project.id}
+            sourceUrl={project.source_url ?? null}
+            mixUrl={project.mix_url ?? null}
+            events={timeline?.events ?? []}
+          />
+        {:else}
+          <ViewerPlaceholder />
+        {/if}
         <SceneRail {scenes} />
       </section>
 

@@ -13,7 +13,8 @@ load_dotenv()
 
 from foleyflow.models import Event, Timeline
 from foleyflow.providers.config import get_analysis_config
-from foleyflow.timeline_io import _coerce_seed, _coerce_source_duration_s
+from foleyflow.timeline_io import (_coerce_seed, _coerce_source_duration_s,
+                                    _coerce_stem_key)
 
 # Default VLM model — read from providers.toml [analysis] section.
 # Default is Gemini Flash; OpenAI gpt-5.6-luna is optional via --model.
@@ -249,9 +250,20 @@ def _validate_event(ev: dict, clip_duration: float | None) -> Event | None:
               f"{ev.get('source_duration_s')!r}: {e}")
         return None
 
+    # Optional stem storage key (unit 7.9). Same A.4 trap: must pass through
+    # or the link to the event's audio is dropped on re-parse. Model output
+    # never sets it (analysis has no stems yet); invalid values hard-drop the
+    # event rather than silently breaking the preview link.
+    try:
+        stem_key = _coerce_stem_key(ev.get("stem_key"))
+    except (TypeError, ValueError) as e:
+        print(f"Warning: dropping event '{name}' — invalid stem_key "
+              f"{ev.get('stem_key')!r}: {e}")
+        return None
+
     return Event(name=name.strip(), start_time=start, duration=duration,
                  intensity=intensity, kind=kind, seed=seed,
-                 source_duration_s=source_duration_s)
+                 source_duration_s=source_duration_s, stem_key=stem_key)
 
 def parse_timeline_json(text: str, clip_duration: float | None = None) -> Timeline:
     """Parse JSON text into Timeline and Event dataclasses, with one repair retry.

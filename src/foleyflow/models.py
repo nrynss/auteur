@@ -17,6 +17,12 @@ class Event:
     # request event.duration + HEADROOM_S; rhythmic requests RHYTHMIC_LOOP_S.
     # When set, placement duration may change freely without re-billing.
     source_duration_s: Optional[float] = None
+    # The stem's storage address (cache object key) this event's audio lives
+    # at, stamped at mix time from the run's own inventory (unit 7.9). The
+    # browser preview uses it to fetch the right clip; names repeat and stems
+    # dedupe, so this is the only honest event→audio link. None = never mixed
+    # (or the mix predates stamping).
+    stem_key: Optional[str] = None
 
 @dataclass
 class Timeline:
