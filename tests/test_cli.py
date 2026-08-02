@@ -337,6 +337,30 @@ def test_mix_reports_spend_and_qa(client, store, project, capsys, monkeypatch):
     assert "foleyflow export" in out, "it must name the next step"
 
 
+def test_regenerate_waits_and_reports_the_repaired_event(
+        client, store, project, capsys, monkeypatch):
+    """The repair verb picks the event by index and polls the run."""
+    import foleyflow.api.app as app_mod
+
+    store.save_timeline(project.id, _timeline())
+
+    def _work(_store, _pid, version, event_index, request, note, provider):
+        def run_it(job):
+            store.complete_run(job, timeline_version=version + 1,
+                               metadata={"event_index": event_index,
+                                         "event_name": request.prompt,
+                                         "variant": "rX",
+                                         "ledger_delta_usd": 0.0})
+        return run_it
+
+    monkeypatch.setattr(app_mod, "_repair_work", _work)
+
+    assert run(client, "regenerate", project.id, "2", "--wait") == EXIT_OK
+    out = capsys.readouterr().out
+    assert "event 2" in out
+    assert "regenerated" in out
+
+
 def test_mix_without_a_timeline_exits_nonzero(client, project, capsys):
     assert run(client, "mix", project.id) == EXIT_API_ERROR
     assert "timeline" in capsys.readouterr().err.lower()

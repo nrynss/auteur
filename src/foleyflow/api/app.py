@@ -37,6 +37,7 @@ from foleyflow.api.schemas import (
     QaReportResponse,
     QuotaResponse,
     ReadinessItem,
+    RegenerateRequest,
     RemixRequest,
     RunAccepted,
     RunListResponse,
@@ -386,6 +387,97 @@ def create_app(store: Optional[ProjectStore] = None,
             raise err.AlreadyRunning(project_id, e.existing.run_id,
                                      e.existing.kind) from e
         return RunAccepted(run_id=run.id, kind="export")
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/events/{{event_index}}/regenerate",
+              response_model=RunAccepted, status_code=202, tags=["repair"])
+    def regenerate_event(project_id: str, event_index: int,
+                         body: RegenerateRequest = Body(default=RegenerateRequest())) -> RunAccepted:
+        """Regenerate one event's stem and re-mix; everything else from cache
+        (SPEC §9.3.4, docs/api.md §3.7).
+
+        Addressed by event index, never name — names repeat within a timeline
+        ("holster creak" twice), so a name is not an identifier. The repair
+        allocates a new timeline version beside the old one and re-mixes it
+        with a variant salt on exactly one stem's cache address, so one stem's
+        bytes change and every other stem is still served from cache.
+
+        A billable regeneration must be confirmed: the estimate is shown to
+        the client, and `confirm_cost_usd` must come back equal to it (SPEC
+        §9.4) — the request is refused otherwise, so a client cannot spend
+        money it never displayed.
+        """
+        from foleyflow.api.jobs import SlotTaken
+        from foleyflow.ledger import estimate_cost
+        from foleyflow.routing import SfxRequest, _clamp_duration, route_event
+        from foleyflow.sfx import build_arguments
+        from foleyflow.tiers import TierError, get_tier
+
+        _check_project_id(project_id)
+        state = _load_state(store, project_id)
+        if not state.timeline_version:
+            raise err.PreconditionFailed(
+                "The project has no timeline to repair",
+                detail={"project_id": project_id, "required": "POST /analyze"})
+
+        # The timeline is immutable; capturing the version here means the
+        # worker loads exactly the plan the estimate was shown against.
+        version = state.timeline_version
+        timeline = store.load_timeline(project_id, version)
+        if not (0 <= event_index < len(timeline.events)):
+            raise err.InvalidRequest(
+                f"event index {event_index} is out of range for timeline "
+                f"v{version} ({len(timeline.events)} events)",
+                detail={"project_id": project_id, "event_index": event_index,
+                        "event_count": len(timeline.events),
+                        "timeline_version": version})
+
+        event = timeline.events[event_index]
+        request = route_event(event)
+
+        if body.provider:
+            # "Try an approved alternative" (SPEC §9.3.4): a declared SFX tier
+            # re-aims this one request, and the duration is re-clamped to that
+            # tier's endpoint so the request is exactly what it accepts.
+            try:
+                tier = get_tier(body.provider)
+            except TierError as exc:
+                raise err.InvalidRequest(str(exc)) from exc
+            request = SfxRequest(
+                endpoint=tier.endpoint, prompt=request.prompt,
+                duration_s=_clamp_duration(tier.endpoint, request.duration_s),
+                category=request.category, tier=tier.name)
+
+        estimated = estimate_cost(request.endpoint, build_arguments(request))
+        if estimated > 0 and body.confirm_cost_usd is None:
+            raise err.PreconditionFailed(
+                "Regeneration is billable; confirm the estimated cost shown "
+                "before proceeding (SPEC §9.4)",
+                detail={"project_id": project_id, "event_index": event_index,
+                        "estimated_cost_usd": estimated,
+                        "require": "confirm_cost_usd"})
+        if body.confirm_cost_usd is not None and \
+                abs(body.confirm_cost_usd - estimated) > 1e-9:
+            raise err.PreconditionFailed(
+                "confirm_cost_usd must match the estimate shown",
+                detail={"estimated_cost_usd": estimated,
+                        "confirm_cost_usd": body.confirm_cost_usd})
+
+        try:
+            run = runner.submit(
+                project_id, "repair",
+                _repair_work(store, project_id, version, event_index, request,
+                             body.note, body.provider),
+                metadata={"event_index": event_index,
+                          "event_name": event.name,
+                          "endpoint": request.endpoint,
+                          "tier": request.tier,
+                          "estimated_cost_usd": estimated},
+                actor="user")
+        except SlotTaken as e:
+            raise err.AlreadyRunning(project_id, e.existing.run_id,
+                                     e.existing.kind) from e
+        return RunAccepted(run_id=run.id, kind="repair",
+                           estimated_cost_usd=estimated)
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/dossier",
              response_model=DossierResponse, tags=["projects"])
@@ -1068,6 +1160,86 @@ def _export_work(store: ProjectStore, project_id: str, mix_run_id: str,
             metadata={"export_key": pointer["export_key"],
                       "manifest_key": pointer["manifest_key"],
                       "overridden_blockers": pointer["overridden_blockers"]})
+    return work
+
+
+def _repair_work(store: ProjectStore, project_id: str, version: int,
+                 event_index: int, request, note: Optional[str],
+                 provider: Optional[str]):
+    """The repair job body: a new timeline version, one regenerated stem, re-mix.
+
+    ``request`` is the stem to regenerate, resolved (and possibly re-aimed at
+    an approved alternative tier) at route time, so the estimate shown is the
+    one actually spent. ``version`` is the immutable timeline the plan was
+    shown against — loading it here cannot race a newer plan.
+
+    The plan bytes are unchanged; the new version number is the lineage
+    marker. v2 is the generation the regenerated take belongs to, and the
+    readiness checklist says "mixed from v1; timeline is now v2" until this
+    run's mix lands.
+    """
+    def work(run):
+        from foleyflow.projects import EVENT_REPAIR_APPROVED
+        from foleyflow.render import render_mix
+
+        timeline = store.load_timeline(project_id, version)
+        event = timeline.events[event_index]
+        new_version = store.save_timeline(project_id, timeline, run_id=run.id)
+
+        # The salt is unique per repair run, so repairing the same event twice
+        # is a genuinely new take rather than a cache hit on the first one's.
+        # cache_key_raw appends the salt only when non-empty (sfx_cache.cache_key
+        # documents this), so every other stem keeps its existing address.
+        variant = f"r{run.id[-8:]}"
+        target = (request.endpoint, request.prompt,
+                  round(request.duration_s, 2))
+
+        def variant_fn(req):
+            return variant if (req.endpoint, req.prompt,
+                               round(req.duration_s, 2)) == target else ""
+
+        # The superseded take is the address the *previous* mix served for this
+        # request — captured before render_mix records this run's mix, so the
+        # lineage names a fact about the bucket, not about this process.
+        superseded = None
+        latest = store.get_latest_mix(project_id)
+        if latest:
+            for stem in store.load_stem_inventory(project_id, latest["run_id"]):
+                if (stem.get("endpoint"), stem.get("prompt"),
+                        round(stem.get("duration_s") or 0.0, 2)) == target:
+                    superseded = {
+                        "cache_key": stem.get("cache_key"),
+                        "b2_key": stem.get("b2_key"),
+                        "variant": stem.get("variant") or "",
+                    }
+                    break
+
+        staged = _fetch_source(store, project_id)
+        result = render_mix(store, project_id, run=run, video_path=staged,
+                            tier="full", timeline_version=new_version,
+                            variant_fn=variant_fn)
+
+        store.append_event(
+            project_id, EVENT_REPAIR_APPROVED, actor="user", run_id=run.id,
+            payload={"event_index": event_index, "event_name": event.name,
+                     "target": {"endpoint": request.endpoint,
+                                "prompt": request.prompt,
+                                "duration_s": request.duration_s,
+                                "tier": request.tier},
+                     "superseded": superseded, "variant": variant,
+                     "timeline_version": new_version,
+                     "provider": provider, "note": note})
+
+        store.complete_run(
+            run, timeline_version=new_version,
+            genblaze_run_id=result.genblaze_run_id,
+            metadata={"event_index": event_index, "event_name": event.name,
+                      "variant": variant, "superseded": superseded,
+                      "provider": provider, "note": note,
+                      "ledger_delta_usd": round(result.ledger_delta, 4),
+                      "stem_count": len(result.stems),
+                      "generated_count": result.generated_count,
+                      "stages": result.stages})
     return work
 
 

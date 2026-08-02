@@ -34,7 +34,7 @@ product, and a reader needs to know which parts of it exist. Updated
 | Mix / export | **Built** | `POST /mixes` renders and measures; `POST /exports` writes the §11.6 manifest and moves the pointer |
 | Artifact dossier | **Built** | `GET /projects/{id}/dossier`; every artifact with signed URLs |
 | QA (loudness, true peak, continuity) | **Built** | Continuity from scene stats; loudness via ebur128 when a mix is measured |
-| Targeted repair | **Partial** | `render_mix(variant_fn=…)` regenerates one stem and re-mixes; no per-event API route yet |
+| Targeted repair | **Built** | `POST /projects/{id}/events/{index}/regenerate` re-mixes with a variant salt on one stem; version lineage on the run and in the log |
 | Deployment | **Built** | Cloud Run `us-east4`, single instance, CPU always allocated; SFX worker reached over a Cloudflare tunnel at `sfx.nryn.dev` |
 
 Test suite: 429 passing, 1 skipped. Offline: the only stubs in the render path
@@ -818,7 +818,7 @@ implementation and treated as the source of truth. Base path `/api/v1`.
 | `GET` | `/projects/{id}/runs`, `/runs/{run_id}` | Poll a run | **Built** |
 | `GET` | `/projects/{id}/events` | The audit trail §6.3 calls History | **Built** |
 | `GET` | `/quota` | Provider budget, flagged as an estimate | **Built** |
-| `POST` | `/projects/{id}/events/{index}/regenerate` | Targeted stem regeneration | Not built |
+| `POST` | `/projects/{id}/events/{index}/regenerate` | Targeted stem regeneration | **Built** |
 | `POST` | `/projects/{id}/mixes` | Render stems, mix, mux, re-measure QA | **Built** |
 | `GET` | `/projects/{id}/qa` | Latest QA report | **Built** |
 | `POST` | `/projects/{id}/exports` | Publish a rendered mix + provenance manifest | **Built** |
@@ -944,10 +944,9 @@ call is stubbed.
   20 so the demo clip's 31.7-luma jump between scenes 4 and 5 fires.
 - ✅ Provenance manifest with hashes and lineage — written at export from what
   is actually in the bucket, and it admits to a QA override.
-- ⏳ Per-event regenerate and versioned re-mix — `render_mix(variant_fn=…)` does
-  the work and is tested; what is missing is the
-  `POST /events/{index}/regenerate` route that picks the event and the version
-  lineage that records why.
+- ✅ Per-event regenerate and versioned re-mix — `POST /events/{index}/regenerate`
+  picks the event, allocates a new timeline version, and re-mixes with a variant
+  salt on exactly one stem's address; the lineage names the superseded take.
 
 **Exit condition:** one selected stem is regenerated without redoing the project,
 and its version lineage is visible.
@@ -979,8 +978,8 @@ In order. Nothing left in the plan has an external dependency.
 2. **QA module** (loudness + true peak, then continuity) — **done**.
 3. **Mix and export wiring** — **done**. `POST /mixes`, `POST /exports`,
    `foleyflow mix`, `foleyflow export`.
-4. **Repair loop.** The variant seam is wired into the mix; it needs the
-   per-event route and version lineage.
+4. **Repair loop** — **done**. `POST /events/{index}/regenerate` with the
+   per-event route, version lineage, and cost confirmation (SPEC §9.4).
 5. **Deployment skeleton.**
 6. **Control-room UI** over the API, and the artifact dossier it closes on.
 
@@ -996,12 +995,12 @@ FoleyFlow is ready to submit when a judge can verify all of the following:
 | 2 | Genblaze orchestrates visible, meaningful workflow stages | **Met** — ingest, stem fan-out with per-stem retry, and mix/mux/QA all run as Genblaze steps; run id, current stage and per-stage outcome are on `GET /runs/{id}`. Analysis is the one call still outside (§8.2) |
 | 3 | The app produces an audible, synchronized Foley transformation | **Met** — verified 2026-08-02 on the deployed app: `proj_01KYJD1RKETS3KTX5HA3H5JPDQ` mixed and exported, 5 stems generated live through the tunnelled worker, mix measured at −21.4 LUFS / −1.0 dBTP |
 | 4 | The app surfaces at least one useful technical or visual QA finding | **Met** for continuity after analysis; audio when a mix is measured |
-| 5 | A targeted repair updates only the relevant asset/mix version | Not met |
+| 5 | A targeted repair updates only the relevant asset/mix version | **Met** — `POST /events/{index}/regenerate` regenerates one stem (variant salt) and re-mixes; verified end to end: the target stem's `b2_key` moves, every other stem's is identical, the mixes differ, and the lineage names the superseded take |
 | 6 | The final export traces to source, prompts, models, QA, and B2 objects | **Met** — §11.6 manifest covers source, every stem (prompt, endpoint, tier, sha256), mix, export and QA; Genblaze's own canonical-hashed manifest covers ingest and is recorded on the run |
 
-**Criterion 5 is the only one still unmet.** It needs the per-event regenerate
-route; the engine behind it (`render_mix(variant_fn=…)`) exists and is tested.
-See `handoff.md`.
+**All six criteria are met.** The last one landed with the per-event regenerate
+route; the engine behind it (`render_mix(variant_fn=…)`) had existed and been
+tested since the previous milestone. See `handoff.md`.
 
 ---
 

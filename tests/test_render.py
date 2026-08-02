@@ -292,6 +292,113 @@ def test_variant_forces_one_stem_to_regenerate(store, project, fake_generation,
     assert repaired.generated_count == 1
 
 
+def test_repair_route_changes_only_the_target_stem(store, project, stub_ffmpeg,
+                                                   tmp_path, monkeypatch):
+    """SPEC §18 criterion 5 end to end through the HTTP route: one stem's
+    address (and bytes) change, every other stem's b2_key is identical across
+    the two runs, and the lineage names the superseded take."""
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from foleyflow import sfx_cache, stems
+    from foleyflow.api.app import API_PREFIX, create_app
+    from foleyflow.api.jobs import JobRunner
+    from foleyflow.projects import EVENT_REPAIR_APPROVED
+
+    # Generation stub whose output varies per call, so the regenerated take is
+    # genuinely different audio and the two mixes differ byte-for-byte.
+    calls = []
+
+    def _generate(request, dest_path):
+        calls.append(request)
+        return _write_wav(dest_path, seconds=max(request.duration_s, 0.5),
+                          amplitude=0.1 + 0.01 * len(calls))
+
+    def _generate_many(requests, **kwargs):
+        results = []
+        for request in requests:
+            calls.append(request)
+            raw = str(tmp_path / f"raw{len(calls)}.wav")
+            _write_wav(raw, seconds=max(request.duration_s, 0.5),
+                       amplitude=0.1 + 0.01 * len(calls))
+            results.append(stems.StemResult(
+                request=request, served=request, local_path=raw,
+                attempts=[stems.StemAttempt(
+                    tier=request.tier, endpoint=request.endpoint,
+                    status="succeeded", genblaze_run_id="gb-test-run")]))
+        return results
+
+    monkeypatch.setattr(stems, "generate_many", _generate_many)
+    monkeypatch.setattr(sfx_cache, "generate_canonical_wav", _generate)
+
+    video = str(tmp_path / "source.mp4")
+    _placeholder_video(video)
+    store.backend.put(project.input_key, video, content_type="video/mp4")
+
+    # Baseline mix.
+    first = render.render_mix(store, project.id, run=_run(store, project.id),
+                              video_path=video)
+    first_inventory = store.load_stem_inventory(project.id, first.run_id)
+    first_keys = {s["b2_key"] for s in first_inventory}
+    gunshot = next(s for s in first_inventory
+                   if s["prompt"].startswith("gunshot"))
+    baseline_calls = len(calls)
+
+    runner = JobRunner(store, max_workers=1)
+    app = create_app(store, runner)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.post(
+            f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+            json={"note": "thin take"})
+        assert resp.status_code == 202, resp.text
+        run_id = resp.json()["run_id"]
+        run = None
+        for _ in range(400):
+            run = client.get(
+                f"{API_PREFIX}/projects/{project.id}/runs/{run_id}").json()
+            if run["status"] != "running":
+                break
+            time.sleep(0.01)
+        assert run["status"] == "completed", run
+    runner.shutdown(wait=True)
+
+    # Exactly one new generation: the target stem under its variant address.
+    assert len(calls) == baseline_calls + 1
+
+    repaired_inventory = store.load_stem_inventory(project.id, run_id)
+    repaired_keys = {s["b2_key"] for s in repaired_inventory}
+    repaired_gunshot = next(s for s in repaired_inventory
+                            if s["prompt"].startswith("gunshot"))
+
+    # The target stem moved to a new address (variant salt); the whole rest of
+    # the inventory is byte-for-byte the same set of objects.
+    assert repaired_gunshot["b2_key"] != gunshot["b2_key"]
+    assert repaired_gunshot["variant"]
+    assert repaired_keys - {repaired_gunshot["b2_key"]} == \
+        first_keys - {gunshot["b2_key"]}
+
+    # The new take is different audio: the two mixes differ.
+    first_mix = store.backend.get_bytes(store.mix_key(project.id, first.run_id))
+    repaired_mix = store.backend.get_bytes(store.mix_key(project.id, run_id))
+    assert first_mix != repaired_mix
+
+    # The lineage names the superseded take and the new version.
+    lineage = [e for e in store.list_events(project.id)
+               if e.type == EVENT_REPAIR_APPROVED]
+    assert len(lineage) == 1
+    payload = lineage[0].payload
+    assert payload["superseded"] == {"cache_key": gunshot["cache_key"],
+                                     "b2_key": gunshot["b2_key"],
+                                     "variant": ""}
+    assert payload["variant"] == repaired_gunshot["variant"]
+    assert payload["timeline_version"] == 2
+    assert payload["note"] == "thin take"
+
+    # The new version is a real generation of the project, not an overwrite.
+    assert store.list_timeline_versions(project.id) == [1, 2]
+
+
 # -- the export gate ---------------------------------------------------------
 
 def test_export_publishes_the_pointer_and_a_manifest(store, project,

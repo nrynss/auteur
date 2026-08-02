@@ -19,6 +19,15 @@ from foleyflow.storage import LocalBackend, StorageError
 VALID_ID = "proj_01KYJD1RKETS3KTX5HA3H5JPDQ"
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_sfx_tier(monkeypatch):
+    """These tests assert tier behaviour; a developer's exported
+    FOLEYFLOW_SFX_TIER must not silently re-route them. Tests that want a
+    specific tier set it explicitly. (The health worker-probe tests found this
+    the hard way: with `=paid` they short-circuit to not_applicable and fail.)"""
+    monkeypatch.delenv("FOLEYFLOW_SFX_TIER", raising=False)
+
+
 @pytest.fixture
 def store(tmp_path):
     return ProjectStore(LocalBackend(str(tmp_path / "b2")), work_dir=str(tmp_path / "w"))
@@ -823,6 +832,148 @@ def test_dossier_503s_when_signing_fails_after_a_successful_head(
     r = client.get(f"{API_PREFIX}/projects/{project.id}/dossier")
     assert r.status_code == 503
     assert r.json()["error"]["code"] == "storage_unavailable"
+
+
+# -- repair -----------------------------------------------------------------
+
+def _stub_repair_work(store, project, monkeypatch, captured):
+    """Stand in for the repair work: record what the route wired through and
+    complete the run with a lineage event. The render itself is covered in
+    test_render.py; these assert the contract around it."""
+    import foleyflow.api.app as app_mod
+    from foleyflow.projects import EVENT_REPAIR_APPROVED
+
+    def _work(_store, _pid, version, event_index, request, note, provider):
+        def run_it(run):
+            captured["version"] = version
+            captured["event_index"] = event_index
+            captured["request"] = request
+            captured["note"] = note
+            captured["provider"] = provider
+            # The real work allocates the new version; the stub does the same
+            # so the lineage and version listing stay honest.
+            timeline = _store.load_timeline(_pid, version)
+            new_version = _store.save_timeline(_pid, timeline, run_id=run.id)
+            store.append_event(project.id, EVENT_REPAIR_APPROVED, actor="user",
+                               run_id=run.id,
+                               payload={"event_index": event_index,
+                                        "superseded": {"b2_key": "old-take"},
+                                        "variant": "rX",
+                                        "timeline_version": new_version})
+            store.complete_run(run, timeline_version=new_version,
+                               metadata={"event_index": event_index,
+                                         "variant": "rX"})
+        return run_it
+
+    monkeypatch.setattr(app_mod, "_repair_work", _work)
+
+
+def test_regenerate_404s_for_an_unknown_project(client):
+    r = client.post(f"{API_PREFIX}/projects/{VALID_ID}/events/0/regenerate",
+                    json={})
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "project_not_found"
+
+
+def test_regenerate_is_refused_before_a_timeline_exists(client, project):
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/0/regenerate",
+                    json={})
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "precondition_failed"
+
+
+def test_regenerate_rejects_an_out_of_range_event_index(client, store, project):
+    store.save_timeline(project.id, _timeline())
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/99/regenerate",
+                    json={})
+    assert r.status_code == 400
+    detail = r.json()["error"]["detail"]
+    assert detail["event_count"] == len(_timeline().events)
+
+
+def test_regenerate_maps_index_to_request_and_records_the_lineage(
+        client, store, project, monkeypatch):
+    """Event index -> SfxRequest at the route, and the run's lineage names the
+    superseded take and the new timeline version."""
+    store.save_timeline(project.id, _timeline())
+    captured = {}
+    _stub_repair_work(store, project, monkeypatch, captured)
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+                    json={"note": "the take was thin"})
+    assert r.status_code == 202
+    body = r.json()
+    assert body["kind"] == "repair"
+    assert body["estimated_cost_usd"] == 0.0   # the default tier is free
+
+    _await_run(client, project.id, body["run_id"])
+
+    assert captured["event_index"] == 2
+    assert captured["note"] == "the take was thin"
+    assert captured["provider"] is None
+    assert captured["request"].prompt.startswith("gunshot")
+
+    # The repair produced a new timeline version beside the original.
+    assert store.list_timeline_versions(project.id) == [1, 2]
+
+    from foleyflow.projects import EVENT_REPAIR_APPROVED
+    lineage = [e for e in store.list_events(project.id)
+               if e.type == EVENT_REPAIR_APPROVED]
+    assert len(lineage) == 1
+    assert lineage[0].payload["event_index"] == 2
+    assert lineage[0].payload["superseded"] == {"b2_key": "old-take"}
+    assert lineage[0].payload["timeline_version"] == 2
+
+
+def test_regenerate_requires_confirmation_when_billable(
+        client, store, project, monkeypatch):
+    """SPEC §9.4: a billable regeneration must be confirmed with the exact
+    estimate the client was shown."""
+    store.save_timeline(project.id, _timeline())
+    _stub_repair_work(store, project, monkeypatch, {})
+    monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+                    json={})
+    assert r.status_code == 422
+    detail = r.json()["error"]["detail"]
+    assert detail["estimated_cost_usd"] == pytest.approx(0.30)
+    assert detail["require"] == "confirm_cost_usd"
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+                    json={"confirm_cost_usd": 0.99})
+    assert r.status_code == 422
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+                    json={"confirm_cost_usd": 0.30})
+    assert r.status_code == 202
+    assert r.json()["estimated_cost_usd"] == pytest.approx(0.30)
+
+
+def test_regenerate_rejects_an_unknown_provider(client, store, project):
+    store.save_timeline(project.id, _timeline())
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/0/regenerate",
+                    json={"provider": "not-a-tier"})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_request"
+
+
+def test_regenerate_provider_reroutes_to_an_approved_tier(
+        client, store, project, monkeypatch):
+    """`provider` names a declared SFX tier: the request is re-aimed at it and
+    the estimate is that tier's — the free tier needs no confirmation even
+    when the active tier is paid."""
+    store.save_timeline(project.id, _timeline())
+    captured = {}
+    _stub_repair_work(store, project, monkeypatch, captured)
+    monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+                    json={"provider": "test"})
+    assert r.status_code == 202
+    assert r.json()["estimated_cost_usd"] == 0.0
+    _await_run(client, project.id, r.json()["run_id"])
+    assert captured["request"].endpoint == "openmoss/moss-soundeffect-v2"
 
 
 # -- quota ------------------------------------------------------------------

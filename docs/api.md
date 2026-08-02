@@ -10,11 +10,8 @@ Base path: `/api/v1`
 Deployed at <https://foleyflow-142385844755.us-east4.run.app>.
 
 > **Not everything here is built.** This document is the contract and is
-> deliberately written ahead of the code, so one endpoint below describes
-> intent rather than behaviour. It is marked **NOT IMPLEMENTED** at its
-> definition, and it is tracked in [../handoff.md](../handoff.md):
-> `POST /projects/{id}/events/{index}/regenerate`. Everything else in this
-> file is live and covered by tests.
+> deliberately written ahead of the code. Everything in this file is live and
+> covered by tests.
 
 ---
 
@@ -318,11 +315,6 @@ SPEC.md §6.3 calls "History", served directly rather than reconstructed.
 
 ### 3.7 Repair
 
-> **NOT IMPLEMENTED.** The engine exists and is tested —
-> `render_mix(variant_fn=…)` regenerates exactly one stem and re-mixes, every
-> other stem still served from cache — but this route and the version lineage
-> it should record do not exist. See handoff.md task 4.
-
 ```
 POST /api/v1/projects/{id}/events/{event_index}/regenerate
 { "provider": "…", "confirm_cost_usd": 0.02 }
@@ -338,6 +330,16 @@ name is not an identifier.
 the estimate the client was shown. SPEC.md §9.4 requires the estimate be shown
 before a billable regeneration; requiring it back closes the loop, so a client
 cannot spend money it never displayed.
+
+The repair allocates a new timeline version beside the original and re-mixes it
+with a variant salt on exactly one stem's cache address: that stem's bytes
+change, every other stem is still served from cache, and the mix run records
+the lineage — the superseded take, the new variant, and the version — in the
+event log (`postproduction.repair.approved`) and on the run's metadata. The
+`provider` field names a declared SFX tier to regenerate through; the request
+is re-aimed at that tier and the estimate is its cost. `422 precondition_failed`
+when there is no plan yet or a billable regeneration is not confirmed;
+`400 invalid_request` for an out-of-range index or an unknown provider.
 
 ```
 POST /api/v1/projects/{id}/mixes

@@ -13,9 +13,9 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
 ## Orientation
 
 - One package, `src/foleyflow`. One CLI, `foleyflow`. The HTTP contract in
-  `docs/api.md` is written ahead of the code and treated as source of truth; one
-  endpoint in it is marked **NOT IMPLEMENTED** and is task 2 below.
-- `uv run pytest -q` → **461 passed, 1 skipped**. No provider credentials
+  `docs/api.md` is written ahead of the code and treated as source of truth;
+  every endpoint in it is live and covered by tests.
+- `uv run pytest -q` → **470 passed, 1 skipped**. No provider credentials
   required: the billed calls are stubbed at two seams, `stems.generate_many`
   and `sfx_cache.generate_canonical_wav`. Everything else — ffmpeg, the mix, the
   shared cache, storage, the Genblaze pipelines — runs for real.
@@ -56,23 +56,20 @@ a non-fatal `WorkerHealth` field. Off by default so platform liveness checks do
 not depend on the GPU box; `foleyflow health` always asks for it. Unreachable or
 auth-misconfigured workers print a warning but still exit 0.
 
-## 2. `POST /projects/{id}/events/{index}/regenerate` — M
+## 2. `POST /projects/{id}/events/{index}/regenerate` — M — **DONE**
 
-The last unmet success criterion (SPEC §18 #5) and documented at
-`docs/api.md:275`.
-
-The engine already exists and is tested: `render_mix(variant_fn=…)` regenerates
-exactly one stem while every other stem is still served from cache. What is
-missing is the route that maps an event index to its `SfxRequest`, and the
-version lineage that records *why* a stem was replaced.
-
-Watch the addressing: a variant changes the cache key by appending a salt
-segment, and `sfx_cache.cache_key` documents that the segment is appended *only*
-when a variant is requested, so existing objects keep resolving. Do not
-regularise that.
-
-Acceptance: one stem's bytes change, every other stem's `b2_key` is identical
-across the two runs, and the lineage names the superseded version.
+`POST /api/v1/projects/{id}/events/{index}/regenerate` maps an event index to
+its `SfxRequest`, allocates a new timeline version beside the original, and
+re-mixes through `render_mix(variant_fn=…)` with a per-repair variant salt on
+exactly one stem's cache address — one stem's bytes change, every other stem's
+`b2_key` is identical across the two runs. The lineage names the superseded
+take: `postproduction.repair.approved` (and the run's metadata) carry the
+previous mix's address for that request, the new variant, and the version.
+`confirm_cost_usd` must match the estimate for a billable regeneration (SPEC
+§9.4); `provider` re-aims the request at a declared SFX tier. Acceptance
+verified end to end through the route: target stem moves to a new key, the
+rest of the inventory is byte-for-byte unchanged, the mixes differ, and the
+lineage names the superseded `b2_key`.
 
 ## 3. `GET /projects/{id}/dossier` — M — **DONE**
 

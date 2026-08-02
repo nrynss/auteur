@@ -226,6 +226,41 @@ def cmd_list(client: Client, args) -> int:
     return EXIT_OK
 
 
+def cmd_regenerate(client: Client, args) -> int:
+    """Regenerate one event's stem and re-mix (SPEC §9.3.4)."""
+    body = {}
+    if args.provider:
+        body["provider"] = args.provider
+    if args.confirm_cost is not None:
+        body["confirm_cost_usd"] = args.confirm_cost
+    if args.note:
+        body["note"] = args.note
+    accepted = client.post(
+        f"/projects/{args.project_id}/events/{args.event_index}/regenerate",
+        json=body)
+
+    if args.json and not args.wait:
+        print(json.dumps(accepted, indent=2))
+        return EXIT_OK
+
+    estimated = accepted.get("estimated_cost_usd")
+    cost = f"  (${estimated:.2f} estimated)" if estimated else ""
+    print(f"repair run {accepted['run_id']}{cost}")
+    if not args.wait:
+        print(f"poll: foleyflow run {args.project_id} {accepted['run_id']}")
+        return EXIT_OK
+
+    run = _poll_run(client, args.project_id, accepted["run_id"],
+                    quiet=args.json)
+    meta = run.get("metadata") or {}
+    if run["status"] == "completed" and not args.json:
+        print(f"  event {meta.get('event_index')} "
+              f"({meta.get('event_name')}) regenerated  "
+              f"(${meta.get('ledger_delta_usd', 0):.4f} this run)")
+        print(f"\nnext: foleyflow export {args.project_id} --wait")
+    return _report_run(run)
+
+
 def cmd_show(client: Client, args) -> int:
     data = client.get(f"/projects/{args.project_id}")
 
@@ -796,6 +831,21 @@ def build_parser() -> argparse.ArgumentParser:
                    help="mix an earlier plan instead of the latest")
     p.add_argument("--wait", action="store_true")
     p.set_defaults(func=cmd_mix)
+
+    p = project_arg(sub.add_parser(
+        "regenerate", help="regenerate one event's stem and re-mix"))
+    p.add_argument("event_index", type=int,
+                   help="index into the latest timeline — names repeat, so a "
+                        "name is not an identifier")
+    p.add_argument("--provider",
+                   help="SFX tier to regenerate through (default: the active "
+                        "tier)")
+    p.add_argument("--confirm-cost", type=float,
+                   help="required for a billable regeneration; must equal the "
+                        "estimate shown")
+    p.add_argument("--note", help="why this take was regenerated")
+    p.add_argument("--wait", action="store_true")
+    p.set_defaults(func=cmd_regenerate)
 
     p = project_arg(sub.add_parser("export", help="publish the rendered mix"))
     p.add_argument("--override-blocking", action="store_true",

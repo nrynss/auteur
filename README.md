@@ -21,7 +21,7 @@ the deployed app. One package (`src/foleyflow`), one command (`foleyflow`).
 | Storage — content-addressed cache, B2 artifacts | Built |
 | Projects, runs, versions | Built |
 | Deployment — Cloud Run + tunnelled GPU worker | Built |
-| HTTP API + CLI | Partial (repair pending) |
+| HTTP API + CLI | Built |
 | QA — loudness, true peak, visual continuity | Built (audio when mix measured) |
 | Self-hosted SFX worker — MOSS-SoundEffect v2 | Built (separate GPU process, bearer-auth) |
 | Control room UI | Not started |
