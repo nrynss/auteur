@@ -202,7 +202,8 @@ Both are implemented and unit-tested against stubs, and **neither has ever made
 a live call**. The first time the paid path runs should not be during a
 recording.
 
-Two halves, and the second needs no money:
+Two halves. The second reaches the escalation branch for free; only serving the
+stem from fal costs anything.
 
 - **Paid:** needs ElevenLabs credits (available as of 2026-08-02). One real
   generation, end to end, checking the stem is cached under the paid tier's own
