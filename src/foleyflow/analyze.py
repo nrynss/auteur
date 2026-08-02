@@ -222,8 +222,19 @@ def _validate_event(ev: dict, clip_duration: float | None) -> Event | None:
         print(f"Warning: unknown intensity '{ev.get('intensity')}' for '{name}'; defaulting to 'med'.")
         intensity = "med"
 
+    # Optional frozen mix seed (unit 7.1). Absent/null → None (legacy hash).
+    # Must be passed through here: Event has no extra_fields catch-all, so any
+    # key not listed is silently dropped — the same A.4 trap as timeline_io.
+    seed = None
+    if "seed" in ev and ev["seed"] is not None:
+        try:
+            seed = int(ev["seed"])
+        except (TypeError, ValueError):
+            print(f"Warning: ignoring non-int seed {ev['seed']!r} for '{name}'.")
+            seed = None
+
     return Event(name=name.strip(), start_time=start, duration=duration,
-                 intensity=intensity, kind=kind)
+                 intensity=intensity, kind=kind, seed=seed)
 
 def parse_timeline_json(text: str, clip_duration: float | None = None) -> Timeline:
     """Parse JSON text into Timeline and Event dataclasses, with one repair retry.

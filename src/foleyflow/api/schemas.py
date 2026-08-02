@@ -137,6 +137,10 @@ class ProjectDetail(ProjectSummary):
     event_count: int = 0
     has_export: bool = False
     mix_run_id: Optional[str] = None
+    # Pre-export A/B: source video + latest mix's foley.mp4. export_url is
+    # post-publish only; these fill the player before that.
+    source_url: Optional[str] = None
+    mix_url: Optional[str] = None
     export_url: Optional[str] = None
     manifest_url: Optional[str] = None
     readiness: List[ReadinessItem] = Field(default_factory=list)

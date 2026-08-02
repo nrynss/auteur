@@ -7,18 +7,23 @@ from foleyflow.models import Event, Timeline
 
 
 def timeline_to_dict(t: Timeline) -> dict:
+    events = []
+    for ev in t.events:
+        ed = {
+            "name": ev.name,
+            "start_time": ev.start_time,
+            "duration": ev.duration,
+            "intensity": ev.intensity,
+            "kind": ev.kind,
+        }
+        # Omit null seeds so existing timelines stay clean / unchanged.
+        if ev.seed is not None:
+            ed["seed"] = ev.seed
+        events.append(ed)
     d = {
         "duration": t.duration,
         "ambience": t.ambience,
-        "events": [
-            {
-                "name": ev.name,
-                "start_time": ev.start_time,
-                "duration": ev.duration,
-                "intensity": ev.intensity,
-                "kind": ev.kind
-            } for ev in t.events
-        ]
+        "events": events,
     }
     # Preserve history and other extra fields in the output dictionary
     if hasattr(t, "extra_fields") and t.extra_fields:
@@ -30,6 +35,17 @@ def timeline_to_dict(t: Timeline) -> dict:
     return d
 
 
+def _coerce_seed(raw) -> int | None:
+    """Optional mix seed: int as-is, reject non-integers rather than crash later
+    inside numpy's RNG. JSON null / missing → None."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise TypeError(
+            f"event seed must be an int or null, got {type(raw).__name__}")
+    return raw
+
+
 def dict_to_timeline(d: dict) -> Timeline:
     events = [
         Event(
@@ -37,7 +53,8 @@ def dict_to_timeline(d: dict) -> Timeline:
             start_time=ev["start_time"],
             duration=ev["duration"],
             intensity=ev["intensity"],
-            kind=ev["kind"]
+            kind=ev["kind"],
+            seed=_coerce_seed(ev.get("seed")),
         ) for ev in d["events"]
     ]
     # Identify history and extra fields in input dictionary

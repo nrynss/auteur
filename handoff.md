@@ -19,7 +19,7 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   **7 (control-room UI)** last. Tasks **9–17** are **DONE**.
 - CI (10), build identity (11), post-deploy smoke (12), doctor (13), live paid
   + fallback SFX (14), demo evidence (15), and Secret Manager (16) are in place.
-- `uv run pytest -q` → **565 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **583 passed, 1 skipped**. No provider credentials
   required for tests: the billed calls are stubbed at two seams,
   `stems.generate_many` and `sfx_cache.generate_canonical_wav`. Everything else
   — ffmpeg, the mix, the shared cache, storage, the Genblaze pipelines — runs
@@ -126,14 +126,19 @@ will. Project-less rows are never stranded: `POST /projects/{id}/attributions`
 unattributed rows written before a time, first-come by `before` so a row can
 never land in two projects.
 
-## 7. Control room UI — L — **see `handoff-task7.md`**
+## 7. Control room UI — L — **see `handoff-task7.md`** (in progress)
 
 SPEC §6.1, and the only thing left. Scoped in full in its own file because it
 outgrew a section: it is not a status page but a director's tool — a directly
 editable timeline, an AI addressed in text that proposes edits rather than
 applying them, and a browser-side preview so the edit loop costs nothing.
 
-The throwaway static dashboard (`api/static/index.html`) is deleted outright.
+**Backend progress:** units **7.1** (frozen mix seed) and **7.4** (signed
+`source_url` / `mix_url` on `GET /projects/{id}`) are done. Remaining backend
+backbone: 7.2, 7.3, 7.5; frontend chain starts at 7.6.
+
+The throwaway static dashboard (`api/static/index.html`) is deleted outright
+when 7.6 lands.
 
 Three things about the current state that the earlier version of this section
 got wrong, and that shape the work:
@@ -142,11 +147,12 @@ got wrong, and that shape the work:
   checklist rows. What has no UI at all is far larger: no video player, no A/B,
   no QA report, no stage progress, no repair action, no dossier, no budget.
 - **The API does not already serve everything it needs.** There is no timeline
-  write path at all, and the source video's signed URL exists only inside the
-  dossier. Direct manipulation needs new endpoints, not just a new front end.
-- **The timeline data model needs three changes first** — a frozen per-event
-  mix `seed`, a `source_duration_s` split from the placement span, and trim
-  support — or the editor lies about what it is doing.
+  write path at all (7.3). Source and mix signed URLs now live on the project
+  record (7.4); dossier remains the full inventory.
+- **The timeline data model needs three changes first** — frozen per-event mix
+  `seed` is in (7.1); still needed: `source_duration_s` split from the
+  placement span, and trim support (7.2) — or the editor lies about what it is
+  doing.
 
 Evidence-first, per SPEC §8.4: show the measured number and its source, never a
 synthesised verdict. QA warnings are review prompts, not automatic corrections —

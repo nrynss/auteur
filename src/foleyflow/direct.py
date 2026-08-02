@@ -30,6 +30,8 @@ exactly. Times are seconds.
 Schema constraints (must be preserved exactly in the output):
 - Each event has "name" (string), "start_time" (float seconds), "duration"
   (float seconds), "intensity", and "kind".
+- Optional "seed" (integer): when present on an input event, copy it through
+  unchanged. Do not invent a seed for events that lack one.
 - "intensity" must be exactly one of: "low", "med", "high".
 - "kind" must be exactly one of: "discrete", "rhythmic", "continuous".
 - The top level has "duration" (float seconds), "ambience" (string), and

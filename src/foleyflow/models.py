@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 @dataclass
 class Event:
@@ -8,6 +8,10 @@ class Event:
     duration: float    # seconds
     intensity: str     # low | med | high
     kind: str          # discrete | rhythmic | continuous
+    # Frozen mix seed for rhythmic per-tile gain jitter. None = compute from
+    # name+start_time (legacy, byte-identical to pre-seed timelines). When set,
+    # nudging start_time keeps the same jitter texture — only placement shifts.
+    seed: Optional[int] = None
 
 @dataclass
 class Timeline:

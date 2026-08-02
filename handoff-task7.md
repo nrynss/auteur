@@ -121,10 +121,10 @@ matter:
 These are pure Python and testable with no UI. They are the backbone: the
 editor is not buildable, or not honest, without them.
 
-## 7.1 Freeze the mix seed into the event — M
+## 7.1 Freeze the mix seed into the event — M — **DONE**
 
 **Depends on:** nothing. **Files:** `models.py`, `assemble.py`, `timeline_io.py`,
-tests.
+`analyze.py` (parse path), tests.
 
 Rhythmic events (rain, continuing footsteps, engine rattle) are not one sound —
 `assemble.py` tiles a 1.75 s loop across the event's span and jitters each
@@ -148,6 +148,12 @@ Add an optional `seed` field to the event:
 **Acceptance:** a timeline with no `seed` renders byte-identically to today; an
 event carrying a frozen `seed` renders identically at two different
 `start_time` values apart from its placement.
+
+**Landed:** optional `Event.seed`; absent → legacy `_event_seed(name, start_time)`;
+present → used verbatim for rhythmic `tile_loop`. Round-trip through
+`timeline_io` and `parse_timeline_json` / `_validate_event` (A.4 trap closed on
+both doors). `seed=0` is frozen, not absent. Director rules tell the model to
+preserve seed when present.
 
 **Not in this unit:** the editor writing the seed down (that is 7.10), and any
 "reroll the variation" UI.
@@ -213,7 +219,7 @@ is unchanged and still readable; a commit attempted while a run is in flight is
 refused consistently with the existing `409 already_running` rule; a document
 that alters `source_duration_s` is rejected.
 
-## 7.4 Signed URLs on the project record — S
+## 7.4 Signed URLs on the project record — S — **DONE**
 
 **Depends on:** nothing. **Files:** `docs/api.md`, `api/schemas.py`,
 `api/app.py`, tests.
@@ -224,6 +230,11 @@ exists only inside `/dossier` (`api/app.py:1028`), which HEADs every object in
 the project to compose its listing — far too heavy for first paint.
 `export_url` only exists post-export, so pre-export A/B needs the mix run's
 `foley.mp4`.
+
+**Landed:** `ProjectDetail.source_url` / `mix_url` via `_sign_if_exists` (HEAD
+then sign — B2's `signed_url` is pure crypto and would otherwise return a URL
+for a reserved-but-empty `input_key`). `mix_url` is the latest mix's
+`video_key` (`foley.mp4`), not the wav. Standard `ARTIFACT_URL_TTL_S`.
 
 **Acceptance:** a project with a completed mix serves both URLs, signed at the
 standard TTL; a project before analysis serves neither and does not error.

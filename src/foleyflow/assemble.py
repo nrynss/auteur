@@ -6,8 +6,9 @@ inject a fake and the whole mixer runs offline.
 
 Determinism is a product claim (picture-lock: same timeline -> byte-identical
 render), not a nicety. Every random choice (per-tile gain jitter) is drawn
-from a numpy Generator seeded by a sha256 of the event name + start time —
-never Python's process-randomized `hash()`.
+from a numpy Generator seeded by the event's frozen `seed` when present, or
+else a sha256 of the event name + start time — never Python's
+process-randomized `hash()`.
 
 Mix length is round(clip_duration_s * 48000) samples where clip_duration_s
 is the ffprobe value passed by the caller — NEVER timeline.duration (that
@@ -290,9 +291,12 @@ def assemble_timeline(timeline: Timeline, clip_duration_s: float,
                 continue
             loop = load_clip(sfx_fn(route_event(ev)))
             gain = GAINS.get(f"rhythmic_{ev.intensity}", GAINS["rhythmic"])
+            # Frozen seed keeps jitter texture stable when start_time is nudged;
+            # absent seed = legacy name+start_time hash (byte-identical to pre-7.1).
+            seed = ev.seed if ev.seed is not None else _event_seed(ev.name, ev.start_time)
             tile_loop(mix, loop, ev.start_time,
                       min(ev.start_time + ev.duration, clip_duration_s),
-                      gain, _event_seed(ev.name, ev.start_time))
+                      gain, seed)
 
         # Continuous events: ambience treatment over their interval, ducked
         # -6 dB under the main bed.

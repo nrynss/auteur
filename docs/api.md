@@ -202,6 +202,18 @@ GET /api/v1/projects/{id}
 timeline version, scene count, and whether an export exists. This is the single
 call the control-room screen needs on load.
 
+Signed artifact URLs (same TTL as every other artifact link):
+
+| Field | When present |
+|---|---|
+| `source_url` | Source video is uploaded (object exists at the project's input key) |
+| `mix_url` | A mix has completed — the latest mix's muxed `foley.mp4`, for pre-export A/B |
+| `export_url` / `manifest_url` | An export has been published |
+
+`source_url` and `mix_url` are optional: `null`/absent before upload or before
+the first mix. They do not error when missing. `export_url` is post-export only;
+`mix_url` is what the A/B player uses before publish.
+
 #### List
 
 ```
@@ -440,7 +452,9 @@ override §13 allows; it is recorded in the event log with the actor and the
 manifest carries `qa_override: true`.
 
 The published video and manifest come back as signed `export_url` and
-`manifest_url` on `GET /projects/{id}`.
+`manifest_url` on `GET /projects/{id}`. Pre-export A/B uses the signed
+`mix_url` on the same record (latest mix's `foley.mp4`), which is available as
+soon as a mix completes and does not require publish.
 
 ```
 GET /api/v1/projects/{id}/dossier

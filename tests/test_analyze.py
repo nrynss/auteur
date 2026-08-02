@@ -90,6 +90,36 @@ def test_parse_timeline_json_normalizes_bad_kind_and_intensity():
     assert shouty.kind == "discrete"      # case-normalized
     assert shouty.intensity == "high"
 
+def test_parse_timeline_json_preserves_optional_seed():
+    """A.4 trap on the analyze path: seed must not be silently dropped."""
+    raw_json = json.dumps({
+        "duration": 6.0,
+        "ambience": "wind",
+        "events": [
+            {"name": "footsteps on gravel", "start_time": 0.5, "duration": 2.0,
+             "intensity": "med", "kind": "rhythmic", "seed": 424242},
+            {"name": "match strike", "start_time": 3.0, "duration": 0.3,
+             "intensity": "high", "kind": "discrete"},
+        ],
+    })
+    timeline = parse_timeline_json(raw_json, clip_duration=6.0)
+    assert timeline.events[0].seed == 424242
+    assert timeline.events[1].seed is None
+
+
+def test_parse_timeline_json_preserves_seed_zero():
+    raw_json = json.dumps({
+        "duration": 4.0,
+        "ambience": "wind",
+        "events": [
+            {"name": "rain", "start_time": 0.0, "duration": 2.0,
+             "intensity": "low", "kind": "rhythmic", "seed": 0},
+        ],
+    })
+    timeline = parse_timeline_json(raw_json, clip_duration=4.0)
+    assert timeline.events[0].seed == 0
+
+
 def test_parse_timeline_json_with_markdown_fences():
     raw_json = """```json
     {

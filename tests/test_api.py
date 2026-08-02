@@ -394,6 +394,120 @@ def test_get_project_returns_readiness(client, store, project):
     assert 0 <= body["readiness_percent"] <= 100
 
 
+def test_get_project_has_no_source_or_mix_url_before_artifacts(client, project):
+    """Bare project: no uploaded bytes and no mix — signed URLs stay null.
+
+    The fixture sets source_sha256 without putting bytes; a reserved input_key
+    must still yield null source_url (B2 would otherwise presign a missing key).
+    """
+    r = client.get(f"{API_PREFIX}/projects/{project.id}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("source_url") is None
+    assert body.get("mix_url") is None
+
+
+def test_get_project_source_url_null_when_key_reserved_but_object_missing(
+        client, store, project):
+    """input_key is allocated at create; without bytes, no source_url."""
+    # Key string is present on the project record, object is not.
+    assert project.input_key
+    assert not store.backend.exists(project.input_key)
+    body = client.get(f"{API_PREFIX}/projects/{project.id}").json()
+    assert body["source_url"] is None
+
+
+def test_get_project_source_url_only_after_upload(client, store, project):
+    """Source alone: source_url present, mix_url still null."""
+    store.backend.put_bytes(project.input_key, b"FAKEVIDEO" * 64,
+                            content_type="video/mp4")
+    body = client.get(f"{API_PREFIX}/projects/{project.id}").json()
+    assert isinstance(body["source_url"], str) and body["source_url"]
+    assert body["source_url"].startswith("file:///")
+    assert project.input_key in body["source_url"] or body["source_url"].endswith(
+        project.input_key.lstrip("/"))
+    assert body["mix_url"] is None
+
+
+def test_get_project_serves_signed_source_and_mix_urls(client, store, project):
+    """Completed mix + source object: both A/B URLs are signed non-empty strings."""
+    store.backend.put_bytes(project.input_key, b"FAKEVIDEO" * 64,
+                            content_type="video/mp4")
+    version = store.save_timeline(project.id, _timeline())
+    run = store.start_run(project.id, "mix")
+    mix_key = store.mix_key(project.id, run.id)
+    video_key = store.mix_video_key(project.id, run.id)
+    store.backend.put_bytes(mix_key, b"MIXWAV" * 8, content_type="audio/wav")
+    store.backend.put_bytes(video_key, b"MP4DATA" * 8, content_type="video/mp4")
+    store.record_mix(project.id, run_id=run.id,
+                     mix_key=mix_key, video_key=video_key,
+                     tier="full", timeline_version=version,
+                     stem_count=0, generated_count=0)
+    store.complete_run(run, timeline_version=version)
+
+    body = client.get(f"{API_PREFIX}/projects/{project.id}").json()
+    assert isinstance(body["source_url"], str) and body["source_url"]
+    assert isinstance(body["mix_url"], str) and body["mix_url"]
+    # LocalBackend returns file:// URLs; either way they are addressable strings.
+    assert body["source_url"].startswith("file:///")
+    assert body["mix_url"].startswith("file:///")
+    # Pin the signed object: foley.mp4 (video), never the wav mix_key.
+    assert "foley.mp4" in body["mix_url"]
+    assert "mix.wav" not in body["mix_url"]
+    assert body["mix_run_id"] == run.id
+
+
+def test_get_project_mix_url_null_when_video_object_missing(client, store, project):
+    """Mix recorded in the log but video bytes gone → mix_url null, not a 500."""
+    store.backend.put_bytes(project.input_key, b"FAKEVIDEO" * 64,
+                            content_type="video/mp4")
+    version = store.save_timeline(project.id, _timeline())
+    run = store.start_run(project.id, "mix")
+    video_key = store.mix_video_key(project.id, run.id)
+    # Record the mix without putting the video object.
+    store.record_mix(project.id, run_id=run.id,
+                     mix_key=store.mix_key(project.id, run.id),
+                     video_key=video_key,
+                     tier="full", timeline_version=version,
+                     stem_count=0, generated_count=0)
+    store.complete_run(run, timeline_version=version)
+    assert not store.backend.exists(video_key)
+
+    body = client.get(f"{API_PREFIX}/projects/{project.id}").json()
+    assert body["source_url"] is not None
+    assert body["mix_url"] is None
+    assert body["mix_run_id"] == run.id
+
+
+def test_get_project_signs_urls_at_standard_ttl(client, store, project, monkeypatch):
+    """Acceptance: source_url and mix_url use ARTIFACT_URL_TTL_S."""
+    import foleyflow.api.app as app_mod
+
+    seen = []
+    real_signed = store.backend.signed_url
+
+    def spy(key, expires_s=3600):
+        seen.append((key, expires_s))
+        return real_signed(key, expires_s)
+
+    monkeypatch.setattr(store.backend, "signed_url", spy)
+    store.backend.put_bytes(project.input_key, b"FAKEVIDEO" * 64,
+                            content_type="video/mp4")
+    version = store.save_timeline(project.id, _timeline())
+    run = store.start_run(project.id, "mix")
+    video_key = store.mix_video_key(project.id, run.id)
+    store.backend.put_bytes(video_key, b"MP4DATA" * 8, content_type="video/mp4")
+    store.record_mix(project.id, run_id=run.id,
+                     mix_key=store.mix_key(project.id, run.id),
+                     video_key=video_key,
+                     tier="full", timeline_version=version)
+
+    client.get(f"{API_PREFIX}/projects/{project.id}")
+    assert seen, "signed_url was never called"
+    for _key, expires_s in seen:
+        assert expires_s == app_mod.ARTIFACT_URL_TTL_S
+
+
 def test_readiness_blocks_export_before_analysis(client, project):
     body = client.get(f"{API_PREFIX}/projects/{project.id}").json()
     assert body["blocks_export"] is True
@@ -1061,13 +1175,20 @@ def test_regenerate_provider_reroutes_to_an_approved_tier(
 @pytest.fixture
 def budget_ledger(store, monkeypatch):
     """Point the cost ledger at the store's own backend so budget tests can
-    attribute rows and read them back without touching any global ledger."""
+    attribute rows and read them back without touching any global ledger.
+
+    Storage mode is required: file-mode ledgers skip budget alerts and
+    attributions (see ledger._maybe_emit_budget_alerts / iter_attributions).
+    """
     import foleyflow.ledger as ledger_mod
     import foleyflow.storage as storage_mod
 
+    monkeypatch.delenv("FOLEYFLOW_LEDGER_PATH", raising=False)
+    monkeypatch.setattr(ledger_mod, "LEDGER_PATH", None)
     monkeypatch.setattr(storage_mod, "get_backend", lambda *a, **k: store.backend)
     monkeypatch.setattr(ledger_mod, "_write_ok", True)
     ledger_mod._invalidate_row_cache()
+    ledger_mod.invalidate_project_spend_cache()
     return ledger_mod
 
 

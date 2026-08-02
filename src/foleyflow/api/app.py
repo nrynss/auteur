@@ -259,6 +259,13 @@ def create_app(store: Optional[ProjectStore] = None,
             event_count=state.event_count,
             has_export=state.has_export,
             mix_run_id=(state.latest_mix or {}).get("run_id"),
+            # Pre-export A/B needs the original and the latest mix's foley.mp4.
+            # HEAD-then-sign: B2's signed_url is pure crypto and does not check
+            # existence, so a reserved input_key would otherwise always get a
+            # URL that 404s on fetch. LocalBackend happens to check; both must.
+            source_url=_sign_if_exists(store, state.project.input_key),
+            mix_url=_sign_if_exists(
+                store, (state.latest_mix or {}).get("video_key")),
             # Signed, not a bare key: the point of the readiness screen is that
             # the finished video is one click away, and B2 objects are private.
             export_url=_sign(store, (state.export or {}).get("export_key")),
@@ -968,6 +975,25 @@ def _sign(store: ProjectStore, key: Optional[str]) -> Optional[str]:
         return None
     except StorageError:
         return None
+
+
+def _sign_if_exists(store: ProjectStore, key: Optional[str]) -> Optional[str]:
+    """Signed URL only when the object is present.
+
+    B2Backend.signed_url never HEADs — it always returns a presigned URL for
+    any key string. For A/B fields on the project record that must be null
+    before upload / before a mix (docs/api.md), existence is checked first.
+    Storage faults are treated like absence so a transient outage does not 500
+    a project read (same posture as `_sign`).
+    """
+    if not key:
+        return None
+    try:
+        if _head(store, key) is None:
+            return None
+    except StorageError:
+        return None
+    return _sign(store, key)
 
 
 def _head(store: ProjectStore, key: str):

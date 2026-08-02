@@ -336,6 +336,100 @@ def test_assemble_timeline_is_byte_identical_across_runs(tmp_path):
     assert mix_a.tobytes() == mix_b.tobytes()
 
 
+# -- event seed freeze (unit 7.1) --
+
+def _rhythmic_only_timeline(start_time: float, seed=None, duration: float = 2.0):
+    """Minimal timeline: no ambience/discrete so the mix is pure rhythmic tiles."""
+    return Timeline(
+        duration=0.0,
+        ambience="",
+        events=[
+            Event(name="footsteps on gravel", start_time=start_time,
+                  duration=duration, intensity="med", kind="rhythmic",
+                  seed=seed),
+        ],
+    )
+
+
+def test_absent_seed_matches_explicit_legacy_event_seed(tmp_path):
+    """No seed field → same mix as freezing _event_seed(name, start_time)."""
+    fn = _fake_sfx_fn(tmp_path)
+    t1, d = 0.4, 2.0
+    legacy = assemble._event_seed("footsteps on gravel", t1)
+    mix_absent = assemble.assemble_timeline(
+        _rhythmic_only_timeline(t1, seed=None, duration=d),
+        5.0, tier="full", sfx_fn=fn)
+    mix_frozen_legacy = assemble.assemble_timeline(
+        _rhythmic_only_timeline(t1, seed=legacy, duration=d),
+        5.0, tier="full", sfx_fn=fn)
+    assert mix_absent.tobytes() == mix_frozen_legacy.tobytes()
+
+
+def test_absent_seed_changes_when_start_time_changes(tmp_path):
+    """Legacy path: nudging start_time redraws jitter (different seed)."""
+    fn = _fake_sfx_fn(tmp_path)
+    d = 2.0
+    mix_a = assemble.assemble_timeline(
+        _rhythmic_only_timeline(0.5, seed=None, duration=d),
+        5.0, tier="full", sfx_fn=fn)
+    mix_b = assemble.assemble_timeline(
+        _rhythmic_only_timeline(0.6, seed=None, duration=d),
+        5.0, tier="full", sfx_fn=fn)
+    # After aligning by the 0.1 s nudge, interiors must differ (new seed).
+    fade = int(round(assemble.PLACE_FADE_S * SR))
+    a = mix_a[int(0.5 * SR) + fade : int(0.5 * SR) + int(d * SR) - fade]
+    b = mix_b[int(0.6 * SR) + fade : int(0.6 * SR) + int(d * SR) - fade]
+    n = min(len(a), len(b))
+    assert not np.allclose(a[:n], b[:n], atol=1e-6)
+
+
+def test_frozen_seed_jitter_texture_independent_of_start_time(tmp_path):
+    """Same frozen seed at two start times → byte-identical jitter, shifted."""
+    fn = _fake_sfx_fn(tmp_path)
+    frozen = 424242
+    d = 2.0
+    t1, t2 = 0.3, 0.8
+    mix_a = assemble.assemble_timeline(
+        _rhythmic_only_timeline(t1, seed=frozen, duration=d),
+        5.0, tier="full", sfx_fn=fn)
+    mix_b = assemble.assemble_timeline(
+        _rhythmic_only_timeline(t2, seed=frozen, duration=d),
+        5.0, tier="full", sfx_fn=fn)
+    # Interior of the rhythmic span, past edge fades which sit at absolute ends.
+    fade = int(round(assemble.PLACE_FADE_S * SR))
+    a = mix_a[int(round(t1 * SR)) + fade : int(round((t1 + d) * SR)) - fade]
+    b = mix_b[int(round(t2 * SR)) + fade : int(round((t2 + d) * SR)) - fade]
+    assert len(a) == len(b)
+    assert len(a) > SR  # at least ~1 s of interior to compare
+    # Byte identity, not float tolerance — AC2 is a pure translation.
+    assert a.tobytes() == b.tobytes()
+
+
+def test_seed_zero_is_frozen_not_absent(tmp_path):
+    """seed=0 is falsy but must not fall through to the legacy name+start hash."""
+    fn = _fake_sfx_fn(tmp_path)
+    d = 2.0
+    mix_zero = assemble.assemble_timeline(
+        _rhythmic_only_timeline(0.5, seed=0, duration=d),
+        5.0, tier="full", sfx_fn=fn)
+    mix_legacy = assemble.assemble_timeline(
+        _rhythmic_only_timeline(0.5, seed=None, duration=d),
+        5.0, tier="full", sfx_fn=fn)
+    # Only true if the legacy hash happens to be 0 — vanishingly unlikely, and
+    # if it ever is, the frozen-at-two-starts test still covers seed=0 usage.
+    if assemble._event_seed("footsteps on gravel", 0.5) != 0:
+        assert mix_zero.tobytes() != mix_legacy.tobytes()
+    # seed=0 still freezes texture across a start_time nudge.
+    mix_shifted = assemble.assemble_timeline(
+        _rhythmic_only_timeline(0.9, seed=0, duration=d),
+        5.0, tier="full", sfx_fn=fn)
+    fade = int(round(assemble.PLACE_FADE_S * SR))
+    a = mix_zero[int(0.5 * SR) + fade : int((0.5 + d) * SR) - fade]
+    b = mix_shifted[int(0.9 * SR) + fade : int((0.9 + d) * SR) - fade]
+    assert len(a) == len(b)
+    assert a.tobytes() == b.tobytes()
+
+
 # -- write_mix --
 
 def test_write_mix_produces_canonical_float32_wav(tmp_path):
