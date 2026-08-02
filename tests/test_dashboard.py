@@ -182,6 +182,32 @@ def test_assets_cached_immutably_and_nosniff(client, tmp_path, monkeypatch):
         assert r.headers["x-content-type-options"] == "nosniff"
 
 
+def test_unhashed_public_files_are_not_cached_immutably(
+        client, tmp_path, monkeypatch):
+    """Only `assets/` is content-hashed. Vite copies `ui/public/` verbatim, so
+    those files keep their names across builds — an immutable year-long cache
+    would pin a stale robots.txt or favicon with no way to invalidate it.
+    `ui/public/` does not exist yet; this is the net for when it does."""
+    _make_bundle(tmp_path)
+    static = tmp_path / "static"
+    (static / "robots.txt").write_text("User-agent: *\nDisallow:\n")
+    (static / "favicon.ico").write_bytes(b"\x00\x00\x01\x00")
+    monkeypatch.setenv("FOLEYFLOW_STATIC_DIR", str(static))
+
+    for path in ("/robots.txt", "/favicon.ico"):
+        r = client.get(path)
+        assert r.status_code == 200, path
+        # Served as a real file (not swallowed by the SPA catch-all)...
+        assert "immutable" not in r.headers["cache-control"], path
+        assert r.headers["cache-control"] == "no-cache", path
+        assert r.headers["x-content-type-options"] == "nosniff", path
+
+    # ...while the hashed subtree keeps its year.
+    hashed = client.get("/assets/index-BEEdWDKB.js")
+    assert hashed.headers["cache-control"] == (
+        "public, max-age=31536000, immutable")
+
+
 def test_unbuilt_page_is_not_cached(client, tmp_path, monkeypatch):
     """The unbuilt page is ephemeral — once the bundle exists it must not
     linger in a cache."""

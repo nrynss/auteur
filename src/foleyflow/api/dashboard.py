@@ -19,7 +19,10 @@ Cache headers are deliberate on both sides of the bundle (RFC 9111):
 `index.html` is `no-cache` so a deploy is visible immediately — heuristic
 freshness could outlive a deploy and reference hashed asset filenames that no
 longer exist — while content-hashed `/assets/*` are immutable by construction
-and safe to cache for a year. Both carry `X-Content-Type-Options: nosniff`.
+and safe to cache for a year. Immutability is scoped to that one subtree, not
+to every real file: anything Vite copies verbatim from `ui/public/` keeps its
+name across builds, so it revalidates like the index. Everything carries
+`X-Content-Type-Options: nosniff`.
 """
 
 from __future__ import annotations
@@ -37,9 +40,18 @@ router = APIRouter()
 # Cache headers. no-cache means "revalidate before reuse", not "don't store" —
 # the browser still caches index.html, it just checks with the server on every
 # navigation, which is exactly what a deploy needs.
-_INDEX_CACHE_CONTROL = "no-cache"
+_REVALIDATE_CACHE_CONTROL = "no-cache"
 _ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
 _SECURITY_HEADERS = {"X-Content-Type-Options": "nosniff"}
+
+# Only this subtree is content-hashed. Vite fingerprints everything it emits
+# into `assets/`, which is what makes a year-long immutable cache safe there.
+# Files copied verbatim from `ui/public/` (robots.txt, favicon.ico, a web
+# manifest) land beside index.html under their own stable names — marking those
+# immutable would pin a stale copy in every cache for a year with no way to
+# invalidate it. `ui/public/` does not exist today; this keeps adding one from
+# being a silent trap.
+ASSETS_SUBDIR = "assets"
 
 _UNBUILT_PAGE = """<!doctype html>
 <html lang="en">
@@ -90,21 +102,30 @@ def _index_path() -> Path:
     return static_dir() / "index.html"
 
 
-def _index_headers() -> dict:
-    return {"Cache-Control": _INDEX_CACHE_CONTROL, **_SECURITY_HEADERS}
+def _revalidate_headers() -> dict:
+    return {"Cache-Control": _REVALIDATE_CACHE_CONTROL, **_SECURITY_HEADERS}
 
 
 def _asset_headers() -> dict:
     return {"Cache-Control": _ASSET_CACHE_CONTROL, **_SECURITY_HEADERS}
 
 
+def _file_headers(relative: Path) -> dict:
+    """Immutable only for the content-hashed subtree; everything else
+    revalidates. `relative` is already proven to sit inside the static dir."""
+    if relative.parts and relative.parts[0] == ASSETS_SUBDIR:
+        return _asset_headers()
+    return _revalidate_headers()
+
+
 def _serve_index() -> Response:
     return FileResponse(_index_path(), media_type="text/html",
-                        headers=_index_headers())
+                        headers=_revalidate_headers())
 
 
 def _unbuilt_page() -> Response:
-    return HTMLResponse(_UNBUILT_PAGE, status_code=200, headers=_index_headers())
+    return HTMLResponse(_UNBUILT_PAGE, status_code=200,
+                        headers=_revalidate_headers())
 
 
 # Both routes answer HEAD as well as GET: HEAD-based uptime monitors, CDNs and
@@ -138,11 +159,11 @@ def spa_fallback(path: str) -> Response:
     if path:
         candidate = (root / path).resolve()
         try:
-            candidate.relative_to(root.resolve())
+            relative = candidate.relative_to(root.resolve())
         except ValueError:
             raise HTTPException(status_code=404, detail="Not found")
         if candidate.is_file():
-            return FileResponse(candidate, headers=_asset_headers())
+            return FileResponse(candidate, headers=_file_headers(relative))
 
     if _index_path().is_file():
         return _serve_index()
