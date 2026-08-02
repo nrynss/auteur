@@ -52,6 +52,11 @@ from foleyflow.providers.config import get_defaults, get_model_spec
 # trailing slash keeps list_keys scoped to the ledger alone.
 LEDGER_PREFIX = "ledger/"
 
+# Rescue overrides: an immutable record claiming unattributed rows written
+# before a moment in time for one project. Rows themselves are never rewritten
+# (SPEC.md §10); this is how a project adopts work that ran without a context.
+ATTR_PREFIX = f"{LEDGER_PREFIX}attr/"
+
 # Probe key for ledger_writable(). Overwritten freely — put, not put_if_absent
 # — so the probe does not accumulate objects and does not race with real rows.
 _WRITABLE_PROBE_KEY = f"{LEDGER_PREFIX}_writable_probe"
@@ -348,9 +353,11 @@ def _read_file_rows(path: str) -> List[dict]:
 
 
 def _is_transaction_key(key: str) -> bool:
-    """Skip probe objects and anything that is not a ledger row."""
+    """Skip probe objects, attribution overrides, and anything that is not a
+    ledger row."""
     name = key.rsplit("/", 1)[-1]
-    return name.endswith(".json") and not name.startswith("_")
+    return (name.endswith(".json") and not name.startswith("_")
+            and not key.startswith(ATTR_PREFIX))
 
 
 def _read_storage_rows(*, force: bool = False) -> List[dict]:
@@ -459,15 +466,89 @@ def project_spend(project_id: str) -> Dict[str, float]:
     Failed calls are counted, the same rule quota uses — a request that failed
     may still have consumed provider quota. Rows written before attribution
     existed, and rows from a direct (project-less) render, carry no
-    `project_id` and are never attributed to any project.
+    `project_id`; those are claimed by a rescue override (see
+    :func:`record_attribution`) when one covers their timestamp, else they
+    belong to no project.
     """
     total = 0.0
     by_endpoint: Dict[str, float] = {}
+    attributions = iter_attributions()
     for row in iter_transactions():
-        if row.get("project_id") != project_id:
+        owner = row.get("project_id")
+        if owner is None:
+            owner = _attribution_owner(row, attributions)
+        if owner != project_id:
             continue
         cost = float(row.get("cost_estimate") or 0.0)
         endpoint = row.get("endpoint", "unknown")
         total += cost
         by_endpoint[endpoint] = by_endpoint.get(endpoint, 0.0) + cost
     return {"total": total, "by_endpoint": by_endpoint}
+
+
+def iter_attributions() -> List[dict]:
+    """Rescue overrides, oldest first (by `before`). Each claims every ledger
+    row with no project_id whose timestamp precedes its `before`."""
+    from foleyflow.storage import ObjectNotFound, get_backend
+
+    backend = get_backend()
+    out: List[dict] = []
+    for key in backend.list_keys(ATTR_PREFIX):
+        try:
+            raw = backend.get_bytes(key)
+        except ObjectNotFound:
+            continue
+        try:
+            data = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if (isinstance(data, dict) and data.get("project_id")
+                and isinstance(data.get("before"), (int, float))):
+            out.append(data)
+    return sorted(out, key=lambda a: float(a["before"]))
+
+
+def _attribution_owner(row: dict, attributions: List[dict]) -> Optional[str]:
+    """Which rescue override claims this unattributed row, if any.
+
+    Overrides are applied in `before` order (first-come): the earliest one
+    whose window covers the row's timestamp claims it, so a row can never land
+    in two projects. No timestamp means unclaimable.
+    """
+    ts = row.get("timestamp")
+    if not isinstance(ts, (int, float)):
+        return None
+    for attribution in attributions:
+        if ts < float(attribution["before"]):
+            return attribution["project_id"]
+    return None
+
+
+def record_attribution(project_id: str,
+                       before: Optional[float] = None) -> int:
+    """Rescue unattributed ledger rows into `project_id`.
+
+    Writes one immutable override object claiming every row with no
+    `project_id` written before `before` (default: now). Rows are never
+    rewritten — this is an adoption record, not an edit. Returns how many
+    unattributed rows the rescue claims at write time.
+
+    Storage mode only: the local-JSONL override is a test path and keeps no
+    attributions.
+    """
+    from foleyflow.ids import new_ulid
+    from foleyflow.storage import get_backend
+
+    before = before if before is not None else time.time()
+    claimed = sum(
+        1 for row in iter_transactions()
+        if row.get("project_id") is None
+        and isinstance(row.get("timestamp"), (int, float))
+        and row["timestamp"] < before)
+
+    body = json.dumps({"project_id": project_id, "before": before,
+                       "created_at": time.time()},
+                      separators=(",", ":")).encode("utf-8")
+    key = f"{ATTR_PREFIX}{new_ulid()}.json"
+    get_backend().put_if_absent(key, body, content_type="application/json")
+    return claimed

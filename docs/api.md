@@ -507,6 +507,23 @@ only knowable after the run, so an overage there is reported, not prevented.
 There is no reservation: two concurrent calls can both pass the check and
 overspend; the window is accepted for a single-instance deployment.
 
+**Adopting project-less work.** A direct `foleyflow render` writes ledger rows
+with no project (`project_id: null`), and rows written before attribution
+existed have no such field at all. Rows are immutable, so rescuing them is an
+adoption, not an edit:
+
+```
+POST /api/v1/projects/{id}/attributions
+{ "before": 1785993600 }
+```
+
+`201` — `{"project_id": …, "before": …, "claimed": 7}` — every unattributed
+row written before `before` (unix seconds; default now) is counted for this
+project from now on. Overrides apply first-come by `before`, so a row can
+never land in two projects. `foleyflow render --project <id>` opts future
+project-less renders into a project instead, and `foleyflow attribute <id>`
+writes the adoption.
+
 ---
 
 ## 4. Concurrency

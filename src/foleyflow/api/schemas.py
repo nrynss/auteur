@@ -322,6 +322,19 @@ class DossierResponse(BaseModel):
 
 # -- quota ------------------------------------------------------------------
 
+class AttributionRequest(BaseModel):
+    """Rescue unattributed ledger rows into a project (docs/api.md §3.11).
+    `before` is a unix timestamp; default is now."""
+
+    before: Optional[float] = None
+
+
+class AttributionOut(BaseModel):
+    project_id: str
+    before: float
+    claimed: int          # unattributed rows the rescue adopted at write time
+
+
 class BudgetModelOut(BaseModel):
     endpoint: str
     spent: float

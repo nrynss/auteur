@@ -582,3 +582,105 @@ def test_prewarm_rejects_an_unknown_sfx_tier(client, capsys, timeline_file,
     err = capsys.readouterr().err
     assert "does-not-exist" in err
     assert "FOLEYFLOW_SFX_TIER" in err or "not a declared tier" in err
+
+
+# -- current project (CLI-level context) ------------------------------------
+
+def test_use_then_budget_without_an_id(client, store, project, capsys,
+                                       monkeypatch, tmp_path):
+    """`foleyflow use` persists a current project; the budget verb then works
+    with no id, exactly the CLI-level project context the product wants."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert run(client, "use", project.id) == EXIT_OK
+    assert project.id in capsys.readouterr().out
+
+    assert run(client, "budget") == EXIT_OK
+    out = capsys.readouterr().out
+    assert project.id in out
+    assert "(no cap)" in out          # fixture project has no budget_usd
+    assert "spent $0.0000" in out
+
+
+def test_use_rejects_a_malformed_id(capsys, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert run(None, "use", "nonsense") == EXIT_USAGE
+    assert "not a valid project id" in capsys.readouterr().err
+
+
+def test_project_flag_resolves_the_current_project(client, store, project,
+                                                   capsys):
+    # argparse subparsers don't accept top-level flags after the verb, so the
+    # flag precedes it: `foleyflow --project <id> show`.
+    assert run(client, "--project", project.id, "show") == EXIT_OK
+    assert project.id in capsys.readouterr().out
+
+
+def test_env_project_resolves_the_current_project(client, store, project,
+                                                  capsys, monkeypatch):
+    monkeypatch.setenv("FOLEYFLOW_PROJECT", project.id)
+    assert run(client, "show") == EXIT_OK
+    assert project.id in capsys.readouterr().out
+
+
+def test_missing_project_is_a_usage_error(client, capsys, monkeypatch,
+                                          tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("FOLEYFLOW_PROJECT", raising=False)
+    assert run(client, "show") == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "no project given" in err
+    assert "FOLEYFLOW_PROJECT" in err
+
+
+def test_attribute_adopts_unattributed_rows(client, store, project, capsys,
+                                            monkeypatch):
+    import json
+    import time
+
+    import foleyflow.ledger as ledger_mod
+    import foleyflow.storage as storage_mod
+
+    monkeypatch.setattr(storage_mod, "get_backend", lambda *a, **k: store.backend)
+    old = time.time() - 3600
+    store.backend.put_bytes(
+        "ledger/old.json",
+        json.dumps({"endpoint": "gemini-2.5-flash", "params_hash": "u",
+                    "cost_estimate": 0.30, "success": True,
+                    "timestamp": old, "project_id": None}).encode())
+    ledger_mod._invalidate_row_cache()
+
+    assert run(client, "attribute", project.id,
+               "--before", str(int(old + 10))) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "adopted 1" in out
+    assert project.id in out
+
+
+def test_render_project_tags_its_ledger_rows(monkeypatch, tmp_path):
+    """`foleyflow render --project <id>` attributes the render's rows; without
+    it, rows stay unattributed (project-less work is never forced into one)."""
+    import argparse
+
+    import foleyflow.cli as cli_mod
+    import foleyflow.ledger as ledger_mod
+
+    seen = {}
+
+    def fake_run(*args, **kwargs):
+        seen["project"] = ledger_mod._current_project.get()
+
+    monkeypatch.setattr(cli_mod, "run", fake_run)
+    monkeypatch.setattr(cli_mod, "load_dotenv", lambda *a, **k: None)
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"x")
+    base = {"clip": str(clip), "out": None, "tier": "full", "model": "m",
+            "from_timeline": None, "timeline_out": None, "cache_dir": "c"}
+
+    rc = cli_mod.run_render(argparse.Namespace(**base, project="proj_X"))
+    assert rc == 0
+    assert seen["project"] == "proj_X"
+
+    rc = cli_mod.run_render(argparse.Namespace(**base, project=None))
+    assert rc == 0
+    assert seen["project"] is None

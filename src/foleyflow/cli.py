@@ -126,6 +126,33 @@ def _human_bytes(n: int) -> str:
     return f"{n}B"
 
 
+# Where `foleyflow use` remembers the current project. User-scoped, not
+# repo-scoped: the CLI talks to a deployed API, so a per-directory default
+# would make sense only if every checkout pointed at the same service.
+# Resolved at call time (not import) so $HOME is honoured when it changes.
+def _project_dotfile() -> str:
+    return os.path.join(os.path.expanduser("~"), ".foleyflow", "project")
+
+
+def _persisted_project() -> Optional[str]:
+    try:
+        with open(_project_dotfile(), encoding="utf-8") as f:
+            value = f.read().strip()
+        return value or None
+    except OSError:
+        return None
+
+
+def _resolve_current_project(args) -> Optional[str]:
+    """The project a verb acts on, in precedence order: positional id, the
+    --project flag, $FOLEYFLOW_PROJECT, then the `foleyflow use` default."""
+    if getattr(args, "project_id", None):
+        return args.project_id
+    if getattr(args, "project", None):
+        return args.project
+    return os.environ.get("FOLEYFLOW_PROJECT") or _persisted_project()
+
+
 # -- run polling ------------------------------------------------------------
 
 def _poll_run(client: Client, project_id: str, run_id: str,
@@ -193,9 +220,56 @@ def cmd_health(client: Client, args) -> int:
     return EXIT_OK if data["status"] == "ok" else EXIT_API_ERROR
 
 
+def cmd_use(args) -> int:
+    """Remember a project id so project verbs can omit it (CLI-level project
+    context; the API still owns every project record). No network: it only
+    writes a dotfile, and the next verb's API call validates the id."""
+    from foleyflow.ids import is_valid
+
+    if not is_valid(args.project_id, "proj"):
+        return _fail(f"not a valid project id: {args.project_id}", EXIT_USAGE)
+    directory = os.path.dirname(_project_dotfile())
+    os.makedirs(directory, exist_ok=True)
+    with open(_project_dotfile(), "w", encoding="utf-8") as f:
+        f.write(args.project_id.strip() + "\n")
+    print(f"current project: {args.project_id}")
+    return EXIT_OK
+
+
+def cmd_budget(client: Client, args) -> int:
+    data = client.get(f"/projects/{args.project_id}/budget")
+
+    def render(d):
+        budget = d.get("budget_usd")
+        cap = f"${budget:.2f}" if budget is not None else "(no cap)"
+        line = f"{d['project_id']}  budget {cap}  spent ${d['spent']:.4f}"
+        if d.get("remaining") is not None:
+            line += f"  remaining ${d['remaining']:.4f}"
+        print(line)
+        if not d.get("ledger_writable", True):
+            print("WARNING: the ledger is not writable — these figures are "
+                  "fiction.", file=sys.stderr)
+        print("\nby model:")
+        for m in d.get("by_model", []):
+            print(f"  {m['endpoint']:<32} ${m['spent']:.4f}")
+
+    _emit(data, args.json, render)
+    return EXIT_OK
+
+
+def cmd_attribute(client: Client, args) -> int:
+    """Rescue unattributed ledger rows into a project (docs/api.md §3.11)."""
+    body = {}
+    if args.before is not None:
+        body["before"] = args.before
+    data = client.post(f"/projects/{args.project_id}/attributions", json=body)
+    print(f"adopted {data['claimed']} unattributed row(s) into "
+          f"{data['project_id']} (rows before {data['before']:.0f})")
+    return EXIT_OK
+
+
 def cmd_quota(client: Client, args) -> int:
     data = client.get("/quota")
-
     def render(d):
         if not d.get("ledger_writable", True):
             print("WARNING: the ledger is not writable — these figures are not "
@@ -545,16 +619,24 @@ def cmd_run(client: Client, args) -> int:
 
 def run_render(args: argparse.Namespace) -> int:
     load_dotenv()
+
+    # Project-less by default (rows stay unattributed); `--project` opts a
+    # local render into a project so its ledger rows count against that
+    # project's budget. Same contextvar the job runner uses.
+    from foleyflow.ledger import set_project_context
+
+    project = getattr(args, "project", None)
     try:
-        run(
-            args.clip,
-            out_path=args.out,
-            tier=args.tier,
-            model=args.model,
-            timeline_json=args.from_timeline,
-            save_timeline_to=args.timeline_out,
-            cache_dir=args.cache_dir,
-        )
+        with set_project_context(project):
+            run(
+                args.clip,
+                out_path=args.out,
+                tier=args.tier,
+                model=args.model,
+                timeline_json=args.from_timeline,
+                save_timeline_to=args.timeline_out,
+                cache_dir=args.cache_dir,
+            )
     except Exception as e:
         print(f"foleyflow render: error: {e}", file=sys.stderr)
         return 1
@@ -743,6 +825,11 @@ def _build_render_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         "--cache-dir", default=DEFAULT_CACHE_DIR,
         help=f"SFX cache directory (default: {DEFAULT_CACHE_DIR}).",
     )
+    parser.add_argument(
+        "--project", default=None,
+        help="Attribute this render's ledger rows to a project (its budget "
+             "then counts them). Rows are unattributed without this.",
+    )
     return parser
 
 
@@ -789,10 +876,16 @@ def build_parser() -> argparse.ArgumentParser:
                              "or $FOLEYFLOW_API)")
     parser.add_argument("--json", action="store_true",
                         help="emit raw JSON instead of a human-readable table")
+    parser.add_argument(
+        "--project", default=None,
+        help="project id for verbs that omit it (else $FOLEYFLOW_PROJECT or "
+             "the `foleyflow use` default)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def project_arg(p):
-        p.add_argument("project_id")
+        p.add_argument("project_id", nargs="?",
+                       help="project id; omit to use --project, "
+                            "$FOLEYFLOW_PROJECT, or the `foleyflow use` default")
         return p
 
     sub.add_parser("health", help="API and storage reachability").set_defaults(
@@ -869,6 +962,20 @@ def build_parser() -> argparse.ArgumentParser:
     project_arg(sub.add_parser("runs", help="completed runs")).set_defaults(
         func=cmd_runs)
 
+    p = project_arg(sub.add_parser("budget", help="project spend vs its cap"))
+    p.set_defaults(func=cmd_budget)
+
+    p = project_arg(sub.add_parser(
+        "attribute", help="rescue unattributed ledger rows into a project"))
+    p.add_argument("--before", type=float,
+                   help="adopt rows written before this unix timestamp "
+                        "(default: now)")
+    p.set_defaults(func=cmd_attribute)
+
+    p = sub.add_parser("use", help="remember the current project")
+    p.add_argument("project_id", help="project id to default project verbs to")
+    p.set_defaults(func=cmd_use, needs_client=False)
+
     p = project_arg(sub.add_parser("run", help="one run's status"))
     p.add_argument("run_id")
     p.add_argument("--wait", action="store_true")
@@ -918,6 +1025,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[list] = None, client: Optional[Client] = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        # Project verbs resolve the project once, here, so every command reads
+        # args.project_id without knowing how it was supplied. The `use` verb
+        # and file verbs (render/direct) have no project to resolve.
+        if getattr(args, "needs_client", True) and "project_id" in vars(args) \
+                and args.project_id is None:
+            resolved = _resolve_current_project(args)
+            if resolved is None:
+                return _fail(
+                    "no project given — pass a project id, --project <id>, "
+                    "set $FOLEYFLOW_PROJECT, or run `foleyflow use <id>`",
+                    EXIT_USAGE)
+            args.project_id = resolved
         if getattr(args, "needs_client", True):
             client = client or Client(args.api)
             return args.func(client, args)

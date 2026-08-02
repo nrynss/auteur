@@ -23,6 +23,8 @@ from foleyflow.api.jobs import JobRunner
 from foleyflow.api.schemas import (
     AnalyzeRequest,
     ArtifactOut,
+    AttributionOut,
+    AttributionRequest,
     BudgetModelOut,
     BudgetResponse,
     CreateProjectRequest,
@@ -699,6 +701,29 @@ def create_app(store: Optional[ProjectStore] = None,
         _check_project_id(project_id)
         _load_state(store, project_id)   # 404 before doing any work
         return _budget_response(store, project_id)
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/attributions",
+              response_model=AttributionOut, status_code=201, tags=["projects"])
+    def attribute_project_rows(
+            project_id: str,
+            body: AttributionRequest = Body(default=AttributionRequest())) -> AttributionOut:
+        """Rescue unattributed ledger rows into this project (docs/api.md §3.11).
+
+        A synchronous metadata write, like project creation — no run. Rows are
+        immutable, so this records an adoption: every ledger row with no
+        project_id written before `before` (default: now) is counted for this
+        project from now on. Returns how many rows the rescue claimed.
+        """
+        import time
+
+        from foleyflow.ledger import record_attribution
+
+        _check_project_id(project_id)
+        _load_state(store, project_id)   # 404 before doing any work
+        before = body.before if body.before is not None else time.time()
+        claimed = record_attribution(project_id, before)
+        return AttributionOut(project_id=project_id, before=before,
+                              claimed=claimed)
 
     return app
 

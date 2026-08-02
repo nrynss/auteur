@@ -1266,3 +1266,39 @@ def test_a_local_store_gets_no_b2_sink(store):
     from foleyflow.api.app import _ingest_sink
 
     assert _ingest_sink(store) is None
+
+
+def test_attributions_rescue_unattributed_rows_into_the_budget(
+        client, store, budget_ledger, monkeypatch):
+    """POST /attributions adopts project-less rows; they show up in /budget."""
+    import time
+
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4", budget_usd=2.0)
+    # An unattributed row, written in the past (storage mode stamps now, so
+    # write it directly with a controlled timestamp).
+    old = time.time() - 3600
+    store.backend.put_bytes(
+        f"ledger/old.json",
+        json.dumps({"endpoint": "gemini-2.5-flash", "params_hash": "u",
+                    "cost_estimate": 0.30, "success": True, "timestamp": old,
+                    "project_id": None}).encode())
+    budget_ledger._invalidate_row_cache()
+
+    before_rescue = client.get(
+        f"{API_PREFIX}/projects/{project.id}/budget").json()
+    assert before_rescue["spent"] == 0.0
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/attributions",
+                    json={"before": old + 10})
+    assert r.status_code == 201
+    assert r.json()["claimed"] == 1
+
+    after = client.get(f"{API_PREFIX}/projects/{project.id}/budget").json()
+    assert after["spent"] == pytest.approx(0.30)
+
+
+def test_attributions_404_for_an_unknown_project(client):
+    r = client.post(f"{API_PREFIX}/projects/{VALID_ID}/attributions", json={})
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "project_not_found"

@@ -230,3 +230,61 @@ def test_old_rows_without_project_id_never_attribute(storage_ledger):
 
     assert ledger.project_spend("proj_A") == {"total": 0.0, "by_endpoint": {}}
     assert ledger.project_spend("proj_B") == {"total": 0.0, "by_endpoint": {}}
+
+
+# -- rescue (attribution overrides) ------------------------------------------
+
+def test_record_attribution_claims_unattributed_rows(storage_ledger):
+    """An override adopts project-less rows written before its `before`; rows
+    inside a project context are untouched and never double-counted."""
+    before = 1000.0
+    with ledger.set_project_context("proj_A"):
+        ledger.log_transaction("gemini-2.5-flash", "a1", 0.10, success=True)
+    # Untagged rows, written "in the past" via a private file mode so we can
+    # control timestamps: storage mode stamps time.time(), which is > before.
+    from foleyflow import storage as storage_mod
+
+    import time as _time
+    old = _time.time() - 3600
+    backend = storage_ledger
+    for i, cost in enumerate((0.05, 0.15)):
+        row = {"endpoint": "gemini-2.5-flash", "params_hash": f"u{i}",
+               "cost_estimate": cost, "success": True, "timestamp": old,
+               "project_id": None}
+        backend.put_bytes(f"{ledger.LEDGER_PREFIX}u{i}.json",
+                          json.dumps(row).encode())
+    ledger._invalidate_row_cache()
+
+    claimed = ledger.record_attribution("proj_B", before=old + 10)
+    assert claimed == 2
+
+    a = ledger.project_spend("proj_A")
+    b = ledger.project_spend("proj_B")
+    assert a["total"] == pytest.approx(0.10)   # own rows only
+    assert b["total"] == pytest.approx(0.20)   # the rescued rows
+
+
+def test_attribution_overrides_apply_first_come(storage_ledger):
+    """Two rescues: the earliest `before` claims the row — never two projects."""
+    import time as _time
+    old = _time.time() - 3600
+    backend = storage_ledger
+    row = {"endpoint": "gemini-2.5-flash", "params_hash": "u",
+           "cost_estimate": 0.30, "success": True, "timestamp": old,
+           "project_id": None}
+    backend.put_bytes(f"{ledger.LEDGER_PREFIX}u.json", json.dumps(row).encode())
+    ledger._invalidate_row_cache()
+
+    ledger.record_attribution("proj_A", before=old + 20)
+    ledger.record_attribution("proj_B", before=old + 10)
+
+    assert ledger.project_spend("proj_A")["total"] == pytest.approx(0.0)
+    assert ledger.project_spend("proj_B")["total"] == pytest.approx(0.30)
+
+
+def test_attribution_records_are_not_transactions(storage_ledger):
+    import time
+    ledger.record_attribution("proj_A", before=time.time() + 10)
+    rows = ledger.iter_transactions()
+    assert all(r.get("endpoint") is not None for r in rows)
+    assert len(ledger.iter_attributions()) == 1

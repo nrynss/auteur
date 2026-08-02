@@ -1,5 +1,7 @@
 # Task 6 — Per-project budgets: implementation slices
 
+Status: **U1–U6 done** (committed `646d9d7`, `…`). U6b (rescue) done. U7 open.
+
 Sliced so each unit lands on its own and is independently testable. Order is
 hard: the API contract (U1) comes first and nothing is built against a spec
 that has not changed. Commits follow the units.
@@ -82,7 +84,7 @@ Acceptance: dossier shows configured/spent/remaining with `estimate: true`.
 
 ---
 
-## U6 — CLI project context + `foleyflow budget` — S
+## U6 — CLI project context + `foleyflow budget` — S — **DONE**
 
 - Current-project resolution, in precedence order: positional id > `--project`
   flag > `FOLEYFLOW_PROJECT` env > persisted default (file under
@@ -90,9 +92,16 @@ Acceptance: dossier shows configured/spent/remaining with `estimate: true`.
 - `project_arg` becomes optional (`nargs="?"`); project verbs resolve through
   one helper; a missing project anywhere → usage error naming how to set one.
 - `foleyflow budget [project]` and `foleyflow use <id>` verbs.
+- **U6b (rescue)** — project-less work can be adopted later: `POST
+  /projects/{id}/attributions` (and `foleyflow attribute`) writes an immutable
+  override claiming unattributed rows written before a time; `project_spend`
+  honors overrides first-come by `before`, so a row never lands in two
+  projects. Go-forward: `foleyflow render --project <id>` tags its rows via the
+  same contextvar.
 
 Acceptance: `foleyflow use` then bare `foleyflow budget` reports the current
-project; env and `--project` override; no default → clear usage error.
+project; env and `--project` override; no default → clear usage error; rescue
+adopts rows into `/budget` with no double-counting.
 
 ---
 
