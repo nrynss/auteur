@@ -9,7 +9,7 @@ re-pointing the table is one edit here rather than ten.
 from foleyflow.models import Event
 from foleyflow.routing import (
     RHYTHMIC_LOOP_S,
-    _clamp_duration,
+    clamp_duration,
     _get_duration_limits,
     route_ambience,
     route_event,
@@ -126,7 +126,7 @@ def test_clamping_fires_and_warns_on_absurd_durations(capsys):
     # self-hosted model's floor is 0.3 — below which there is not enough audio
     # for trim_onset to find a transient. Going through route_event here would
     # assert nothing while looking like it did.
-    assert _clamp_duration(SELF_HOSTED, 0.05) == lo
+    assert clamp_duration(SELF_HOSTED, 0.05) == lo
     assert "clamping" in capsys.readouterr().out.lower()
 
 

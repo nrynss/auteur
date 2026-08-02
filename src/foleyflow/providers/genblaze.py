@@ -345,9 +345,9 @@ def run_analysis_step(endpoint: str, arguments: dict, *,
         step_type=StepType.GENERATE,
         params=dict(arguments),
     )
-    # Sync path: analysis is one step and API handlers already run in a
-    # threadpool. fail_fast so a provider error surfaces rather than a silent
-    # empty timeline.
+    # raise_on_failure=True: a failed step raises ProviderError out of the
+    # pipeline, so there is no "empty succeeded_steps" branch to handle —
+    # the exception is the failure path.
     try:
         import asyncio
         asyncio.get_running_loop()
@@ -360,10 +360,6 @@ def run_analysis_step(endpoint: str, arguments: dict, *,
             fail_fast=True, raise_on_failure=True, progress=False)
 
     steps = outcome.succeeded_steps()
-    if not steps:
-        failed = outcome.failed_steps()
-        detail = failed[0].error if failed else "analysis step produced no result"
-        raise RuntimeError(detail)
     payload = steps[0].provider_payload or {}
     if not isinstance(payload, dict):
         return {"output": str(payload)}

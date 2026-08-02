@@ -335,7 +335,15 @@ The repair allocates a new timeline version beside the original and re-mixes it
 with a variant salt on exactly one stem's cache address: that stem's bytes
 change, every other stem is still served from cache, and the mix run records
 the lineage — the superseded take, the new variant, and the version — in the
-event log (`postproduction.repair.approved`) and on the run's metadata. The
+event log (`postproduction.repair.approved`) and on the run's metadata.
+
+The stem is addressed by its routed request (endpoint, prompt, duration), not
+by the timeline row: the SFX cache is content-addressed on exactly that tuple,
+so two events routing to the same request already share one clip, and
+regenerating either regenerates the shared stem. The lineage records the
+requested event index either way.
+
+The
 `provider` field names a declared SFX tier to regenerate through; the request
 is re-aimed at that tier and the estimate is its cost. `422 precondition_failed`
 when there is no plan yet or a billable regeneration is not confirmed;

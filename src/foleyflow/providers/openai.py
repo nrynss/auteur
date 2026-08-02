@@ -33,6 +33,12 @@ DEFAULT_API_KEY_ENV = ("OPENAI_API_KEY",)
 # Frame rate for video → vision. Matches analyze.extract_frames default so the
 # OpenAI path and the sampled Gemini path see the same temporal density.
 VIDEO_SAMPLE_FPS = 2.0
+# Cap request size: a 30s clip at 2fps would be ~60 full-res images and a
+# multi-MB body. Scale and a hard frame ceiling keep cost and latency bounded
+# for the primary OpenAI analysis path (unlike Gemini's research-only
+# sampled strategy).
+VIDEO_FRAME_SCALE = "640:-2"
+VIDEO_MAX_FRAMES = 24
 
 
 class OpenAIAdapter:
@@ -93,7 +99,13 @@ class OpenAIAdapter:
         content: List[dict[str, Any]] = [{"type": "text", "text": prompt}]
         for uri in arguments.get("image_urls") or []:
             content.append(_image_part(uri))
-        for uri in arguments.get("video_urls") or []:
+        # Accept both the plural list analyze_video_direct builds and the
+        # singular form used by the retired fal/localizer helpers, so reviving
+        # those call sites cannot silently drop the video.
+        video_uris = list(arguments.get("video_urls") or [])
+        if arguments.get("video_url"):
+            video_uris.append(arguments["video_url"])
+        for uri in video_uris:
             # OpenAI has no native video part; sample frames and attach them.
             content.extend(_video_as_image_parts(uri))
 
@@ -149,14 +161,42 @@ def _file_as_data_uri(path: str) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
+def _extract_scaled_frames(video_path: str, temp_dir: str,
+                           fps: float = VIDEO_SAMPLE_FPS) -> List[tuple]:
+    """Sample frames at ``fps``, scaled to VIDEO_FRAME_SCALE, oldest first.
+
+    Sibling of ``analyze.extract_frames`` with an explicit scale filter so the
+    OpenAI request body stays bounded. Returns ``(path, timestamp_s)`` pairs.
+    """
+    import subprocess
+
+    out_pattern = os.path.join(temp_dir, "frame_%04d.jpg")
+    vf = f"fps={fps},scale={VIDEO_FRAME_SCALE}"
+    cmd = [
+        "ffmpeg", "-y", "-i", video_path,
+        "-vf", vf, "-vsync", "vfr", out_pattern,
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg frame extraction failed: {result.stderr}")
+
+    files = sorted(
+        f for f in os.listdir(temp_dir)
+        if f.startswith("frame_") and f.endswith(".jpg")
+    )
+    return [
+        (os.path.join(temp_dir, name), i / fps)
+        for i, name in enumerate(files)
+    ]
+
+
 def _video_as_image_parts(uri: str) -> List[dict]:
     """Sample a video at VIDEO_SAMPLE_FPS and return vision image parts.
 
     OpenAI chat models do not accept video parts. Frame sampling is the only
     way to run the same TIMELINE_PROMPT against an OpenAI model.
     """
-    from foleyflow.analyze import extract_frames
-
     path = _local_path(uri)
     if path is None:
         raise ValueError(
@@ -165,7 +205,11 @@ def _video_as_image_parts(uri: str) -> List[dict]:
         )
     parts: List[dict] = []
     with tempfile.TemporaryDirectory(prefix="foleyflow-openai-") as tmp:
-        frames = extract_frames(path, tmp, fps=VIDEO_SAMPLE_FPS)
+        frames = _extract_scaled_frames(path, tmp, fps=VIDEO_SAMPLE_FPS)
+        if len(frames) > VIDEO_MAX_FRAMES:
+            # Evenly spaced subset so a long clip still covers start and end.
+            step = len(frames) / VIDEO_MAX_FRAMES
+            frames = [frames[int(i * step)] for i in range(VIDEO_MAX_FRAMES)]
         for frame_path, ts in frames:
             parts.append({
                 "type": "text",

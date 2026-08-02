@@ -95,7 +95,13 @@ def _apply_intensity(prompt: str, intensity: str) -> str:
     return f"{prompt}, {qualifier}" if qualifier else prompt
 
 
-def _clamp_duration(endpoint: str, duration_s: float) -> float:
+def clamp_duration(endpoint: str, duration_s: float) -> float:
+    """Clamp a requested duration to the endpoint's declared bounds.
+
+    Public because the repair route re-aims a request at an alternative tier
+    and must clamp against *that* tier's endpoint (bounds differ between
+    providers), the same rule `route_event` uses internally.
+    """
     lo, hi = _get_duration_limits(endpoint)
     if duration_s < lo:
         print(f"[routing] WARNING: {endpoint} duration {duration_s:.2f}s below min "
@@ -133,7 +139,7 @@ def route_event(event: Event) -> SfxRequest:
     else:
         duration_s = event.duration + HEADROOM_S
 
-    duration_s = _clamp_duration(endpoint, duration_s)
+    duration_s = clamp_duration(endpoint, duration_s)
     return SfxRequest(endpoint=endpoint, prompt=prompt, duration_s=duration_s,
                       category=category, tier=tier)
 
@@ -149,7 +155,7 @@ def route_ambience(ambience: str, clip_duration: float) -> SfxRequest:
             "providers.toml: routing categories must include an 'ambience' category"
         )
     endpoint, tier = _tiered(ambience_cat["endpoint"])
-    duration_s = _clamp_duration(endpoint, clip_duration + HEADROOM_S)
+    duration_s = clamp_duration(endpoint, clip_duration + HEADROOM_S)
     return SfxRequest(endpoint=endpoint, prompt=ambience, duration_s=duration_s,
                       category="ambience", tier=tier)
 
@@ -176,7 +182,7 @@ def escalate(request: SfxRequest) -> List[SfxRequest]:
         out.append(SfxRequest(
             endpoint=tier.endpoint,
             prompt=request.prompt,
-            duration_s=_clamp_duration(tier.endpoint, request.duration_s),
+            duration_s=clamp_duration(tier.endpoint, request.duration_s),
             category=request.category,
             tier=tier.name,
         ))

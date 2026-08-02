@@ -401,6 +401,13 @@ def create_app(store: Optional[ProjectStore] = None,
         with a variant salt on exactly one stem's cache address, so one stem's
         bytes change and every other stem is still served from cache.
 
+        The stem is identified by its routed request (endpoint, prompt,
+        duration), not by the timeline row: the SFX cache is content-addressed
+        on exactly that tuple, so two events that route to the same request
+        already share one clip, and regenerating either one regenerates the
+        shared stem — the lineage records the requested event index either
+        way.
+
         A billable regeneration must be confirmed: the estimate is shown to
         the client, and `confirm_cost_usd` must come back equal to it (SPEC
         §9.4) — the request is refused otherwise, so a client cannot spend
@@ -408,7 +415,7 @@ def create_app(store: Optional[ProjectStore] = None,
         """
         from foleyflow.api.jobs import SlotTaken
         from foleyflow.ledger import estimate_cost
-        from foleyflow.routing import SfxRequest, _clamp_duration, route_event
+        from foleyflow.routing import SfxRequest, clamp_duration, route_event
         from foleyflow.sfx import build_arguments
         from foleyflow.tiers import TierError, get_tier
 
@@ -444,7 +451,7 @@ def create_app(store: Optional[ProjectStore] = None,
                 raise err.InvalidRequest(str(exc)) from exc
             request = SfxRequest(
                 endpoint=tier.endpoint, prompt=request.prompt,
-                duration_s=_clamp_duration(tier.endpoint, request.duration_s),
+                duration_s=clamp_duration(tier.endpoint, request.duration_s),
                 category=request.category, tier=tier.name)
 
         estimated = estimate_cost(request.endpoint, build_arguments(request))
