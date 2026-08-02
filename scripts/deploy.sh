@@ -110,6 +110,17 @@ SECRETS=(
   "GEMINI_API_KEY=foleyflow-gemini-api-key:latest"
   "FOLEYFLOW_SFX_WORKER_TOKEN=foleyflow-sfx-worker-token:latest"
 )
+# Paid SFX tier — only mount if the secret already exists (created by
+# setup_secrets.sh when ELEVENLABS_API_KEY is set in .env).
+if gcloud secrets describe foleyflow-elevenlabs-api-key \
+    --project="$PROJECT" >/dev/null 2>&1; then
+  SECRETS+=("ELEVENLABS_API_KEY=foleyflow-elevenlabs-api-key:latest")
+  echo "Including ELEVENLABS_API_KEY secret mount (paid SFX tier)."
+else
+  echo "Note: foleyflow-elevenlabs-api-key not in Secret Manager — paid tier"
+  echo "      will be unavailable until: set ELEVENLABS_API_KEY in .env and"
+  echo "      run ./scripts/setup_secrets.sh && ./scripts/deploy.sh --no-source"
+fi
 SECRETS_CSV="$(IFS=,; echo "${SECRETS[*]}")"
 
 COMMON=(

@@ -505,3 +505,100 @@ def test_the_paid_tier_falls_back_to_fal_on_error(monkeypatch, tmp_path):
     assert result.tier == "fallback"
     assert open(result.local_path, "rb").read() == b"ID3fal"
     assert "401 Unauthorized" in result.attempts[0].error
+
+
+# -- the paid tier reaches the cost ledger -----------------------------------
+#
+# The lifted adapters bill themselves inside `generate` (via
+# `execute_with_ledger`); a vendor-shipped connector owns its own HTTP and has
+# no such seam, so `get_provider` mixes one in. Without it the $0.30/call tier
+# would be the only one spending money invisibly — no row, no project
+# attribution, no budget alert.
+
+@pytest.fixture
+def file_ledger(tmp_path, monkeypatch):
+    # LEDGER_PATH is resolved from the environment at import, so the env var
+    # alone would leave rows going to whatever backend the shell is pointed at.
+    path = tmp_path / "ledger.jsonl"
+    monkeypatch.setattr(ledger, "LEDGER_PATH", str(path))
+    monkeypatch.setattr(ledger, "_write_ok", True)
+    ledger._invalidate_row_cache()
+    return str(path)
+
+
+def _paid_provider(monkeypatch, generate):
+    """The paid provider as `get_provider` builds it, over a stubbed vendor call."""
+    from genblaze_elevenlabs import ElevenLabsSFXProvider
+
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    monkeypatch.setattr(ElevenLabsSFXProvider, "generate", generate)
+    return gb.get_provider("elevenlabs", refresh=True)
+
+
+def _paid_step(provider, tmp_path):
+    from genblaze_core import Step
+
+    return Step(provider=provider.name, model=ELEVEN, prompt="thunder",
+                params={"prompt": "thunder", "duration_seconds": 2.0})
+
+
+def test_a_paid_generation_writes_a_ledger_row(monkeypatch, tmp_path, file_ledger):
+    from genblaze_core._utils import local_file_url
+    from genblaze_core import Asset
+
+    def _generate(self, step, config=None):
+        path = tmp_path / f"{step.step_id}.mp3"
+        path.write_bytes(b"ID3eleven")
+        step.assets.append(Asset(url=local_file_url(path.resolve()),
+                                 media_type="audio/mpeg"))
+        return step
+
+    provider = _paid_provider(monkeypatch, _generate)
+    step = provider.generate(_paid_step(provider, tmp_path))
+
+    assert len(step.assets) == 1, "the connector's own result must survive the wrap"
+    rows = ledger.iter_transactions(file_ledger)
+    assert len(rows) == 1
+    assert rows[0]["endpoint"] == ELEVEN
+    assert rows[0]["success"] is True
+    # providers.toml declares $0.30 — the top of ElevenLabs' duration buckets.
+    assert rows[0]["cost_estimate"] == pytest.approx(0.30)
+    # The SFX API answers with audio bytes and no billing metadata, so claiming
+    # "actual" here would be inventing a precision the response does not carry.
+    assert rows[0]["cost_source"] == "estimate"
+
+
+def test_a_failed_paid_generation_is_still_billed(monkeypatch, tmp_path, file_ledger):
+    """A rejected call can still cost the account; a silent failure is worse."""
+    def _generate(self, step, config=None):
+        raise RuntimeError("401 Unauthorized")
+
+    provider = _paid_provider(monkeypatch, _generate)
+    with pytest.raises(RuntimeError):
+        provider.generate(_paid_step(provider, tmp_path))
+
+    rows = ledger.iter_transactions(file_ledger)
+    assert len(rows) == 1
+    assert rows[0]["success"] is False
+    assert "401 Unauthorized" in rows[0]["error"]
+
+
+def test_every_sfx_tier_reaches_the_ledger(monkeypatch):
+    """The guard that keeps a future connector from billing silently.
+
+    Each tier's provider must either be one of our lifts (which call
+    `execute_with_ledger` themselves) or carry the mixin `get_provider` adds.
+    """
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    for tier in tiers.load_tiers().values():
+        provider = gb.get_provider(tier.adapter, refresh=True)
+        assert isinstance(provider, (gb.FoleyAdapterProvider,
+                                     gb.LedgerRecordingMixin)), tier.name
+
+
+def test_our_own_lifts_are_not_double_billed(monkeypatch):
+    """`FoleyAdapterProvider` already bills inside `generate` — wrapping it twice
+    would charge a project for every stem a second time."""
+    for adapter in ("fal", "local"):
+        provider = gb.get_provider(adapter, refresh=True)
+        assert not isinstance(provider, gb.LedgerRecordingMixin), adapter

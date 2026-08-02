@@ -71,6 +71,7 @@ __all__ = [
     "FalSfxProvider",
     "FoleyAdapterProvider",
     "GoogleAnalysisProvider",
+    "LedgerRecordingMixin",
     "LocalSfxProvider",
     "OpenAIAnalysisProvider",
     "asset_local_path",
@@ -232,6 +233,49 @@ class FalSfxProvider(FoleyAdapterProvider):
     name = "foleyflow-fal-sfx"
     adapter_name = "fal"
     media_type = "audio/mpeg"
+
+
+class LedgerRecordingMixin:
+    """Puts a vendor-shipped connector's calls into the cost ledger.
+
+    :class:`FoleyAdapterProvider` reaches the ledger by calling
+    ``execute_with_ledger`` itself, because it owns the vendor call. A connector
+    Genblaze ships — ``genblaze-elevenlabs``, the paid SFX tier — owns its own
+    HTTP, so there is no seam inside it to hook. Without this mixin the most
+    expensive tier in the table is the only one that bills silently: no ledger
+    row, no project attribution, no budget alert.
+
+    Mixed in ahead of the connector class by :func:`get_provider`, so
+    ``super().generate`` is the connector's real implementation and every other
+    part of its contract (capabilities, discovery, retry policy) is untouched.
+
+    Cost is the declared estimate: the ElevenLabs SFX API answers with audio
+    bytes and no billing metadata, so ``cost_source`` stays ``"estimate"`` here
+    rather than claiming a precision the response does not carry.
+    """
+
+    def generate(self, step: Step, config: Any = None) -> Step:
+        from foleyflow.ledger import (
+            estimate_cost,
+            get_params_hash,
+            log_transaction,
+        )
+
+        arguments = dict(step.params)
+        params_hash = get_params_hash(arguments)
+        cost = estimate_cost(step.model, arguments)
+        try:
+            result = super().generate(step, config)  # type: ignore[misc]
+        except Exception as exc:
+            # Failures are billed too — a rejected call can still have cost the
+            # account something, and a silent failure is worse than an
+            # over-count. Mirrors execute_with_ledger's except branch.
+            log_transaction(step.model, params_hash, cost, success=False,
+                            error=str(exc))
+            raise
+        log_transaction(step.model, params_hash, cost, success=True,
+                        cost_source="estimate")
+        return result
 
 
 class AnalysisProvider(SyncProvider):
@@ -488,6 +532,13 @@ def get_provider(adapter_name: str, *, refresh: bool = False) -> Any:
     params = inspect.signature(cls).parameters
     if "output_dir" in params:
         kwargs["output_dir"] = sfx_output_dir()
+
+    # Our own lifts already write their ledger row inside `generate`; a
+    # vendor-shipped connector has no such seam, so one is mixed in here. Doing
+    # it at the single construction site means a new connector in
+    # providers.toml is ledgered by existence, not by remembering to wrap it.
+    if not issubclass(cls, (FoleyAdapterProvider, AnalysisProvider)):
+        cls = type(f"Ledgered{cls.__name__}", (LedgerRecordingMixin, cls), {})
 
     provider = cls(**kwargs)
     _PROVIDER_CACHE[adapter_name] = provider

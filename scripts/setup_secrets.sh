@@ -29,13 +29,14 @@ then grants roles/secretmanager.secretAccessor on each secret to the Cloud Run
 runtime service account.
 
 Secret names (Secret Manager → Cloud Run env):
-  foleyflow-b2-application-key  → B2_APPLICATION_KEY
-  foleyflow-b2-key-id           → B2_KEY_ID
-  foleyflow-gemini-api-key      → GEMINI_API_KEY
-  foleyflow-sfx-worker-token    → FOLEYFLOW_SFX_WORKER_TOKEN
+  foleyflow-b2-application-key   → B2_APPLICATION_KEY
+  foleyflow-b2-key-id            → B2_KEY_ID
+  foleyflow-gemini-api-key       → GEMINI_API_KEY
+  foleyflow-sfx-worker-token     → FOLEYFLOW_SFX_WORKER_TOKEN
+  foleyflow-elevenlabs-api-key   → ELEVENLABS_API_KEY  (optional; paid SFX tier)
 
 Values are taken from the process environment, or from --env-file (KEY=value
-lines). Nothing is echoed.
+lines). Nothing is echoed. ELEVENLABS_API_KEY is created only when set.
 EOF
 }
 
@@ -116,6 +117,22 @@ ensure_secret foleyflow-b2-key-id B2_KEY_ID
 ensure_secret foleyflow-gemini-api-key GEMINI_API_KEY
 ensure_secret foleyflow-sfx-worker-token FOLEYFLOW_SFX_WORKER_TOKEN
 
+SECRET_NAMES=(
+  foleyflow-b2-application-key
+  foleyflow-b2-key-id
+  foleyflow-gemini-api-key
+  foleyflow-sfx-worker-token
+)
+
+# Paid SFX tier — optional until you set FOLEYFLOW_SFX_TIER=paid.
+if [[ -n "${ELEVENLABS_API_KEY:-}" ]]; then
+  ensure_secret foleyflow-elevenlabs-api-key ELEVENLABS_API_KEY
+  SECRET_NAMES+=(foleyflow-elevenlabs-api-key)
+else
+  echo "Note: ELEVENLABS_API_KEY unset — skipping foleyflow-elevenlabs-api-key"
+  echo "      (required only for FOLEYFLOW_SFX_TIER=paid). Add to .env and re-run."
+fi
+
 # Runtime SA for the Cloud Run service (default compute SA if describe fails).
 SA="$(
   gcloud run services describe "$SERVICE" \
@@ -131,12 +148,7 @@ else
   echo "Cloud Run runtime SA: $SA"
 fi
 
-for secret_name in \
-  foleyflow-b2-application-key \
-  foleyflow-b2-key-id \
-  foleyflow-gemini-api-key \
-  foleyflow-sfx-worker-token
-do
+for secret_name in "${SECRET_NAMES[@]}"; do
   echo "Granting secretAccessor on $secret_name → $SA"
   gcloud secrets add-iam-policy-binding "$secret_name" \
     --project="$PROJECT" \
@@ -149,4 +161,4 @@ echo
 echo "Done. Next: deploy with scripts/deploy.sh (uses --set-secrets, not plain env)."
 echo "Verify: gcloud run services describe $SERVICE --region $REGION --project $PROJECT \\"
 echo "  --format='yaml(spec.template.spec.containers[0].env)'"
-echo "must show valueFrom.secretKeyRef for the four secret env vars, never raw values."
+echo "must show valueFrom.secretKeyRef for secret env vars, never raw values."

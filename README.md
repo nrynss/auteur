@@ -166,10 +166,13 @@ access can read them via `gcloud run services describe`. They live in
 | `B2_KEY_ID` | `foleyflow-b2-key-id` | Paired with the application key |
 | `GEMINI_API_KEY` | `foleyflow-gemini-api-key` | Analysis |
 | `FOLEYFLOW_SFX_WORKER_TOKEN` | `foleyflow-sfx-worker-token` | Bearer for the tunnelled GPU worker |
+| `ELEVENLABS_API_KEY` | `foleyflow-elevenlabs-api-key` | Paid SFX tier only — optional until set |
 
-Optional keys used only for other SFX tiers (`FAL_KEY`, `ELEVENLABS_API_KEY`,
-`OPENAI_API_KEY`) are not required on the default `test` tier. If you add them
-later, put them in Secret Manager the same way — never in `env.public.yaml`.
+`ELEVENLABS_API_KEY` is created when present in `.env` (`setup_secrets.sh`) and
+mounted by `deploy.sh` only if that secret exists. Other optional keys
+(`FAL_KEY`, `OPENAI_API_KEY`) are not required on the default `test` tier —
+same pattern if you add them later. Never put any of these in
+`env.public.yaml`.
 
 **Create / rotate secrets** (values from local `.env` or the environment; never
 printed or committed):
@@ -249,8 +252,20 @@ only (and keep any local file that still has credentials out of git —
 
 **`--set-secrets` replaces the full secret set.** gcloud does not merge: the
 list you pass becomes the complete secret-backed env for the next revision.
-Omitting a secret removes it. `scripts/deploy.sh` always passes all four
-entries above; if you deploy by hand, pass the same full CSV every time.
+Omitting a secret removes it. `scripts/deploy.sh` always passes the core four
+plus `ELEVENLABS_API_KEY` when that secret exists; if you deploy by hand, pass
+the same full CSV every time.
+
+**Add ElevenLabs (paid SFX tier):**
+
+```bash
+# 1. Put the key in local .env (never commit):
+#    ELEVENLABS_API_KEY=sk_...
+./scripts/setup_secrets.sh --env-file .env
+# 2. Remount secrets on Cloud Run (no image rebuild):
+./scripts/deploy.sh --no-source
+# 3. Local paid-tier runs also need the same key exported / in .env
+```
 `./scripts/deploy.sh --skip-smoke` skips the post-deploy smoke check in an
 emergency only — default is to fail the deploy when smoke fails.
 

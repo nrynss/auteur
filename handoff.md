@@ -20,7 +20,7 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   **DONE**.
 - CI (10), build identity (11), post-deploy smoke (12), doctor (13), demo
   evidence (15), and Secret Manager (16) are in place.
-- `uv run pytest -q` → **561 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **565 passed, 1 skipped**. No provider credentials
   required for tests: the billed calls are stubbed at two seams,
   `stems.generate_many` and `sfx_cache.generate_canonical_wav`. Everything else
   — ffmpeg, the mix, the shared cache, storage, the Genblaze pipelines — runs
@@ -204,12 +204,40 @@ recording.
 
 Two halves, and the second needs no money:
 
-- **Paid:** needs ElevenLabs credits. One real generation, end to end, checking
-  the response envelope matches what `providers/genblaze.py` expects, the cost
-  lands in the ledger with `cost_source: "actual"`, and the stem is cached under
-  the paid tier's own key.
-- **Fallback escalation, free to test now:** point the paid tier at an
-  unreachable endpoint and confirm the chain escalates, the stem is served, and
+- **Paid:** needs ElevenLabs credits (available as of 2026-08-02). One real
+  generation, end to end, checking the stem is cached under the paid tier's own
+  key and the cost lands in the ledger attributed to the project.
+
+  Two of the original checks are already settled without spending. The response
+  envelope is verified statically: the connector reads `text` /
+  `duration_seconds` off `prepare_payload`, matching this repo's `prompt_field`
+  / `duration_field`, and it writes a local mp3 and returns a `file://` asset —
+  the shape `asset_local_path` requires. And `cost_source` will read
+  `"estimate"`, not `"actual"`: `text_to_sound_effects.convert()` returns audio
+  bytes with no billing metadata, so the row carries providers.toml's declared
+  $0.30 (the top of ElevenLabs' duration buckets).
+
+  **Ledger seam — fixed 2026-08-02.** The paid tier previously wrote *no*
+  ledger row at all. `execute_with_ledger` is called from inside
+  `FoleyAdapterProvider.generate`, and the paid tier is not a lift — it is
+  `genblaze_elevenlabs:ElevenLabsSFXProvider`, constructed raw, owning its own
+  HTTP. So the most expensive tier in the table was the only one billing
+  invisibly: no row, no project attribution, no budget alert (tasks 6/9/17
+  silently did not cover it). `get_provider` now mixes `LedgerRecordingMixin`
+  into any provider that is not one of our own lifts, so a future connector is
+  ledgered by existence rather than by remembering to wrap it.
+
+  **Order matters.** Fix before the live call, not after: the SFX cache is
+  keyed on `(endpoint, prompt, duration, variant)`, so a stem generated first
+  would be served from cache on the re-run — no call, no bill, and no ledger
+  row to point at.
+- **Fallback escalation, no ElevenLabs credits needed:** unsetting
+  `ELEVENLABS_API_KEY` is enough — the connector takes no key at construction
+  and builds its client lazily inside `generate`, so the paid tier fails on the
+  real code path with no API contact and no bill. Note the fallback tier *is*
+  fal (`fal-ai/elevenlabs/sound-effects/v2`, ~$0.05/call), so a *served*
+  fallback run is not free unless the chain is temporarily pointed at the free
+  `test` tier. Confirm the chain escalates, the stem is served, and
   `served_endpoint` reaches the stem inventory and the §11.6 manifest. That
   provenance path was fixed this session and has only ever run under stubs — if
   it is wrong, a manifest credits ElevenLabs for audio fal produced.
