@@ -89,12 +89,57 @@ out of budget until tomorrow" from "something broke."
 
 ```
 GET /api/v1/health
+GET /api/v1/health?worker=true
 ```
 
-`200` — `{"status": "ok", "storage": "ok", "version": "0.1.0"}`
+`200`
+
+```json
+{
+  "status": "ok",
+  "storage": "ok",
+  "version": "0.1.0",
+  "worker": null
+}
+```
 
 Reports storage reachability because an API that is up while B2 is unreachable
 can serve reads from nothing and accept writes that will fail later.
+`status` is `"ok"` when storage is reachable and `"degraded"` otherwise; a
+worker problem never flips the top-level status (a fully cached render does
+not need the GPU).
+
+`?worker=true` additionally probes the SFX worker behind the active tier.
+Off by default: this endpoint is what a platform liveness check hits, and a
+liveness check that depends on a third-party GPU box will restart a healthy
+service when that box is off. Operators ask for the probe explicitly
+(`foleyflow health` always does). With the probe requested, `worker` is:
+
+```json
+{
+  "status": "ok",
+  "tier": "test",
+  "endpoint": "openmoss/moss-soundeffect-v2",
+  "model": "openmoss/moss-soundeffect-v2",
+  "device": "NVIDIA GeForce RTX 4070 SUPER",
+  "auth_required": true,
+  "auth_configured": true,
+  "detail": null
+}
+```
+
+`status` is one of:
+
+| value | meaning |
+|---|---|
+| `ok` | reachable and loaded |
+| `loading` | reachable; model still building (generation returns 503) |
+| `unreachable` | the probe failed; `detail` says how |
+| `not_applicable` | the active tier is a hosted API (paid/fallback), so there is no worker to probe |
+
+`auth_configured` is `false` when the worker demands a bearer token and this
+process holds none — that combination reads as healthy from the outside and
+fails every generation, so it is called out rather than folded into `ok`.
 
 ---
 

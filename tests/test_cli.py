@@ -17,7 +17,14 @@ from fastapi.testclient import TestClient
 
 from foleyflow.api.app import create_app
 from foleyflow.api.jobs import JobRunner
-from foleyflow.cli import EXIT_API_ERROR, EXIT_OK, EXIT_QUOTA, Client, main
+from foleyflow.cli import (
+    EXIT_API_ERROR,
+    EXIT_OK,
+    EXIT_QUOTA,
+    EXIT_USAGE,
+    Client,
+    main,
+)
 from foleyflow.projects import ProjectStore
 from foleyflow.storage import LocalBackend
 
@@ -35,8 +42,14 @@ def stub_worker_probe(monkeypatch):
     promise quietly becomes false the moment a test touches health, and it
     would pass anyway on a machine that happens to have the worker running.
     Individual tests override it by patching `get_adapter` again.
+
+    Also clears `$FOLEYFLOW_SFX_TIER`: with `=paid` the probe short-circuits
+    to `not_applicable` and never reaches the stub, which is correct product
+    behaviour but not what these tests are measuring.
     """
     import foleyflow.providers as providers
+
+    monkeypatch.delenv("FOLEYFLOW_SFX_TIER", raising=False)
 
     class Stub:
         def health(self):
@@ -521,5 +534,15 @@ def test_prewarm_sfx_tier_selects_a_different_endpoint(client, capsys,
 def test_prewarm_rejects_an_unreadable_timeline(client, capsys, tmp_path,
                                                 prewarm_backend):
     missing = str(tmp_path / "nope.json")
-    assert run(client, "prewarm", missing) != EXIT_OK
+    assert run(client, "prewarm", missing) == EXIT_USAGE
     assert "cannot read timeline" in capsys.readouterr().err
+
+
+def test_prewarm_rejects_an_unknown_sfx_tier(client, capsys, timeline_file,
+                                             prewarm_backend):
+    """A typo in --sfx-tier is a usage error, not an API failure."""
+    assert run(client, "prewarm", timeline_file,
+               "--sfx-tier", "does-not-exist", "--dry-run") == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "does-not-exist" in err
+    assert "FOLEYFLOW_SFX_TIER" in err or "not a declared tier" in err

@@ -139,8 +139,15 @@ def test_health_does_not_probe_the_worker_unless_asked(client, monkeypatch):
 
 
 def _stub_local_adapter(monkeypatch, payload=None, exc=None):
-    """Replace only the adapter, so real tier resolution is still exercised."""
+    """Replace only the adapter, so real tier resolution is still exercised.
+
+    Clears `$FOLEYFLOW_SFX_TIER` so an operator shell with `=paid` does not
+    short-circuit `_worker_health` to `not_applicable` before the stub runs.
+    Tier identity still comes from the TOML default, not from this helper.
+    """
     import foleyflow.providers as providers
+
+    monkeypatch.delenv("FOLEYFLOW_SFX_TIER", raising=False)
 
     class Stub:
         def health(self):
@@ -185,6 +192,22 @@ def test_health_flags_a_worker_wanting_a_token_we_do_not_have(client, monkeypatc
                         params={"worker": "true"}).json()["worker"]
     assert worker["auth_required"] is True
     assert worker["auth_configured"] is False
+
+
+def test_health_reports_not_applicable_for_a_hosted_tier(client, monkeypatch):
+    """Paid/fallback are vendor APIs — there is no worker to probe."""
+    import foleyflow.providers as providers
+
+    monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
+
+    def _boom(name):
+        raise AssertionError("hosted tiers must not call get_adapter")
+
+    monkeypatch.setattr(providers, "get_adapter", _boom)
+    worker = client.get(f"{API_PREFIX}/health",
+                        params={"worker": "true"}).json()["worker"]
+    assert worker["status"] == "not_applicable"
+    assert worker["tier"] == "paid"
 
 
 # -- projects ---------------------------------------------------------------

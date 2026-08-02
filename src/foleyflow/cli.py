@@ -534,8 +534,8 @@ def cmd_prewarm(args) -> int:
 
     from foleyflow.assemble import plan_requests
     from foleyflow.sfx_cache import cache_object_key, prewarm
-    from foleyflow.storage import get_backend
-    from foleyflow.tiers import ENV_TIER, active_tier_name
+    from foleyflow.storage import StorageError, get_backend
+    from foleyflow.tiers import ENV_TIER, TierError, active_tier_name
     from foleyflow.timeline_io import load_timeline
     from foleyflow.workflow import work_dir
 
@@ -564,17 +564,38 @@ def cmd_prewarm(args) -> int:
             # `tier=` here is the degradation ladder (ambience|discrete|full),
             # not the SFX provider tier.
             requests = plan_requests(timeline, duration, tier=args.tier)
+            active = active_tier_name() or "(none)"
+        except TierError as exc:
+            # Bad --sfx-tier / $FOLEYFLOW_SFX_TIER is a usage error, same as a
+            # missing timeline: the operator typed something the config does
+            # not know about.
+            return _fail(str(exc), EXIT_USAGE)
         except Exception as exc:
             return _fail(f"cannot plan requests: {type(exc).__name__}: {exc}")
 
-        backend = get_backend()
-        active = active_tier_name() or "(none)"
+        try:
+            backend = get_backend()
+        except StorageError as exc:
+            return _fail(f"storage unavailable: {exc}")
 
+        # Match sfx_cache.prewarm's hit rule: a non-empty local work-dir copy
+        # counts as cached even when B2 was never written (stale work dir from
+        # an interrupted render). Without this the count line can overstate
+        # "to generate" relative to what prewarm actually bills.
+        work = work_dir()
         hits, misses = [], []
-        for request in requests:
-            key = cache_object_key(request.endpoint, request.prompt,
-                                   request.duration_s, "")
-            (hits if backend.exists(key) else misses).append((request, key))
+        try:
+            for request in requests:
+                key = cache_object_key(request.endpoint, request.prompt,
+                                       request.duration_s, "")
+                local = os.path.join(work, os.path.basename(key))
+                cached = (
+                    (os.path.exists(local) and os.path.getsize(local) > 0)
+                    or backend.exists(key)
+                )
+                (hits if cached else misses).append((request, key))
+        except StorageError as exc:
+            return _fail(f"cannot probe SFX cache: {exc}")
 
         print(f"tier {active}  ->  "
               f"{requests[0].endpoint if requests else '(no requests)'}")
@@ -592,7 +613,7 @@ def cmd_prewarm(args) -> int:
             print("\n--dry-run: nothing generated.")
             return EXIT_OK
 
-        results = prewarm(backend, work_dir(), [r for r, _ in misses],
+        results = prewarm(backend, work, [r for r, _ in misses],
                           max_concurrency=args.concurrency)
         failed = [r for r in results if not r.ok]
         print(f"generated {len(results) - len(failed)} of {len(results)}")
