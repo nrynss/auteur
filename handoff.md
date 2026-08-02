@@ -16,9 +16,14 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   `docs/api.md` is written ahead of the code and treated as source of truth;
   every endpoint in it is live and covered by tests.
 - Task numbers are the current queue; DONE items keep their titles. Remaining:
-  **9 (budget alerts)**, then **7 (control-room UI)**. Task 9 revises task 6:
-  the budget becomes advisory and mutable rather than a cap frozen at creation,
-  so read 6 as history and 9 as the intent.
+  **9 (budget alerts, in flight)**, **10–16**, then **7 (control-room UI)** last.
+  Task 9 revises task 6: the budget becomes advisory and mutable rather than a
+  cap frozen at creation, so read 6 as history and 9 as the intent.
+- **10, 11 and 12 are independent and unblock the rest** — CI, build provenance,
+  and a post-deploy smoke check. Do those first when running several agents in
+  parallel: with no CI, two agents can each be green locally and broken
+  together, and a human finds out. 13 depends on 11. 14 and 15 are demo-risk
+  work and can run alongside.
 - `uv run pytest -q` → **516 passed, 1 skipped**. No provider credentials
   required: the billed calls are stubbed at two seams, `stems.generate_many`
   and `sfx_cache.generate_canonical_wav`. Everything else — ffmpeg, the mix, the
@@ -275,6 +280,153 @@ Grepped — complete list:
   noise".
 - Task 6 above, which describes a frozen `budget_usd` and route-level gating.
 - SPEC.md does not repeat the claim and needs no change on this point.
+## Addendum to 9b — relay to whoever holds task 9
+
+Not folded into the task body because 9 is in flight. **`project_spend` is a
+full ledger scan**, and hooking alerts on the ledger append makes that scan run
+per billed call:
+
+- `project_spend` (`ledger.py:463`) iterates *every* transaction row and filters
+  by `project_id`. There is no per-project index.
+- In storage mode each scan is a `list_keys` plus one GET per object against B2.
+- `_read_storage_rows` has a process-local TTL cache, but its docstring says
+  **successful writes invalidate it** — and a successful write is exactly what
+  would trigger an alert check. So the cache cannot absorb this pattern.
+
+An N-stem fan-out therefore becomes N full ledger scans over the network, each
+O(total rows), growing for the life of the bucket. Options, cheapest first: keep
+a running per-project total in the alert path rather than re-summing; or let the
+alert check reuse one snapshot for a whole run; or add a per-project ledger
+prefix so a scan is scoped. Do not leave it re-summing the world per stem.
+
+## 10. Continuous integration — S
+
+516 tests and nothing runs them automatically. With several agents landing work
+in parallel this is the largest process risk in the repo: the failure mode is
+two agents each green locally and broken together, discovered by a human.
+
+- GitHub Actions on push and PR: `uv sync` then `uv run pytest -q`.
+- **Install ffmpeg in the runner.** The suite skips rather than fails when it is
+  absent (`HAS_FFMPEG` / `needs_ffmpeg` in `tests/test_render.py`), so without it
+  CI goes green while the test that proves the milestone exit condition never
+  runs. A silently-skipping suite is worse than no CI.
+- Provide **no** provider credentials and no B2 config. The suite is offline by
+  design; a test that starts needing the network should fail loudly in CI, which
+  is the point.
+- Add a docs check: the test count quoted in `handoff.md` and `SPEC.md` must
+  match the suite. That drift has been corrected twice by hand already, and it
+  is the number a reader uses to judge whether the docs are current.
+
+Note `.dockerignore` excludes `tests/`, so the built image cannot self-verify —
+run tests from the checkout, not the image, unless that changes.
+
+**Acceptance:** a PR with a deliberately broken test fails CI; a run with ffmpeg
+removed fails rather than skips.
+
+## 11. Report the deployed build in `/health` — S
+
+`VERSION` is hardcoded `"0.1.0"` (`api/app.py:66`). There is no way to ask a
+running instance which code it has. Establishing that production was 15 commits
+behind took probing individual endpoints for 404s — that should have been one
+curl.
+
+- Bake the git SHA and build timestamp into the image at build time (a
+  `--build-arg`, or a generated file the app reads; do not shell out to `git` at
+  runtime, the container has no repo).
+- Add them to `HealthResponse` beside `version`.
+- Absent build info must degrade gracefully — a local `uv run uvicorn` has no
+  build stamp and must not crash or lie.
+
+**Acceptance:** `curl /api/v1/health` on the deployed app names the commit it is
+running, and it matches what was pushed.
+
+## 12. Post-deploy smoke check — S
+
+The same checks have been run by hand after every deploy: health, storage,
+worker probe, a dossier 200, `ledger_writable`. Script it and make it the last
+step of deploying.
+
+It must have caught, and must in future catch, the two failures already seen:
+production silently stale (task 11 gives it the signal), and
+`FOLEYFLOW_LEDGER_PATH` set in the deploy env forcing the ledger back into
+ephemeral local-file mode.
+
+- Takes a base URL, exits non-zero on any failure, prints one line per check.
+- Assert `ledger_writable: true`, `storage: ok`, worker `status` present, one
+  read endpoint returning 200 with real content, and the reported build matching
+  the commit just deployed.
+
+**Acceptance:** running it against a deliberately misconfigured revision fails
+with the specific reason.
+
+## 13. `foleyflow doctor` — M
+
+One command answering "can I demo right now?". Everything it needs already
+exists; this is composition, not new capability.
+
+- Worker reachable and authenticated — reuse `_worker_health()`.
+- Active SFX tier, and warm-cache coverage for a given timeline — reuse the
+  `plan_requests` + `cache_object_key` probe that `foleyflow prewarm --dry-run`
+  already runs.
+- Quota remaining and `ledger_writable`.
+- Deployed build matches local HEAD (needs task 11).
+- Exit non-zero when anything would break a live render; print a checklist.
+
+The value is that a cold cache, an unplugged GPU, a stale deploy and an
+exhausted quota all present identically today — as a render that fails partway.
+
+**Acceptance:** with the worker stopped, `doctor` says so and exits non-zero
+while `health` still reports the API healthy.
+
+## 14. Exercise the paid tier and the fallback for real — M
+
+Both are implemented and unit-tested against stubs, and **neither has ever made
+a live call**. The first time the paid path runs should not be during a
+recording.
+
+Two halves, and the second needs no money:
+
+- **Paid:** needs ElevenLabs credits. One real generation, end to end, checking
+  the response envelope matches what `providers/genblaze.py` expects, the cost
+  lands in the ledger with `cost_source: "actual"`, and the stem is cached under
+  the paid tier's own key.
+- **Fallback escalation, free to test now:** point the paid tier at an
+  unreachable endpoint and confirm the chain escalates, the stem is served, and
+  `served_endpoint` reaches the stem inventory and the §11.6 manifest. That
+  provenance path was fixed this session and has only ever run under stubs — if
+  it is wrong, a manifest credits ElevenLabs for audio fal produced.
+
+**Acceptance:** a manifest from a fallback-served run names the endpoint that
+actually generated the audio.
+
+## 15. More evidence in the bucket — S
+
+One real project is thin for a judge, and it is also a single point of failure
+for the demo.
+
+- Take a second clip end to end on the deployed app: create, analyze, mix,
+  export. `demo-assets/` already holds `duel_kling` and `inhaler_kling` with
+  validated timelines.
+- Warm `inhaler_kling` — still cold at 0 of 9 stems, and free on the `test`
+  tier: `foleyflow prewarm samples/timelines/inhaler_kling.json`.
+  (`duel_kling` was warmed this session; verify with `--dry-run`.)
+- Analysis spends real quota (20/day), so prefer `--from-timeline` where the
+  validated timeline already exists.
+
+**Acceptance:** two projects in B2 with a mix, an export and a manifest each.
+
+## 16. Move deployment secrets into Secret Manager — S
+
+The B2 application key, which grants bucket write, is a plain Cloud Run
+environment variable and is readable by anyone with project access via `gcloud
+run services describe`. Same for the Gemini key and the worker token.
+
+Move them to Secret Manager and reference them with `--set-secrets`. Update the
+README's deploy section, which currently documents the `--env-vars-file` form.
+
+**Acceptance:** `gcloud run services describe` shows secret references, not
+values.
+
 ## Out of scope
 
 The GPU worker (`../moss-sfx-worker`) is **not part of this hackathon
