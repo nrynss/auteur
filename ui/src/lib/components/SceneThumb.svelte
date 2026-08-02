@@ -1,8 +1,9 @@
 <script lang="ts">
   /** Scene thumbnail — the thin scene rail's unit. Events are addressed by
    * index everywhere (control-room.md §7), so the index is always shown, and
-   * the span is honest timecode, not a label. */
-  import Timecode from "./Timecode.svelte";
+   * the span is the honest seconds the API reports (mockup format), not a
+   * label. */
+  import { formatSeconds } from "../format";
 
   interface Props {
     index: number;
@@ -30,9 +31,7 @@
   {/if}
   <span class="m num">
     <span>{index + 1}</span>
-    <span>
-      <Timecode seconds={start} ms={false} />–<Timecode seconds={end} ms={false} />
-    </span>
+    <span>{formatSeconds(start)}–{formatSeconds(end)}</span>
   </span>
 </button>
 

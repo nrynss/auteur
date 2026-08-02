@@ -68,6 +68,7 @@
   });
 
   function onKeydown(e: KeyboardEvent) {
+    if (busy) return; // a pending spend path must not be cancellable
     if (e.key === "Escape") {
       e.preventDefault();
       oncancel?.();
@@ -97,17 +98,15 @@
   }
 
   function onBackdrop(e: MouseEvent) {
+    if (busy) return; // same rule as Escape
     if (e.target === e.currentTarget) oncancel?.();
   }
 </script>
 
 {#if open}
-  <div
-    class="backdrop"
-    role="presentation"
-    onclick={onBackdrop}
-    onkeydown={onKeydown}
-  >
+  <!-- Backdrop has no keydown: Escape is handled once, on the dialog. A
+       second handler here would fire twice via bubbling. -->
+  <div class="backdrop" role="presentation" onclick={onBackdrop}>
     <div
       class="dialog"
       role="dialog"

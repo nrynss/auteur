@@ -39,3 +39,11 @@ export function formatCost(
     })
   );
 }
+
+/** Raw seconds at two decimals, zero-padded to five chars — the scene-rail
+ * format the mockup uses ("10.62", "03.20"). Scene spans are short, so
+ * m:ss would be noise; this is the honest value the API reports. */
+export function formatSeconds(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds)) return "—";
+  return seconds.toFixed(2).padStart(5, "0");
+}

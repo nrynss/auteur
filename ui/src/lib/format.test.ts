@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatCost, formatTimecode } from "./format";
+import { formatCost, formatSeconds, formatTimecode } from "./format";
 
 describe("formatTimecode", () => {
   it("formats m:ss.mmm", () => {
@@ -47,5 +47,18 @@ describe("formatCost", () => {
   it("renders absent costs as a dash", () => {
     expect(formatCost(null)).toBe("—");
     expect(formatCost(undefined)).toBe("—");
+  });
+});
+
+describe("formatSeconds", () => {
+  it("formats raw seconds the way the mockup's scene rail does", () => {
+    expect(formatSeconds(10.62)).toBe("10.62");
+    expect(formatSeconds(3.2)).toBe("03.20");
+    expect(formatSeconds(15.04)).toBe("15.04");
+  });
+
+  it("renders absent spans as a dash", () => {
+    expect(formatSeconds(null)).toBe("—");
+    expect(formatSeconds(Number.NaN)).toBe("—");
   });
 });

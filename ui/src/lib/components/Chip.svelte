@@ -36,23 +36,31 @@
 
   const word = $derived(label ?? WORDS[state]);
   const accessible = $derived(detail ? `${word} — ${detail}` : word);
+  const cls = $derived(
+    [
+      "chip",
+      state,
+      ...(live ? ["live"] : []),
+      ...(pressed ? ["pressed"] : []),
+    ].join(" "),
+  );
 </script>
 
-<span
-  class="chip"
-  class:ok={state === "ok"}
-  class:warn={state === "warn"}
-  class:blocked={state === "blocked"}
-  class:pending={state === "pending"}
-  class:live
-  aria-label={accessible}
-  aria-pressed={pressed || undefined}
-  role={pressed ? "button" : "status"}
->
-  <Icon name={ICONS[state]} size={11} />
-  <span class="word">{word}</span>
-  {#if detail}<span class="detail">{detail}</span>{/if}
-</span>
+{#if pressed}
+  <!-- A toggle chip is a real button: keyboard-activatable, focusable,
+       announces via aria-pressed. A display chip is a status region. -->
+  <button type="button" class={cls} aria-label={accessible} aria-pressed={pressed}>
+    <Icon name={ICONS[state]} size={11} />
+    <span class="word">{word}</span>
+    {#if detail}<span class="detail">{detail}</span>{/if}
+  </button>
+{:else}
+  <span class={cls} aria-label={accessible} role="status">
+    <Icon name={ICONS[state]} size={11} />
+    <span class="word">{word}</span>
+    {#if detail}<span class="detail">{detail}</span>{/if}
+  </span>
+{/if}
 
 <style>
   .chip {

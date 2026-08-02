@@ -42,4 +42,14 @@ describe("Chip", () => {
     expect(body).toContain("Running");
     expect(body).not.toContain(">OK<");
   });
+
+  it("renders a real button when used as a toggle — keyboard support", () => {
+    const { body } = render(Chip, {
+      props: { state: "ok", pressed: true },
+    });
+    expect(body).toMatch(/<button[^>]*type="button"/);
+    expect(body).toContain('aria-pressed="true"');
+    // Never a span pretending to be a button.
+    expect(body).not.toMatch(/<span[^>]*role="button"/);
+  });
 });

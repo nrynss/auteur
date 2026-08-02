@@ -435,15 +435,27 @@ Twelve primitives in `ui/src/lib/components/`:
 - **Meter, Panel, Kbd, Spinner** (reduced-motion aware), **Icon** (inline SVG,
   no emoji; catalog in `lib/icons.ts`).
 
-**Vitest landed** (§F): `npm test` — 20 tests in node env (SSR `render()`,
-no jsdom): `format.test.ts` (rounding/carry/absent), `theme.test.ts`
-(resolveTheme precedence), Chip a11y contract (word present for every state),
-Evidence render contract. CI ui-build job runs `npm test` between check and
-build. `ui/vitest.config.ts`.
+**Vitest landed** (§F): `npm test` — 32 tests: node-env SSR `render()`
+contracts (`format.test.ts` rounding/carry/absent + scene-seconds,
+`theme.test.ts` precedence, Chip a11y: word present for every state + toggle
+chips are real buttons, Evidence render contract) and one jsdom file
+(`ConfirmDialog.test.ts`) for the DOM rules 7.11 depends on — cost shown,
+Escape/backdrop cancel, **a pending spend path cannot be cancelled**
+(busy guard), focus moves to confirm on open. CI ui-build job runs `npm test`
+between check and build. `ui/vitest.config.ts` (`resolve.conditions:
+["browser"]` so `mount()` resolves the client build; "svelte/server" is
+unaffected).
 
 Dev-only gallery (`PrimitivesGallery`, rendered under `import.meta.env.DEV`
-only, never ships) with honest sample values from the mockup's real
-`standoff_kling` project.
+only, never ships — verified tree-shaken out of the prod bundle) with honest
+sample values from the mockup's real `standoff_kling` project.
+
+**Review fixes folded in:** Chip's `pressed` variant renders a real `<button>`
+(keyboard-activatable, never a span pretending to be a button); SceneThumb
+uses the mockup's raw-seconds format (`10.62–15.04` via `formatSeconds`, not
+m:ss); ConfirmDialog's Escape/backdrop handlers are inert while `busy`, and
+Escape is handled once (a backdrop keydown would double-fire via bubbling —
+the jsdom test caught it).
 
 **Not in this unit:** any screen (7.8+), timelines/waveforms (7.9/7.10), and
 the §9 states (loading/empty/error, run lock, draft-vs-committed, director
