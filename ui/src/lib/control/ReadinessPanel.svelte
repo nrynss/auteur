@@ -5,22 +5,35 @@
    * element, and a run with stages is the one worth showing. */
   import ChecklistRow from "./ChecklistRow.svelte";
   import StageRow from "../components/StageRow.svelte";
+  import Spinner from "../components/Spinner.svelte";
   import type { ProjectDetail, RunOut } from "../api/projects";
 
   interface Props {
     project: ProjectDetail;
     runs: RunOut[];
+    /** Live mid-flight run from the poller (merged into runs by ControlRoom). */
+    liveRun?: RunOut | null;
+    locked?: boolean;
   }
 
-  let { project, runs }: Props = $props();
+  let { project, runs, liveRun = null, locked = false }: Props = $props();
 
-  // The most recent run that actually recorded stages; fall back to the most
-  // recent run overall (which may legitimately have none, e.g. an export).
+  // Prefer an explicitly tracked live run; else the most recent stage-bearing
+  // run; else the most recent run overall (export may have no stages).
   const latestRun = $derived(
-    [...runs].reverse().find((r) => (r.stages ?? []).length > 0) ??
+    liveRun ??
+      [...runs].reverse().find((r) => (r.stages ?? []).length > 0) ??
       runs[runs.length - 1] ??
       null,
   );
+
+  const runLabel = $derived.by(() => {
+    if (!latestRun) return null;
+    if (liveRun && liveRun.id === latestRun.id && locked) {
+      return `In flight · ${latestRun.kind}`;
+    }
+    return `Last run · ${latestRun.kind}`;
+  });
 </script>
 
 <div class="panel-body">
@@ -35,19 +48,29 @@
     </ul>
   {/if}
 
-  {#if latestRun && (latestRun.stages ?? []).length > 0}
-    <p class="eyebrow">Last run · {latestRun.kind}</p>
-    <ul class="stages">
-      {#each latestRun.stages ?? [] as stage}
-        <StageRow
-          name={stage.name}
-          status={stage.status}
-          elapsed_s={stage.elapsed_s}
-          retries={stage.retries}
-          provider={stage.provider}
-        />
-      {/each}
-    </ul>
+  {#if latestRun}
+    <p class="eyebrow stages-head">
+      {#if locked && liveRun && liveRun.id === latestRun.id}
+        <Spinner size={11} label="Run in flight" />
+      {/if}
+      <span>{runLabel}</span>
+      <span class="rid num">{latestRun.id}</span>
+    </p>
+    {#if (latestRun.stages ?? []).length > 0}
+      <ul class="stages">
+        {#each latestRun.stages ?? [] as stage}
+          <StageRow
+            name={stage.name}
+            status={stage.status}
+            elapsed_s={stage.elapsed_s}
+            retries={stage.retries}
+            provider={stage.provider}
+          />
+        {/each}
+      </ul>
+    {:else if locked && liveRun}
+      <p class="empty">Stages will appear as they complete.</p>
+    {/if}
   {/if}
 </div>
 
@@ -60,6 +83,24 @@
 
   .eyebrow {
     margin: 0 0 8px;
+  }
+
+  .stages-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+    flex-wrap: wrap;
+  }
+
+  .rid {
+    color: var(--faint);
+    font-size: var(--text-11);
+  }
+
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
   }
 
   .check {

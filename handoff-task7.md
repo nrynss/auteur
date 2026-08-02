@@ -650,7 +650,7 @@ billable.
 **Acceptance:** a director can nudge a rhythmic event repeatedly and hear only
 translation; committing produces exactly one new version.
 
-## 7.11 Spend paths and run locking — M
+## 7.11 Spend paths and run locking — M — **DONE**
 
 **Depends on:** 7.8.
 
@@ -664,6 +664,9 @@ they arrive (`stages` carries `name`, `status`, `elapsed_s`, `retries`,
 `provider` and is readable mid-flight), and an expired `RUN_LEASE_S` becomes a
 real stuck-run error — the API already reports these in `stale_run_ids`. There
 is no SSE; this polls.
+
+
+**Landed (7.11):** `ui/src/lib/spend/` — regenerate cost probe + confirm_cost_usd echo, Mix/Export ConfirmDialogs, export override, 2s poll + run lock banner, stuck-run on lease expiry. Wired into ControlRoom chrome + Timeline inspector. Contained: no timeline edit.
 
 ## 7.12 Director mode — L
 
@@ -680,13 +683,16 @@ it costs anything.
 Model is `gemini-3.5-flash-lite` (decision 9). Every turn is a provider call:
 it goes through the ledger and counts against quota like everything else.
 
-## 7.13 Project creation and upload — M
+## 7.13 Project creation and upload — M — **DONE**
 
 **Depends on:** 7.6, 7.7.
 
 Projects index (status, readiness, budget), then create: title, budget, file
 picker → `POST /projects` → presigned `PUT` with real upload progress →
 confirm → kick off analysis. No UI exists for any of this today.
+
+
+**Landed (7.13):** `ui/src/lib/projects/` — index, create form, presigned PUT with real XHR progress, confirm upload, poll ingest, kick analyze. Routes: `/`, `/projects/new`, `/projects/{id}`.
 
 ## 7.14 Polish — M
 

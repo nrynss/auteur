@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { formatCost, formatSeconds, formatTimecode } from "./format";
+import {
+  formatConfirmCost,
+  formatCost,
+  formatSeconds,
+  formatTimecode,
+} from "./format";
 
 describe("formatTimecode", () => {
   it("formats mm:ss.mmm with zero-padded minutes (mockup transport)", () => {
@@ -48,6 +53,16 @@ describe("formatCost", () => {
   it("renders absent costs as a dash", () => {
     expect(formatCost(null)).toBe("—");
     expect(formatCost(undefined)).toBe("—");
+  });
+});
+
+describe("formatConfirmCost", () => {
+  it("never rounds under the echoed confirm value", () => {
+    expect(formatConfirmCost(0.0375)).toBe("$0.0375");
+    expect(formatConfirmCost(0.034)).toBe("$0.034");
+    // Sub-cent must not display as $0.00
+    expect(formatConfirmCost(0.004)).toBe("$0.004");
+    expect(formatConfirmCost(0)).toBe("$0.00");
   });
 });
 

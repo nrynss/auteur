@@ -1,7 +1,8 @@
 <script lang="ts">
-  /** Control room, read-only (unit 7.8). Everything on screen is the API's
+  /** Control room (unit 7.8 + 7.11). Everything on screen is the API's
    * measured/recorded value — absent data renders absent, never invented.
-   * Editing is 7.10, the player is 7.9, director mode is 7.12. */
+   * Spend paths (regenerate / mix / export) and run locking land here; editing
+   * is 7.10, the player is 7.9, director mode is 7.12. */
   import { onMount } from "svelte";
 
   import BudgetChip from "./BudgetChip.svelte";
@@ -25,6 +26,7 @@
     getMixPeaks,
     getProject,
     getQa,
+    getRun,
     getRuns,
     getScenes,
     getTimeline,
@@ -35,11 +37,21 @@
     type PeaksResponse,
     type ProjectDetail,
     type QaReportResponse,
+    type RunAccepted,
     type RunOut,
     type SceneOut,
     type TimelineResponse,
     type TimelineVersionsResponse,
   } from "../api/projects";
+  import {
+    classifyRun,
+    mergeLiveRun,
+    POLL_INTERVAL_MS,
+    type LockState,
+  } from "../spend/lock";
+  import RegenerateAction from "../spend/RegenerateAction.svelte";
+  import RunLockBanner from "../spend/RunLockBanner.svelte";
+  import SpendActions from "../spend/SpendActions.svelte";
 
   interface Props {
     id: string;
@@ -67,27 +79,31 @@
   // panel render an empty state that looks like the data does not exist.
   let ancillaryFailed = $state(false);
 
-  // An ancillary endpoint that has not produced yet is a 404 → empty state,
-  // never an error. Only the project record failing is fatal.
-  //
-  // `quiet` lives in quiet.ts and NOT here: written inline as a generic arrow,
-  // Svelte's TypeScript strip drops its parameter list and every call throws
-  // at runtime while svelte-check stays green. Keep this file free of generic
-  // arrow functions — a local `const guard = <T,>(p) => …` wrapper would
-  // reintroduce exactly the same bug.
+  // -- 7.11: spend / lock -------------------------------------------------
+  let selectedEventIndex = $state<number | null>(null);
+  let liveRun = $state<RunOut | null>(null);
+  let trackedRunId = $state<string | null>(null);
+  let lock = $state<LockState>({ kind: "idle" });
+  let statusLine = $state<string | null>(null);
+  let actionError = $state<string | null>(null);
+
+  const locked = $derived(lock.kind === "locked");
+  const displayRuns = $derived(mergeLiveRun(runs, liveRun));
+
+  // `quiet` lives in quiet.ts, NOT here: written inline as a generic arrow,
+  // Svelte's TS strip drops its parameter list and every fetch throws at
+  // runtime while svelte-check stays green. See that file.
+  // NOTE: no generic arrow functions in this file — see quiet.ts.
   function onAncillaryFailure(e: unknown) {
     ancillaryFailed = true;
     console.error("control room: ancillary fetch failed", e);
   }
 
-  onMount(async () => {
-    try {
-      project = await getProject(id);
-    } catch (e) {
-      status = "error";
-      error = e instanceof ApiError ? e.message : String(e);
-      return;
-    }
+  async function loadCore() {
+    // Fresh load: reset sticky failure flag so a recovered poll does not
+    // leave empty rows labelled as permanent failure.
+    ancillaryFailed = false;
+    project = await getProject(id);
     const [sc, tl, vs, ev, rs, qaR, dos, bud] = await Promise.all([
       quiet(getScenes(id), onAncillaryFailure),
       quiet(getTimeline(id), onAncillaryFailure),
@@ -107,9 +123,171 @@
     dossier = dos;
     budget = bud;
     if (project.mix_run_id) {
-      mixPeaks = await quiet(getMixPeaks(id, project.mix_run_id), onAncillaryFailure);
+      mixPeaks = await quiet(
+        getMixPeaks(id, project.mix_run_id),
+        onAncillaryFailure,
+      );
+    } else {
+      mixPeaks = null;
     }
-    status = "ready";
+  }
+
+  /** Light poll: project + tracked/latest run. Stages land on get_run.
+   * A failed getRun must NOT unlock — null from quiet was the old trap. */
+  async function pollTick() {
+    if (!project) return;
+    try {
+      const next = await getProject(id);
+      project = next;
+      const runId = trackedRunId ?? next.latest_run_id ?? null;
+      if (!runId) {
+        // Only clear lock when we were not tracking something ourselves.
+        if (trackedRunId == null && lock.kind !== "stale") {
+          liveRun = null;
+          lock = { kind: "idle" };
+        }
+        return;
+      }
+
+      // Direct getRun — do not use quiet() here. quiet nulls failures and
+      // classifyRun(null) is idle, which would unlock mid-flight spend.
+      let run: RunOut;
+      try {
+        run = await getRun(id, runId);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) {
+          // Run id gone — treat as terminal only if we were tracking it.
+          if (trackedRunId === runId || lock.kind === "locked") {
+            trackedRunId = null;
+            liveRun = null;
+            lock = { kind: "idle" };
+            await refreshAfterRun();
+          }
+          return;
+        }
+        // Network / 5xx: keep last lock, keep tracking, try again next tick.
+        console.error("control room: getRun poll failed — holding lock", e);
+        return;
+      }
+
+      liveRun = run;
+      const nextLock = classifyRun(run);
+      lock = nextLock;
+      if (nextLock.kind === "stale") {
+        // Lease expired — stop tracking so we do not poll forever; banner stays.
+        trackedRunId = null;
+        return;
+      }
+      if (nextLock.kind === "idle") {
+        // Terminal (completed / failed) — full refresh so timeline/qa catch up.
+        if (trackedRunId === runId || trackedRunId != null) {
+          trackedRunId = null;
+          await refreshAfterRun();
+        }
+      } else if (nextLock.kind === "locked" && trackedRunId == null) {
+        // External live run discovered via latest_run_id — start tracking.
+        trackedRunId = runId;
+      }
+    } catch (e) {
+      // getProject failed — do not unlock.
+      console.error("control room: poll failed", e);
+    }
+  }
+
+  async function refreshAfterRun() {
+    try {
+      await loadCore();
+      // Keep statusLine if it still names a projection; clear only blanks.
+      // (Mix projection is set via onRunAccepted's optional line.)
+    } catch (e) {
+      console.error("control room: post-run refresh failed", e);
+    }
+  }
+
+  function onRunAccepted(accepted: RunAccepted, line?: string) {
+    trackedRunId = accepted.run_id;
+    actionError = null;
+    statusLine =
+      line ?? `${accepted.kind} run ${accepted.run_id} accepted`;
+    // Immediate lock so buttons disable before the first poll lands.
+    // Placeholder liveRun is locked by construction — do not lease-classify
+    // until the first successful getRun supplies server created_at.
+    lock = {
+      kind: "locked",
+      runId: accepted.run_id,
+      runKind: accepted.kind,
+      stages: [],
+      currentStage: null,
+    };
+    liveRun = {
+      id: accepted.run_id,
+      project_id: id,
+      kind: accepted.kind,
+      status: accepted.status ?? "running",
+      // Placeholder only; pollTick replaces with server created_at.
+      created_at: accepted.status === "running" ? "" : new Date().toISOString(),
+      stages: [],
+      current_stage: null,
+      metadata: {},
+    };
+    tab = "readiness";
+  }
+
+  function onActionError(message: string) {
+    actionError = message;
+  }
+
+  onMount(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    (async () => {
+      try {
+        await loadCore();
+        if (cancelled) return;
+        // Seed lock from latest run if one is still live or stale.
+        if (project?.latest_run_id) {
+          trackedRunId = project.latest_run_id;
+          try {
+            const run = await getRun(id, project.latest_run_id);
+            if (cancelled) return;
+            liveRun = run;
+            lock = classifyRun(run);
+            if (lock.kind === "idle") trackedRunId = null;
+          } catch (e) {
+            // Failed seed must not leave us "unlocked and done" while a run
+            // may still be live — keep tracked id and try on the first poll.
+            console.error("control room: seed getRun failed", e);
+            lock = {
+              kind: "locked",
+              runId: project.latest_run_id,
+              runKind: "unknown",
+              stages: [],
+              currentStage: null,
+            };
+          }
+        }
+        status = "ready";
+      } catch (e) {
+        if (cancelled) return;
+        status = "error";
+        error = e instanceof ApiError ? e.message : String(e);
+        return;
+      }
+
+      // Always light-poll: external mix/repair leaves status needs_review
+      // (not analyzing), so a predicate on analyzing alone would miss it.
+      // getProject + optional getRun is cheap; holding lock on failure is
+      // the correctness-critical path (see pollTick).
+      timer = setInterval(() => {
+        void pollTick();
+      }, POLL_INTERVAL_MS);
+    })();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
   });
 
   const tabs: { key: Tab; label: string }[] = [
@@ -144,8 +322,34 @@
       <span class="sep" aria-hidden="true"></span>
       <BudgetChip {budget} />
       <span class="sep" aria-hidden="true"></span>
+      <SpendActions
+        projectId={id}
+        locked={locked}
+        timelineVersion={project.timeline_version ?? null}
+        mixRunId={project.mix_run_id ?? null}
+        onaccepted={onRunAccepted}
+        onerror={onActionError}
+      />
+      <span class="sep" aria-hidden="true"></span>
       <ThemeToggle />
     </header>
+
+    <RunLockBanner {lock} />
+
+    {#if actionError}
+      <div class="banner err" role="alert">
+        <span class="word">Action failed</span>
+        <span class="detail">{actionError}</span>
+        <button class="dismiss" type="button" onclick={() => (actionError = null)}>
+          Dismiss
+        </button>
+      </div>
+    {/if}
+    {#if statusLine && lock.kind !== "stale"}
+      <div class="banner info" role="status">
+        <span class="detail">{statusLine}</span>
+      </div>
+    {/if}
 
     <div class="stage">
       <section class="viewer">
@@ -185,13 +389,18 @@
         </div>
 
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-readiness" id="tab-readiness" hidden={tab !== "readiness"}>
-          <ReadinessPanel {project} {runs} />
+          <ReadinessPanel
+            {project}
+            runs={displayRuns}
+            liveRun={liveRun}
+            locked={locked}
+          />
         </div>
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-evidence" id="tab-evidence" hidden={tab !== "evidence"}>
           <EvidencePanel {qa} {scenes} />
         </div>
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-history" id="tab-history" hidden={tab !== "history"}>
-          <HistoryPanel {versions} {runs} {events} {mixPeaks} mixRunId={project.mix_run_id ?? null} />
+          <HistoryPanel {versions} runs={displayRuns} {events} {mixPeaks} mixRunId={project.mix_run_id ?? null} />
         </div>
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-dossier" id="tab-dossier" hidden={tab !== "dossier"}>
           <DossierPanel {dossier} />
@@ -199,7 +408,24 @@
       </aside>
     </div>
 
-    <Timeline {timeline} failed={ancillaryFailed} />
+    <Timeline
+      {timeline}
+      failed={ancillaryFailed}
+      locked={locked}
+      selectedIndex={selectedEventIndex}
+      onselect={(i) => (selectedEventIndex = i)}
+    >
+      {#snippet inspectorActions(ev)}
+        <RegenerateAction
+          projectId={id}
+          eventIndex={ev.index}
+          eventName={ev.name}
+          locked={locked}
+          onaccepted={onRunAccepted}
+          onerror={onActionError}
+        />
+      {/snippet}
+    </Timeline>
   </div>
 {/if}
 
@@ -257,6 +483,53 @@
     width: 1px;
     height: 20px;
     background: var(--line);
+  }
+
+  .banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 14px;
+    font-size: var(--text-12);
+    border-bottom: 1px solid var(--line-soft);
+    flex: 0 0 auto;
+  }
+
+  .banner.err {
+    background: color-mix(in srgb, var(--stop) 10%, var(--surface));
+  }
+
+  .banner.info {
+    background: var(--raised);
+    color: var(--dim);
+  }
+
+  .banner .word {
+    font-weight: var(--w-590);
+    color: var(--stop);
+    flex: 0 0 auto;
+  }
+
+  .banner .detail {
+    min-width: 0;
+    line-height: 1.4;
+    color: var(--dim);
+  }
+
+  .banner .dismiss {
+    margin-left: auto;
+    border: 0;
+    background: transparent;
+    color: var(--faint);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--text-11);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .banner .dismiss:hover {
+    color: var(--text);
   }
 
   .stage {

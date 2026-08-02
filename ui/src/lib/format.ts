@@ -28,7 +28,7 @@ export function formatTimecode(
   return neg + out + (ms ? "." + String(milli).padStart(3, "0") : "");
 }
 
-/** "$0.30", "$1,234.56". Null → "—". */
+/** "$0.30", "$1,234.56". Null → "—". Two decimals for budgets and totals. */
 export function formatCost(
   usd: number | null | undefined,
 ): string {
@@ -40,6 +40,23 @@ export function formatCost(
       maximumFractionDigits: 2,
     })
   );
+}
+
+/** Cost shown in a spend ConfirmDialog — never rounds under the echoed value.
+ * Up to 6 fraction digits so 0.0375 stays "$0.0375", not "$0.04", and a
+ * sub-cent billable amount never reads as "$0.00". */
+export function formatConfirmCost(usd: number | null | undefined): string {
+  if (usd == null || !Number.isFinite(usd)) return "—";
+  if (usd === 0) return "$0.00";
+  // Prefer the shortest string that still equals the number when re-parsed,
+  // but never fewer than 2 decimals for whole-cent amounts.
+  const fixed = usd.toFixed(6).replace(/\.?0+$/, "");
+  const withMin = fixed.includes(".") ? fixed : `${fixed}.00`;
+  const parts = withMin.split(".");
+  if (parts[1].length < 2) parts[1] = parts[1].padEnd(2, "0");
+  const [whole, frac] = parts;
+  const wholeFmt = Number(whole).toLocaleString("en-US");
+  return `$${wholeFmt}.${frac}`;
 }
 
 /** Raw seconds at two decimals, zero-padded to five chars — the scene-rail
