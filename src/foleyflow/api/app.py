@@ -50,6 +50,7 @@ from foleyflow.api.uploads import create_upload_target, source_key
 from foleyflow.ids import is_valid
 from foleyflow.projects import ProjectStore
 from foleyflow.qa import build_report
+from foleyflow.stages import StageRecord
 from foleyflow.storage import get_backend
 from foleyflow.storage.base import ObjectNotFound, StorageError
 
@@ -447,7 +448,8 @@ def create_app(store: Optional[ProjectStore] = None,
              response_model=RunListResponse, tags=["runs"])
     def list_runs(project_id: str) -> RunListResponse:
         _check_project_id(project_id)
-        return RunListResponse(runs=[RunOut(**r.to_dict()) for r in
+        stages_by_run = _stages_by_run(store, project_id)
+        return RunListResponse(runs=[_run_out(r, stages_by_run) for r in
                                      store.list_runs(project_id)])
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/runs/{{run_id}}",
@@ -464,23 +466,29 @@ def create_app(store: Optional[ProjectStore] = None,
         """
         from foleyflow.projects import (EVENT_RUN_COMPLETED, EVENT_RUN_FAILED,
                                         EVENT_RUN_FAILED_AFTER_COMPLETION,
-                                        EVENT_RUN_STARTED)
+                                        EVENT_RUN_STARTED, EVENT_STAGE_RECORDED)
 
         _check_project_id(project_id)
         try:
-            return RunOut(**store.get_run(project_id, run_id).to_dict())
+            record = store.get_run(project_id, run_id)
         except StorageError:
-            pass
+            record = None
 
         seen = None
         status = "running"
         error = error_code = None
+        stages: List[dict] = []
+        genblaze_run_id = None
         for event in store.list_events(project_id):
             if event.run_id != run_id:
                 continue
             if seen is None or event.type == EVENT_RUN_STARTED:
                 seen = event
-            if event.type == EVENT_RUN_COMPLETED:
+            if event.type == EVENT_STAGE_RECORDED:
+                stages.append(event.payload)
+                genblaze_run_id = (event.payload.get("genblaze_run_id")
+                                   or genblaze_run_id)
+            elif event.type == EVENT_RUN_COMPLETED:
                 status = "completed"
             elif event.type in (EVENT_RUN_FAILED,
                                 EVENT_RUN_FAILED_AFTER_COMPLETION):
@@ -488,12 +496,21 @@ def create_app(store: Optional[ProjectStore] = None,
                 error = event.payload.get("error") or "run failed"
                 error_code = event.payload.get("error_code") or "run_failed"
 
+        # A finished run's own record wins — it is immutable and complete. The
+        # event log is consulted regardless, because a run still in flight has
+        # no record at all and its stage events are the only progress there is.
+        if record is not None:
+            return _run_out(record, {run_id: stages})
+
         if seen is None:
             raise err.RunNotFound(run_id)
         return RunOut(id=run_id, project_id=project_id,
                       kind=seen.payload.get("kind", "unknown"),
                       status=status, created_at=seen.created_at,
-                      error=error, error_code=error_code)
+                      error=error, error_code=error_code,
+                      genblaze_run_id=genblaze_run_id,
+                      stages=stages,
+                      current_stage=stages[-1]["name"] if stages else None)
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/events",
              response_model=EventListResponse, tags=["runs"])
@@ -519,6 +536,41 @@ def create_app(store: Optional[ProjectStore] = None,
 
 
 # -- helpers ----------------------------------------------------------------
+
+def _stages_by_run(store: ProjectStore, project_id: str) -> dict:
+    """Stage records from the event log, grouped by run id.
+
+    Read once for a whole listing rather than per run: the log is a single
+    object, and re-reading it for each of twenty runs would turn one storage
+    round trip into twenty.
+    """
+    from foleyflow.projects import EVENT_STAGE_RECORDED
+
+    out: dict = {}
+    try:
+        events = store.list_events(project_id)
+    except StorageError:
+        return out
+    for event in events:
+        if event.type == EVENT_STAGE_RECORDED and event.run_id:
+            out.setdefault(event.run_id, []).append(event.payload)
+    return out
+
+
+def _run_out(record, stages_by_run: dict) -> RunOut:
+    """A stored `Run` as the API's shape, with its §8.2 job history attached.
+
+    The run's own `metadata["stages"]` is authoritative — it is the summary the
+    work function froze onto an immutable record. The event log is the fallback
+    for runs written before stages were recorded, and for anything a work
+    function did not summarise.
+    """
+    payload = record.to_dict()
+    stages = payload.get("metadata", {}).get("stages") or \
+        stages_by_run.get(record.id) or []
+    return RunOut(**payload, stages=stages,
+                  current_stage=stages[-1]["name"] if stages else None)
+
 
 def _status_of(store: ProjectStore, project_id: str) -> str:
     """Status for a list row. An unreadable individual project is reported as
@@ -693,21 +745,67 @@ def _fetch_source(store: ProjectStore, project_id: str) -> str:
     return stage_for_ingest(local, subdir=project_id)
 
 
+def _ingest_sink(store: ProjectStore):
+    """Genblaze's artifact sink, but only when B2 is where this app stores things.
+
+    An instance running on LocalBackend (every test, and local development) gets
+    `None`, which Genblaze supports: the run and the hash-verified manifest are
+    still produced, the upload is skipped. Deriving it from the store rather
+    than from an env var means the ingest publishes to exactly the bucket the
+    rest of the project lives in, or to nothing — never to a third place.
+    """
+    from foleyflow.storage.b2 import B2Backend
+
+    if not isinstance(store.backend, B2Backend):
+        return None
+    from foleyflow.workflow import get_sink
+
+    return get_sink()
+
+
 def _ingest_work(store: ProjectStore, project_id: str):
-    """Verify and record the uploaded source: hash, size, true duration."""
+    """Verify and record the uploaded source: hash, size, true duration.
+
+    Runs the source through Genblaze's ingest stage (SPEC §7, §8.2) rather than
+    beside it, so the project's first stage produces the same artefact every
+    later stage does: a canonical-hashed provenance manifest a judge can check
+    with `genblaze verify`. The Genblaze run id lands on the FoleyFlow `Run`,
+    which is what makes §8.2's "show the workflow run ID" answerable.
+
+    The ffprobe/sha256 facts are recorded either way. A manifest is provenance;
+    the duration is what every later stage's arithmetic depends on, so losing
+    the former must not lose the latter.
+    """
     def work(run):
         from foleyflow.analyze import get_video_duration
         from foleyflow.timeline_cache import file_sha256
+        from foleyflow.workflow import ingest_source_video
 
+        project = store.get_project(project_id)
         staged = _fetch_source(store, project_id)
         # ffprobe, not the model's self-reported duration. Every other module is
         # emphatic that ffprobe is the sole duration authority; this is where
         # that value enters the system.
         duration = get_video_duration(staged)
-        store.record_input(project_id, sha256=file_sha256(staged),
-                           duration_s=duration,
+        sha256 = file_sha256(staged)
+        store.record_input(project_id, sha256=sha256, duration_s=duration,
                            size_bytes=os.path.getsize(staged), actor="user")
-        store.complete_run(run, metadata={"duration_s": duration})
+
+        result = ingest_source_video(staged, project_id=project_id,
+                                     title=project.title,
+                                     sink=_ingest_sink(store))
+        stage = StageRecord(
+            name="ingest", status="succeeded", provider="genblaze",
+            genblaze_run_id=result.run.run_id,
+            detail=f"manifest {result.manifest.canonical_hash[:12]}")
+        store.record_stage(project_id, run_id=run.id, stage=stage)
+
+        store.complete_run(
+            run, genblaze_run_id=result.run.run_id,
+            metadata={"duration_s": duration,
+                      "source_sha256": sha256,
+                      "canonical_hash": result.manifest.canonical_hash,
+                      "stages": [stage.to_dict()]})
     return work
 
 
@@ -757,12 +855,17 @@ def _mix_work(store: ProjectStore, project_id: str, tier: str,
                             tier=tier, timeline_version=timeline_version)
         store.complete_run(
             run, timeline_version=result.timeline_version,
+            genblaze_run_id=result.genblaze_run_id,
             metadata={"tier": result.tier, "mix_key": result.mix_key,
                       "video_key": result.video_key,
                       "stem_count": len(result.stems),
                       "generated_count": result.generated_count,
                       "ledger_delta_usd": round(result.ledger_delta, 4),
-                      "qa_status": (result.qa or {}).get("overall_status")})
+                      "qa_status": (result.qa or {}).get("overall_status"),
+                      # The §8.2 job history, frozen onto the run record. The
+                      # per-stage events are also in the log, but the log is
+                      # append-only and unbounded; this is the run's own summary.
+                      "stages": result.stages})
     return work
 
 

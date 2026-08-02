@@ -3,11 +3,26 @@
 Data-driven via providers.toml [routing] section so routes are editable
 without code. Zero API calls here — this module never imports fal_client;
 it only decides *where* and *what* to ask for. T2 (sfx.py) does the asking.
+
+## Categories and tiers are different questions
+
+A routing *category* answers "what kind of sound is this" — it names the
+request in provenance and the UI, and it is the seam a per-event hero override
+selects on. A *tier* answers "which endpoint serves it" (§9.1). Keeping them
+separate is why every category can share one endpoint today without losing the
+distinction, and why flipping to the paid tier is one config key rather than an
+edit to every category.
+
+`route_event` therefore resolves the category first and then hands the
+category's endpoint to `tiers.resolve_endpoint` as a default. With no
+`[sfx_tiers]` table the default wins and routing behaves exactly as it did
+before tiers existed.
 """
 
 import os
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import List
 
 from foleyflow.keywords import has_word
 from foleyflow.models import Event
@@ -33,6 +48,11 @@ class SfxRequest:
     prompt: str
     duration_s: float
     category: str  # for logging/demo output
+    # Which §9.1 tier chose `endpoint`, when a tier table is configured.
+    # Reporting only — it is deliberately NOT part of the cache key, because
+    # `endpoint` already is and two tiers naming the same endpoint would
+    # otherwise generate the same audio twice under different addresses.
+    tier: str = ""
 
 
 def _load_routes() -> dict:
@@ -88,8 +108,23 @@ def _clamp_duration(endpoint: str, duration_s: float) -> float:
     return duration_s
 
 
+def _tiered(endpoint: str) -> tuple:
+    """(endpoint, tier_name) after applying the active §9.1 tier.
+
+    Clamping happens *after* this, against whichever endpoint won: the tiers
+    have different duration bounds (MOSS 0.3–30s, fal-ElevenLabs 0.5–22s) and
+    clamping to the category's bounds would produce a request the selected
+    endpoint rejects.
+    """
+    from foleyflow import tiers
+
+    resolved = tiers.resolve_endpoint(endpoint)
+    return resolved, (tiers.tier_for_endpoint(resolved) or "")
+
+
 def route_event(event: Event) -> SfxRequest:
     category, endpoint = _categorize(event.name)
+    endpoint, tier = _tiered(endpoint)
     prompt = _apply_intensity(event.name, event.intensity)
 
     if event.kind == "rhythmic":
@@ -99,7 +134,8 @@ def route_event(event: Event) -> SfxRequest:
         duration_s = event.duration + HEADROOM_S
 
     duration_s = _clamp_duration(endpoint, duration_s)
-    return SfxRequest(endpoint=endpoint, prompt=prompt, duration_s=duration_s, category=category)
+    return SfxRequest(endpoint=endpoint, prompt=prompt, duration_s=duration_s,
+                      category=category, tier=tier)
 
 
 def route_ambience(ambience: str, clip_duration: float) -> SfxRequest:
@@ -112,6 +148,36 @@ def route_ambience(ambience: str, clip_duration: float) -> SfxRequest:
         raise ValueError(
             "providers.toml: routing categories must include an 'ambience' category"
         )
-    endpoint = ambience_cat["endpoint"]
+    endpoint, tier = _tiered(ambience_cat["endpoint"])
     duration_s = _clamp_duration(endpoint, clip_duration + HEADROOM_S)
-    return SfxRequest(endpoint=endpoint, prompt=ambience, duration_s=duration_s, category="ambience")
+    return SfxRequest(endpoint=endpoint, prompt=ambience, duration_s=duration_s,
+                      category="ambience", tier=tier)
+
+
+def escalate(request: SfxRequest) -> List[SfxRequest]:
+    """The same request re-aimed at each fallback tier, in escalation order.
+
+    Returns `[]` when the request's tier has no fallback (or no tier table is
+    configured), which is the offline default — see providers.toml's note on
+    why the free local tier deliberately does not escalate to a paid API.
+
+    Each variant is re-clamped against its own endpoint's bounds, so a 25s
+    ambience bed generated locally becomes a 22s request when it escalates to
+    fal-ElevenLabs rather than being rejected. That changes the cache key, which
+    is correct: it is a different clip from a different model.
+    """
+    from foleyflow import tiers
+
+    if not request.tier:
+        return []
+    chain = tiers.tier_chain(request.tier)[1:]
+    out: List[SfxRequest] = []
+    for tier in chain:
+        out.append(SfxRequest(
+            endpoint=tier.endpoint,
+            prompt=request.prompt,
+            duration_s=_clamp_duration(tier.endpoint, request.duration_s),
+            category=request.category,
+            tier=tier.name,
+        ))
+    return out

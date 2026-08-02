@@ -21,6 +21,23 @@ def _req(prompt="rain on cobblestone", duration=8.0,
                       duration_s=duration, category="ambience")
 
 
+def _write_real_wav(path, seconds=0.25):
+    """Actual audio, for the prewarm tests.
+
+    Unlike `fake_generate`, prewarm canonicalizes what the provider handed back
+    — real ffmpeg on a real file — so a placeholder byte string would fail at
+    the conversion rather than at the assertion under test.
+    """
+    import numpy as np
+    import soundfile as sf
+
+    n = int(48000 * seconds)
+    tone = 0.1 * np.sin(2 * np.pi * 220 * np.arange(n) / 48000)
+    sf.write(path, np.column_stack([tone, tone]).astype(np.float32), 48000,
+             format="WAV", subtype="FLOAT")
+    return path
+
+
 @pytest.fixture
 def fake_generate(monkeypatch):
     """Replace the billed generation path with a local WAV writer."""
@@ -176,3 +193,78 @@ def test_observer_errors_never_break_a_render(tmp_path, fake_generate):
 
     fn = sfx_cache.backed_sfx_fn(backend, str(tmp_path / "work"), on_event=boom)
     assert os.path.exists(fn(_req()))
+
+
+# -- prewarm: the Genblaze fan-out in front of the cache ---------------------
+
+def test_prewarm_stores_each_stem_at_its_existing_address(tmp_path, monkeypatch):
+    """Warming the cache is a scheduling change, not an addressing one.
+
+    If prewarm stored anywhere but the address `backed_sfx_fn` looks in, every
+    render would warm the cache and then miss it — and the ~170 stems already
+    in B2 would be unreachable.
+    """
+    from foleyflow import stems
+
+    backend = LocalBackend(str(tmp_path / "store"))
+    work = str(tmp_path / "work")
+    raw = tmp_path / "raw.wav"
+    _write_real_wav(str(raw))
+
+    def _generate_many(requests, **kwargs):
+        return [stems.StemResult(request=r, served=r, local_path=str(raw))
+                for r in requests]
+
+    monkeypatch.setattr(stems, "generate_many", _generate_many)
+
+    request = _req()
+    results = sfx_cache.prewarm(backend, work, [request])
+    assert len(results) == 1
+
+    expected = sfx_cache.cache_object_key(
+        request.endpoint, request.prompt, request.duration_s)
+    assert backend.exists(expected)
+
+    # And the pull path finds it without generating anything.
+    def _explode(*_a, **_k):
+        raise AssertionError("prewarmed stem was not found in the cache")
+
+    monkeypatch.setattr(sfx_cache, "generate_canonical_wav", _explode)
+    assert os.path.exists(sfx_cache.backed_sfx_fn(backend, work)(request))
+
+
+def test_prewarm_skips_requests_the_cache_already_holds(tmp_path, monkeypatch,
+                                                        fake_generate):
+    from foleyflow import stems
+
+    backend = LocalBackend(str(tmp_path / "store"))
+    work = str(tmp_path / "work")
+    request = _req()
+    sfx_cache.backed_sfx_fn(backend, work)(request)      # populate
+
+    asked = []
+    monkeypatch.setattr(stems, "generate_many",
+                        lambda requests, **kw: asked.extend(requests) or [])
+
+    assert sfx_cache.prewarm(backend, str(tmp_path / "fresh"), [request]) == []
+    assert asked == []
+
+
+def test_a_stem_prewarm_could_not_produce_is_left_for_the_pull_path(
+        tmp_path, monkeypatch, fake_generate):
+    """Failure semantics stay where they were: a render fails at the mix, not
+    in a warm-up step."""
+    from foleyflow import stems
+
+    backend = LocalBackend(str(tmp_path / "store"))
+    work = str(tmp_path / "work")
+    request = _req()
+
+    monkeypatch.setattr(stems, "generate_many", lambda requests, **kw: [
+        stems.StemResult(request=r, error="provider down") for r in requests])
+
+    results = sfx_cache.prewarm(backend, work, [request])
+    assert [r.ok for r in results] == [False]
+    # `fake_generate` still stands in for the billed call, so the pull path
+    # succeeds — the point is that it was reached at all.
+    assert os.path.exists(sfx_cache.backed_sfx_fn(backend, work)(request))

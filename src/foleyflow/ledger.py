@@ -6,7 +6,14 @@ from typing import Any, Dict, Optional
 
 from foleyflow.providers.config import get_defaults, get_model_spec
 
-LEDGER_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "ledger.jsonl"))
+# Repo root by default, which is right for local runs and wrong on Cloud Run:
+# the container filesystem is read-only outside /tmp, so the append silently
+# fails and `quota.ledger_writable()` goes False — at which point every quota
+# figure reads zero no matter how much budget was actually spent, and nothing
+# stops the app walking past the 20-analyses/day free tier into a 429.
+# `FOLEYFLOW_LEDGER_PATH` points it somewhere writable there.
+LEDGER_PATH = os.environ.get("FOLEYFLOW_LEDGER_PATH") or os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "ledger.jsonl"))
 
 
 def get_params_hash(arguments: Dict[str, Any]) -> str:

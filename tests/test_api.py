@@ -588,3 +588,103 @@ def test_openapi_is_served(client):
     spec = client.get(f"{API_PREFIX}/openapi.json").json()
     assert spec["info"]["title"] == "FoleyFlow"
     assert f"{API_PREFIX}/projects" in spec["paths"]
+
+
+# -- ingest: Genblaze in the live path ---------------------------------------
+
+def _uploadable_project(store, tmp_path):
+    """A project whose source object really exists, so /uploaded can run.
+
+    A tiny non-video file is enough: ffprobe is stubbed by the caller, and what
+    is under test is that the ingest job reaches Genblaze at all.
+    """
+    project = store.create_project(title="Standoff", input_key="in/source.mp4",
+                                   source_sha256="", source_filename="standoff.mp4")
+    src = tmp_path / "source.mp4"
+    src.write_bytes(b"\0" * 512)
+    store.backend.put(project.input_key, str(src), content_type="video/mp4")
+    return project
+
+
+@pytest.fixture
+def stub_ffprobe(monkeypatch):
+    """ffprobe stays the sole duration authority — this just supplies its answer."""
+    import foleyflow.analyze as analyze_mod
+
+    monkeypatch.setattr(analyze_mod, "get_video_duration", lambda path: 15.04)
+
+
+def test_uploaded_is_refused_when_no_object_was_uploaded(client, project):
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/uploaded")
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "precondition_failed"
+
+
+def test_ingest_runs_through_genblaze_and_records_its_run_id(
+        client, store, tmp_path, stub_ffprobe):
+    """SPEC §8.2 and §11.3: `genblaze_run_id` was modelled but never populated.
+
+    The sink is None here (the store is LocalBackend, not B2), which Genblaze
+    supports: the run and the canonical-hashed manifest are still produced, only
+    the artifact upload is skipped. That is exactly the offline posture, and it
+    is why this test needs no credentials.
+    """
+    project = _uploadable_project(store, tmp_path)
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/uploaded")
+    assert r.status_code == 202
+    body = _await_run(client, project.id, r.json()["run_id"])
+
+    assert body["status"] == "completed"
+    assert body["genblaze_run_id"], "the Genblaze run id must reach the Run record"
+    assert body["metadata"]["canonical_hash"], "a judge verifies this with `genblaze verify`"
+    assert body["metadata"]["duration_s"] == 15.04
+
+
+def test_ingest_reports_its_stage_in_the_job_history(client, store, tmp_path,
+                                                     stub_ffprobe):
+    """SPEC §8.2: run id, current stage, and stage-level outcome."""
+    project = _uploadable_project(store, tmp_path)
+    started = client.post(f"{API_PREFIX}/projects/{project.id}/uploaded").json()
+    body = _await_run(client, project.id, started["run_id"])
+
+    assert body["current_stage"] == "ingest"
+    stage = body["stages"][0]
+    assert stage["name"] == "ingest"
+    assert stage["status"] == "succeeded"
+    assert stage["provider"] == "genblaze"
+    assert stage["genblaze_run_id"] == body["genblaze_run_id"]
+
+
+def test_the_stage_history_is_also_on_the_run_listing(client, store, tmp_path,
+                                                      stub_ffprobe):
+    project = _uploadable_project(store, tmp_path)
+    started = client.post(f"{API_PREFIX}/projects/{project.id}/uploaded").json()
+    _await_run(client, project.id, started["run_id"])
+
+    runs = client.get(f"{API_PREFIX}/projects/{project.id}/runs").json()["runs"]
+    ingest = next(r for r in runs if r["id"] == started["run_id"])
+    assert [s["name"] for s in ingest["stages"]] == ["ingest"]
+    assert ingest["current_stage"] == "ingest"
+
+
+def test_ingest_still_records_the_source_facts(client, store, tmp_path,
+                                               stub_ffprobe):
+    """A manifest is provenance; the duration is what every later stage's
+    arithmetic depends on. Losing the former must not lose the latter."""
+    project = _uploadable_project(store, tmp_path)
+    started = client.post(f"{API_PREFIX}/projects/{project.id}/uploaded").json()
+    _await_run(client, project.id, started["run_id"])
+
+    body = client.get(f"{API_PREFIX}/projects/{project.id}").json()
+    assert body["source_sha256"], "ffprobe/sha256 must survive the Genblaze stage"
+    readiness = {i["key"]: i for i in body["readiness"]}
+    assert readiness["source"]["state"] == "ok"
+    assert store.get_state(project.id).duration_s == 15.04
+
+
+def test_a_local_store_gets_no_b2_sink(store):
+    """Never reach for credentials an offline deployment was not given."""
+    from foleyflow.api.app import _ingest_sink
+
+    assert _ingest_sink(store) is None

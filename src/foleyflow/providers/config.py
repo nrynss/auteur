@@ -92,6 +92,38 @@ def _validate(raw: dict, path: str) -> None:
             "(route_ambience depends on it)"
         )
 
+    # --- sfx tiers ---
+    # Validated here rather than at selection time: a tier pointing at an
+    # undeclared model resolves to an endpoint with no adapter, and the first
+    # symptom would be a failed generation mid-render — after the run has been
+    # accepted and the user has been shown a cost estimate.
+    tiers = raw.get("sfx_tiers", {})
+    tier_names = {k for k, v in tiers.items() if isinstance(v, dict)}
+    for name in sorted(tier_names):
+        body = tiers[name]
+        endpoint = body.get("endpoint")
+        if not endpoint:
+            raise ConfigError(
+                f"providers.toml: sfx tier {name!r} is missing required field 'endpoint'"
+            )
+        if endpoint not in models:
+            raise ConfigError(
+                f"providers.toml: sfx tier {name!r} references undeclared model "
+                f"{endpoint!r}"
+            )
+        fallback = body.get("fallback")
+        if fallback is not None and fallback not in tier_names:
+            raise ConfigError(
+                f"providers.toml: sfx tier {name!r} falls back to undeclared tier "
+                f"{fallback!r}"
+            )
+    active = tiers.get("active")
+    if active is not None and active not in tier_names:
+        raise ConfigError(
+            f"providers.toml: [sfx_tiers] active={active!r} is not a declared tier "
+            f"(known: {sorted(tier_names)})"
+        )
+
 
 def get_model_spec(model_id: str, *, _config: Optional[dict] = None) -> ModelSpec:
     """Look up a model by its canonical ID. Raises ``KeyError`` if unknown."""
@@ -140,6 +172,16 @@ def get_routing_config(*, _config: Optional[dict] = None) -> dict:
         "categories": routing.get("categories", []),
         "default": routing.get("default", {}),
     }
+
+
+def get_tier_config(*, _config: Optional[dict] = None) -> dict:
+    """Return the raw ``[sfx_tiers]`` section. ``{}`` when none is declared.
+
+    Consumed by :mod:`foleyflow.tiers`, which is the only module that should
+    interpret its shape.
+    """
+    config = _config or load_config()
+    return config.get("sfx_tiers", {})
 
 
 def get_defaults(*, _config: Optional[dict] = None) -> dict:

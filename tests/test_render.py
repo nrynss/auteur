@@ -9,20 +9,26 @@ Two layers, deliberately:
   video in, muxed Foley video out of B2. It is slower and it is the only test
   that proves the milestone's exit condition, so it earns its seconds.
 
-Nothing here touches the network. SFX generation is replaced by a synthesized
-WAV at `sfx_cache.generate_canonical_wav`, which is the single billed call in
-the whole path — everything above it, including the shared cache, runs for real.
+Nothing here touches the network. SFX generation is replaced by synthesized
+WAVs at the two provider seams — `stems.generate_many` (the Genblaze fan-out
+the render warms its cache with) and `sfx_cache.generate_canonical_wav` (the
+per-stem fallback) — which are the only billed calls in the whole path.
+Everything above them, including the shared cache and the stage recording,
+runs for real.
 """
 
+import dataclasses
 import os
+import pathlib
 import shutil
 import subprocess
+import tempfile
 
 import numpy as np
 import pytest
 import soundfile as sf
 
-from foleyflow import qa, render, sfx_cache
+from foleyflow import qa, render, sfx_cache, stems
 from foleyflow.models import Event, Timeline
 from foleyflow.projects import EVENT_MIX_COMPLETED, EVENT_STEM_GENERATED, ProjectStore
 from foleyflow.storage import LocalBackend
@@ -86,11 +92,22 @@ def _placeholder_video(path):
 
 @pytest.fixture
 def fake_generation(monkeypatch):
-    """Replace the one billed call with a synthesized clip.
+    """Replace the billed calls with synthesized clips.
 
-    Patched at `sfx_cache`, not at the sfx_fn: everything between — the shared
-    content-addressed cache, the local scratch reuse, the observer that reports
-    hits — is code this module is here to exercise.
+    Two seams, because a render reaches the provider two ways and both must be
+    stubbed or the suite would try to talk to a GPU worker:
+
+    * `stems.generate_many` — the Genblaze fan-out the render warms its cache
+      with. Stubbed at the *pipeline* boundary, so `sfx_cache.prewarm`'s cache
+      probing, canonicalization and B2 write all still run for real.
+    * `sfx_cache.generate_canonical_wav` — the per-stem path `backed_sfx_fn`
+      falls back to when assembly asks for something the warm-up did not
+      produce.
+
+    Both append to the same list, so "how many stems did this run generate"
+    stays one number regardless of which path produced them. Everything between
+    — the shared content-addressed cache, the local scratch reuse, the observer
+    that reports hits — is code this module is here to exercise.
     """
     calls = []
 
@@ -98,6 +115,21 @@ def fake_generation(monkeypatch):
         calls.append(request)
         return _write_wav(dest_path, seconds=max(request.duration_s, 0.5))
 
+    def _generate_many(requests, **kwargs):
+        results = []
+        for request in requests:
+            calls.append(request)
+            raw = str(tmp_raw_dir / f"{len(calls)}.wav")
+            _write_wav(raw, seconds=max(request.duration_s, 0.5))
+            results.append(stems.StemResult(
+                request=request, served=request, local_path=raw,
+                attempts=[stems.StemAttempt(
+                    tier=request.tier, endpoint=request.endpoint,
+                    status="succeeded", genblaze_run_id="gb-test-run")]))
+        return results
+
+    tmp_raw_dir = pathlib.Path(tempfile.mkdtemp(prefix="foleyflow-raw-"))
+    monkeypatch.setattr(stems, "generate_many", _generate_many)
     monkeypatch.setattr(sfx_cache, "generate_canonical_wav", _generate)
     return calls
 
@@ -370,3 +402,132 @@ def test_silent_video_becomes_a_b2_backed_foley_export(store, project,
     assert abs(len(mix) / sr - 4.0) < 0.05          # mixed to the probed length
     assert float(np.abs(mix).max()) > 0.0           # not a silent render
     assert result.qa["audio"]["measured"] is True
+
+
+# -- the §8.2 job history ----------------------------------------------------
+
+def test_a_render_records_every_stage_in_order(store, project, fake_generation,
+                                               stub_ffmpeg, tmp_path):
+    """SPEC §8.2: stage-level outcome, visible in job history."""
+    video = str(tmp_path / "source.mp4")
+    _placeholder_video(video)
+
+    result = render.render_mix(store, project.id, run=_run(store, project.id),
+                               video_path=video)
+
+    assert [s["name"] for s in result.stages] == ["stems", "mix", "mux", "qa"]
+    assert all(s["status"] == "succeeded" for s in result.stages)
+    # Timing is Genblaze's, not a stopwatch we wrapped around it.
+    assert all(s["elapsed_s"] >= 0 for s in result.stages)
+    assert result.genblaze_run_id
+
+
+def test_stage_records_reach_the_event_log_as_they_happen(store, project,
+                                                          fake_generation,
+                                                          stub_ffmpeg, tmp_path):
+    """A run's own record is only written at the end; a client watching a
+    render needs the log."""
+    from foleyflow.projects import EVENT_STAGE_RECORDED
+
+    video = str(tmp_path / "source.mp4")
+    _placeholder_video(video)
+    run = _run(store, project.id)
+    render.render_mix(store, project.id, run=run, video_path=video)
+
+    recorded = [e.payload["name"] for e in store.list_events(project.id)
+                if e.type == EVENT_STAGE_RECORDED and e.run_id == run.id]
+    assert recorded == ["stems", "mix", "mux", "qa"]
+
+
+def test_the_stems_stage_counts_cache_hits_separately(store, project,
+                                                      fake_generation,
+                                                      stub_ffmpeg, tmp_path):
+    """A second render generates nothing, and the history should say so."""
+    video = str(tmp_path / "source.mp4")
+    _placeholder_video(video)
+    render.render_mix(store, project.id, run=_run(store, project.id),
+                      video_path=video)
+
+    second = render.render_mix(store, project.id, run=_run(store, project.id),
+                               video_path=video)
+    stems_stage = next(s for s in second.stages if s["name"] == "stems")
+    assert stems_stage["status"] == "succeeded"
+    assert second.generated_count == 0
+
+
+def test_a_fallback_served_stem_is_attributed_to_who_actually_produced_it(
+        store, project, stub_ffmpeg, tmp_path, monkeypatch):
+    """A fallback must not be laundered into the requested tier's name.
+
+    The cache address is the tier that was *asked for* — that is deliberate, so
+    an outage does not re-hammer a dead endpoint. But `endpoint` on the stem
+    inventory is that same address, and the §11.6 provenance manifest is built
+    from the inventory. Without `served_endpoint`, an export would claim the
+    paid tier generated audio that the fallback produced, which is precisely
+    the claim the manifest exists to make honestly.
+    """
+    raw_dir = pathlib.Path(tempfile.mkdtemp(prefix="foleyflow-fallback-"))
+    calls = []
+
+    def _escalating_generate_many(requests, **kwargs):
+        """Every request escalates: asked of `paid`, answered by `fallback`."""
+        results = []
+        for request in requests:
+            calls.append(request)
+            raw = str(raw_dir / f"{len(calls)}.wav")
+            _write_wav(raw, seconds=max(request.duration_s, 0.5))
+            served = dataclasses.replace(
+                request, endpoint="fal-ai/elevenlabs/sound-effects/v2",
+                tier="fallback")
+            results.append(stems.StemResult(
+                request=request, served=served, local_path=raw,
+                attempts=[
+                    stems.StemAttempt(tier=request.tier,
+                                      endpoint=request.endpoint,
+                                      status="failed", error="503"),
+                    stems.StemAttempt(tier="fallback",
+                                      endpoint=served.endpoint,
+                                      status="succeeded",
+                                      genblaze_run_id="gb-test-run"),
+                ]))
+        return results
+
+    monkeypatch.setattr(stems, "generate_many", _escalating_generate_many)
+    monkeypatch.setattr(sfx_cache, "generate_canonical_wav",
+                        lambda request, dest: _write_wav(dest, seconds=0.5))
+
+    video = str(tmp_path / "source.mp4")
+    _placeholder_video(video)
+    run = _run(store, project.id)
+    render.render_mix(store, project.id, run=run, video_path=video)
+
+    inventory = store.load_stem_inventory(project.id, run.id)
+    assert inventory, "expected stems"
+    for stem in inventory:
+        # Addressed under what was asked for ...
+        assert stem["endpoint"] != "fal-ai/elevenlabs/sound-effects/v2"
+        # ... and attributed to what answered.
+        assert stem["served_endpoint"] == "fal-ai/elevenlabs/sound-effects/v2"
+        assert stem["served_by"] == "fallback"
+
+    # The spend log names the endpoint that actually charged.
+    generated = [e for e in store.list_events(project.id)
+                 if e.type == EVENT_STEM_GENERATED]
+    assert generated
+    assert all(e.payload["served_endpoint"] ==
+               "fal-ai/elevenlabs/sound-effects/v2" for e in generated)
+
+
+def test_a_stem_served_by_its_own_tier_records_no_fallback(
+        store, project, fake_generation, stub_ffmpeg, tmp_path):
+    """The common case stays quiet — no misleading `served_endpoint` key."""
+    video = str(tmp_path / "source.mp4")
+    _placeholder_video(video)
+    run = _run(store, project.id)
+    render.render_mix(store, project.id, run=run, video_path=video)
+
+    for stem in store.load_stem_inventory(project.id, run.id):
+        assert "served_endpoint" not in stem
+    for event in store.list_events(project.id):
+        if event.type == EVENT_STEM_GENERATED:
+            assert "served_endpoint" not in event.payload

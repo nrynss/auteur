@@ -81,20 +81,33 @@ class LocalBackend:
 
     def put_if_absent(self, key: str, data: bytes,
                       content_type: Optional[str] = None) -> str:
-        """Atomic create. `O_CREAT | O_EXCL` is the filesystem's own
-        test-and-set, so two threads racing here cannot both succeed."""
+        """Atomic create — the object appears complete or not at all.
+
+        Written to a temp file first and then hard-linked into place.
+        `os.link` is the filesystem's test-and-set (it raises FileExistsError
+        rather than clobbering), so two threads racing here still cannot both
+        succeed — and unlike `O_CREAT | O_EXCL` followed by a write, there is no
+        window in which the object exists but is empty.
+
+        That window was reachable: a run record is written with this method and
+        read back by `GET /runs/{id}` while a `--wait` client polls, so a reader
+        landing between the create and the write got a zero-byte file and a
+        JSONDecodeError for a run that was in fact fine.
+        """
         dest = self._path(key)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest), suffix=".part")
         try:
-            fd = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_BINARY
-                         if hasattr(os, "O_BINARY")
-                         else os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.link(tmp, dest)
         except FileExistsError as e:
             raise PreconditionFailed(f"object already exists at {key!r}") from e
         except OSError as e:
             raise StorageError(f"could not create {key!r}: {e.strerror}") from e
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
         return key
 
     def signed_url(self, key: str, expires_s: int = 3600) -> str:

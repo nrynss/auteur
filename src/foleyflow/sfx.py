@@ -2,10 +2,15 @@
 
 get_sfx(request, cache_dir="sfx_cache") -> path to a canonical WAV.
 
-Flow: cache lookup -> miss: execute_with_ledger(endpoint, arguments) ->
-extract audio URL from the fal response -> net.download() to a temp file ->
-ffmpeg-convert to canonical 48 kHz stereo float32 WAV -> RMS-normalize to
--18 dBFS (peak-guarded) -> move into the cache -> return the cache path.
+Flow: cache lookup -> miss: `stems.generate_one` (a Genblaze pipeline of one
+step, with §9.1 tier escalation) -> ffmpeg-convert to canonical 48 kHz stereo
+float32 WAV -> RMS-normalize to -18 dBFS (peak-guarded) -> move into the cache
+-> return the cache path.
+
+The provider call goes through Genblaze here too, not only in the project lane
+(`sfx_cache`). Keeping one orchestrated path and one unorchestrated one would
+mean the CLI and the API exercised different code, and the difference would
+only show up when one of them broke.
 
 Cache key: sha256(f"{endpoint}|{prompt}|{duration_s:.2f}") — stable across
 runs; filename is the first 16 hex chars + ".wav". Same request always
@@ -32,8 +37,10 @@ import tempfile
 import numpy as np
 import soundfile as sf
 
-from foleyflow import net
-from foleyflow.ledger import execute_with_ledger
+# Imported for the module attribute, not for a call site here: providers
+# materialize their own bytes (see providers/genblaze._materialize) and reach
+# net.download through this same module object.
+from foleyflow import net  # noqa: F401
 from foleyflow.routing import SfxRequest
 
 # Numeric defaults (locked) — build_spec.md "Numeric defaults" table.
@@ -188,8 +195,10 @@ def rms_normalize(path: str, target_dbfs: float = RMS_TARGET_DBFS,
 
 
 def get_sfx(request: SfxRequest, cache_dir: str = DEFAULT_CACHE_DIR) -> str:
-    """Cache lookup -> generate (execute_with_ledger) -> download -> convert
-    -> normalize -> cache -> return path to the canonical WAV."""
+    """Cache lookup -> generate (Genblaze) -> convert -> normalize -> cache ->
+    return path to the canonical WAV."""
+    from foleyflow.stems import generate_one
+
     cache_dir_abs = _resolve_cache_dir(cache_dir)
     os.makedirs(cache_dir_abs, exist_ok=True)
     dest_path = cache_path(cache_dir_abs, request.endpoint, request.prompt, request.duration_s)
@@ -197,16 +206,11 @@ def get_sfx(request: SfxRequest, cache_dir: str = DEFAULT_CACHE_DIR) -> str:
     if os.path.exists(dest_path):
         return dest_path
 
-    arguments = build_arguments(request)
-    result = execute_with_ledger(request.endpoint, arguments=arguments)
-    audio_url = extract_audio_url(result)
+    stem = generate_one(request)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        raw_path = os.path.join(tmp_dir, "raw_download")
-        net.download(audio_url, raw_path)
-
         tmp_wav = os.path.join(tmp_dir, "converted.wav")
-        convert_to_canonical(raw_path, tmp_wav)
+        convert_to_canonical(stem.local_path, tmp_wav)
         rms_normalize(tmp_wav)
 
         # shutil.move (not os.replace): the repo (cache_dir) and the OS temp

@@ -24,20 +24,26 @@ import hashlib
 import os
 import shutil
 import tempfile
+import threading
 from typing import Callable, Optional
 
-from foleyflow import net
-from foleyflow.ledger import execute_with_ledger
 from foleyflow.routing import SfxRequest
-from foleyflow.sfx import (
-    build_arguments,
-    convert_to_canonical,
-    extract_audio_url,
-    rms_normalize,
-)
+from foleyflow.sfx import convert_to_canonical, rms_normalize
 from foleyflow.storage.base import Backend
 
 CACHE_PREFIX = "cache"
+
+# The tier that served the most recent generation on THIS thread.
+#
+# `generate_canonical_wav(request, dest_path) -> path` is the one billed seam in
+# the render path, and every test in the suite stands in for it by name. Adding
+# an out-parameter to its signature would break each of those stand-ins, and
+# returning a richer object would break every caller. A thread-local is the
+# narrow way to let `backed_sfx_fn` report which tier actually answered without
+# widening a contract the whole suite depends on; renders run one per worker
+# thread, so there is no cross-talk. Absent (None) whenever generation was
+# stubbed out, which is exactly the honest answer in that case.
+_last_generation = threading.local()
 
 
 def cache_key(endpoint: str, prompt: str, duration_s: float, variant: str = "") -> str:
@@ -62,16 +68,38 @@ def cache_object_key(endpoint: str, prompt: str, duration_s: float, variant: str
     return f"{CACHE_PREFIX}/{cache_key(endpoint, prompt, duration_s, variant)}.wav"
 
 
+def last_generation():
+    """The `StemResult` from this thread's most recent `generate_canonical_wav`.
+
+    None when nothing has generated on this thread yet, or when generation was
+    stubbed. Reporting only — never load-bearing.
+    """
+    return getattr(_last_generation, "result", None)
+
+
 def generate_canonical_wav(request: SfxRequest, dest_path: str) -> str:
     """Generate one SFX clip and write it to dest_path as a canonical
     48 kHz stereo float32 WAV, RMS-normalized to -18 dBFS.
 
-    This is the billed path. It reuses the media core's helpers verbatim —
-    argument shaping, response parsing, ffmpeg canonicalization, normalization —
-    so a clip generated here is indistinguishable from one the CLI produced.
+    This is the billed path, and it runs through Genblaze: `stems.generate_one`
+    builds a one-step pipeline so a single stem is timed, retried, and recorded
+    exactly like one inside a fan-out. It then reuses the media core's helpers
+    verbatim — ffmpeg canonicalization, normalization — so a clip generated here
+    is indistinguishable from one the CLI produced.
+
+    ## Escalation and the cache address
+
+    If the request's tier fails, §9.1's fallback tier serves it — but the clip
+    is still cached at the *requested* address, not the serving tier's. The
+    cache answers "what was asked for"; which tier answered is provenance, and
+    it is recorded on the stem inventory and in the ledger. The practical effect
+    is the right one: during a primary-provider outage the fallback's clip is
+    reused instead of re-hammering the dead endpoint on every render.
     """
-    result = execute_with_ledger(request.endpoint, arguments=build_arguments(request))
-    audio_url = extract_audio_url(result)
+    from foleyflow.stems import generate_one
+
+    stem = generate_one(request)
+    _last_generation.result = stem
 
     os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
     # Every step happens on a temp path, and the finished file is moved into
@@ -82,15 +110,86 @@ def generate_canonical_wav(request: SfxRequest, dest_path: str) -> str:
     # foley/sfx.py (the code this was ported from) got this right; the rewrite
     # dropped it.
     with tempfile.TemporaryDirectory() as tmp_dir:
-        raw_path = os.path.join(tmp_dir, "raw_download")
-        net.download(audio_url, raw_path)
         converted = os.path.join(tmp_dir, "converted.wav")
-        convert_to_canonical(raw_path, converted)
+        convert_to_canonical(stem.local_path, converted)
         rms_normalize(converted)
         # shutil.move, not os.replace: the temp dir and the work dir can sit on
         # different Windows drives, where rename raises a cross-device error.
         shutil.move(converted, dest_path)
     return dest_path
+
+
+def prewarm(
+    backend: Backend,
+    work_dir: str,
+    requests,
+    variant_fn: Optional[Callable[[SfxRequest], str]] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
+    max_concurrency: Optional[int] = None,
+):
+    """Generate every uncached request concurrently, through Genblaze.
+
+    `assemble_timeline` pulls stems one at a time — correct for the mixer, and
+    the reason generation used to be serial. This warms the cache first, so the
+    independent stems of a timeline fan out across one Genblaze run (SPEC §8.2)
+    and assembly afterwards is pure cache hits.
+
+    Returns the list of `StemResult`s for the requests that were NOT already
+    cached, so the caller can record which tier served each one and how many
+    escalated. Never raises: a stem that could not be produced comes back with
+    `ok == False`, and `backed_sfx_fn` will try it once more (and fail loudly
+    there) when assembly asks for it. That keeps the render's failure semantics
+    exactly where they were rather than moving them into a warm-up step.
+
+    Cache keys are untouched. Each request is probed at, and stored under, the
+    address it already had — this is a scheduling change, not an addressing one.
+    """
+    from foleyflow.stems import DEFAULT_MAX_CONCURRENCY, generate_many
+
+    variant_fn = variant_fn or (lambda _req: "")
+    os.makedirs(work_dir, exist_ok=True)
+
+    def _paths(request: SfxRequest):
+        variant = variant_fn(request) or ""
+        key = cache_object_key(request.endpoint, request.prompt,
+                               request.duration_s, variant)
+        return key, os.path.join(work_dir, os.path.basename(key))
+
+    misses = []
+    for request in requests:
+        key, local_path = _paths(request)
+        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+            continue
+        if backend.exists(key):
+            backend.get(key, local_path)
+            continue
+        misses.append(request)
+
+    if not misses:
+        return []
+
+    # No `probe`: every request here is already a confirmed miss at its own
+    # address, and an escalated request lands at a different address that
+    # `generate_many` cannot check without knowing this render's variant. The
+    # loop below stores whatever comes back at the *requested* address, which
+    # is the same rule `generate_canonical_wav` documents.
+    results = generate_many(
+        misses, on_event=on_event,
+        max_concurrency=max_concurrency or DEFAULT_MAX_CONCURRENCY,
+        run_name="foleyflow-stems")
+
+    for request, result in zip(misses, results):
+        if not result.ok:
+            continue
+        key, local_path = _paths(request)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            converted = os.path.join(tmp_dir, "converted.wav")
+            convert_to_canonical(result.local_path, converted)
+            rms_normalize(converted)
+            shutil.move(converted, local_path)
+        backend.put(key, local_path, content_type="audio/wav")
+
+    return results
 
 
 def backed_sfx_fn(
@@ -108,7 +207,9 @@ def backed_sfx_fn(
                  regenerated and returns e.g. "r2" for that request only, so one
                  stem regenerates and every other event still hits cache.
     on_event   — optional observer for stage reporting. Payloads carry
-                 {"key", "endpoint", "variant", "cached": bool}.
+                 {"key", "endpoint", "variant", "cached": bool}, plus
+                 {"tier", "served_by", "genblaze_run_id"} once a generation has
+                 actually happened.
     """
     variant_fn = variant_fn or (lambda _req: "")
     os.makedirs(work_dir, exist_ok=True)
@@ -140,9 +241,24 @@ def backed_sfx_fn(
             return backend.get(key, local_path)
 
         _notify({"key": key, "endpoint": request.endpoint,
-                 "variant": variant, "cached": False})
+                 "variant": variant, "cached": False, "tier": request.tier})
+        # Cleared first: the thread-local outlives the call, so a stubbed
+        # generator would otherwise let a previous stem's provenance be
+        # reported as this one's.
+        _last_generation.result = None
         generate_canonical_wav(request, local_path)
         backend.put(key, local_path, content_type="audio/wav")
+
+        # Which tier actually answered, once it is known. Emitted as a second
+        # event rather than folded into the first: the first has to fire
+        # *before* generation so a UI can show "generating" while it happens.
+        served = last_generation()
+        if served is not None:
+            _notify({"key": key, "endpoint": request.endpoint,
+                     "variant": variant, "cached": False,
+                     "tier": request.tier, "served_by": served.tier,
+                     "served_endpoint": served.endpoint,
+                     "attempts": [a.to_dict() for a in served.attempts]})
         return local_path
 
     return _sfx_fn

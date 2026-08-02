@@ -25,16 +25,23 @@ the pointer.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from foleyflow.assemble import assemble_timeline, write_mix
+from foleyflow.assemble import assemble_timeline, plan_requests, write_mix
 from foleyflow.ledger import summarize_ledger
 from foleyflow.mux import extract_audio, mux as mux_video
 from foleyflow.projects import ProjectStore, Run, utcnow
 from foleyflow.qa import build_report
 from foleyflow.routing import SfxRequest
-from foleyflow.sfx_cache import backed_sfx_fn, cache_key as cache_digest, cache_object_key
+from foleyflow.sfx_cache import (
+    backed_sfx_fn,
+    cache_key as cache_digest,
+    cache_object_key,
+    prewarm,
+)
+from foleyflow.stages import StageLog, record_stem_stage, run_stages
 from foleyflow.storage.base import ObjectNotFound
 
 MANIFEST_VERSION = "1.0"
@@ -60,6 +67,9 @@ class MixResult:
     stems: List[Dict[str, Any]] = field(default_factory=list)
     qa: Optional[Dict[str, Any]] = None
     ledger_delta: float = 0.0
+    # The §8.2 job history for this run: one entry per stage, in order.
+    stages: List[Dict[str, Any]] = field(default_factory=list)
+    genblaze_run_id: Optional[str] = None
 
     @property
     def generated_count(self) -> int:
@@ -124,47 +134,129 @@ def render_mix(store: ProjectStore, project_id: str, *, run: Run,
 
     stems: List[Dict[str, Any]] = []
     cached_by_key: Dict[str, bool] = {}
+    # Addresses this run generated during the warm-up. Assembly reads them from
+    # the cache and would otherwise report them as hits — which would file a
+    # freshly billed stem as free, and leave `stem.generated` (the spend log)
+    # empty for a run that spent.
+    generated_keys: set = set()
+
+    # Which tier actually answered, keyed by cache address. Only populated when
+    # a stem was generated AND the serving tier differs from the requested one,
+    # i.e. a fallback fired. Without this the manifest would attribute a
+    # fal-served clip to ElevenLabs, because the cache address — and therefore
+    # `request.endpoint` — is the tier that was *asked*, not the one that
+    # answered. See sfx_cache's second `_notify`.
+    served_by_key: dict = {}
 
     def _observe(payload: dict) -> None:
         cached_by_key[payload["key"]] = payload["cached"]
+        if payload.get("served_by") and payload["served_by"] != payload.get("tier"):
+            served_by_key[payload["key"]] = {
+                "served_by": payload["served_by"],
+                "served_endpoint": payload.get("served_endpoint"),
+            }
         _notify(progress_cb, {"phase": "stem", **payload})
 
     inner = backed_sfx_fn(store.backend, stems_dir, variant_fn, on_event=_observe)
 
+    def _variant_of(request: SfxRequest) -> str:
+        return (variant_fn(request) if variant_fn else "") or ""
+
     def _sfx_fn(request: SfxRequest) -> str:
         path = inner(request)
-        variant = (variant_fn(request) if variant_fn else "") or ""
+        variant = _variant_of(request)
         args = (request.endpoint, request.prompt, request.duration_s, variant)
         b2_key = cache_object_key(*args)
-        cached = cached_by_key.get(b2_key, True)
+        cached = b2_key not in generated_keys and cached_by_key.get(b2_key, True)
         # Several timeline events can share one request, so the same stem is
         # asked for more than once per render. Record the address once.
         if not any(s["b2_key"] == b2_key for s in stems):
+            fallback = served_by_key.get(b2_key) or {}
             stems.append({"cache_key": cache_digest(*args), "b2_key": b2_key,
                           "endpoint": request.endpoint,
                           "prompt": request.prompt,
                           "duration_s": request.duration_s,
                           "variant": variant, "cached": cached,
-                          "local_path": path})
+                          "local_path": path, **fallback})
             if not cached:
                 store.record_stem(project_id, run_id=run.id,
                                   cache_key=cache_digest(*args),
                                   endpoint=request.endpoint,
                                   prompt=request.prompt,
                                   duration_s=request.duration_s,
-                                  variant=variant)
+                                  variant=variant,
+                                  served_endpoint=fallback.get("served_endpoint"))
         return path
 
-    _notify(progress_cb, {"phase": "stage", "stage": "assembling"})
-    mix = assemble_timeline(timeline, duration, tier=tier, sfx_fn=_sfx_fn,
-                            orig_audio_path=orig_wav if has_orig else None)
+    # -- stems: one Genblaze run, every independent stem fanned out ----------
+    #
+    # Planned rather than pulled. `assemble_timeline` asks for stems one at a
+    # time as it builds the mix, which serialises generation; warming the cache
+    # first means the whole timeline's stems go out concurrently and assembly
+    # afterwards reads from disk. `plan_requests` is shared with the mixer, so
+    # the set warmed here is exactly the set the mix consumes.
+    stage_log = StageLog(sink=lambda record: store.record_stage(
+        project_id, run_id=run.id, stage=record))
 
+    stems_started = time.monotonic()
+    stems_started_at = utcnow()
+    _notify(progress_cb, {"phase": "stage", "stage": "stems"})
+    planned = plan_requests(timeline, duration, tier=tier)
+    stem_results = prewarm(store.backend, stems_dir, planned, variant_fn,
+                           on_event=lambda p: _notify(progress_cb,
+                                                      {"phase": "stem", **p}))
+    generated_keys.update(
+        cache_object_key(r.request.endpoint, r.request.prompt,
+                         r.request.duration_s, _variant_of(r.request))
+        for r in stem_results if r.ok)
+    # Fan-out is the primary generation path, and its escalations are the ones
+    # most likely to happen in anger. `record_stem_stage` puts them in the stage
+    # log; this is what carries them into the stem inventory, and from there
+    # into the §11.6 provenance manifest.
+    for result in stem_results:
+        if not result.ok or result.served is None:
+            continue
+        if result.served.endpoint == result.request.endpoint:
+            continue
+        served_by_key[cache_object_key(
+            result.request.endpoint, result.request.prompt,
+            result.request.duration_s, _variant_of(result.request))] = {
+                "served_by": getattr(result.served, "tier", None),
+                "served_endpoint": result.served.endpoint,
+        }
+    record_stem_stage(stage_log, stem_results,
+                      genblaze_run_id=_first_genblaze_run_id(stem_results),
+                      elapsed_s=time.monotonic() - stems_started,
+                      started_at=stems_started_at)
+
+    # -- mix / mux / QA: local, deterministic, and orchestrated all the same --
     mix_path = os.path.join(work, "mix.wav")
-    write_mix(mix, mix_path)
-
-    _notify(progress_cb, {"phase": "stage", "stage": "muxing"})
     video_out = os.path.join(work, "foley.mp4")
-    mux_video(video_path, mix_path, video_out)
+
+    def _mix_stage(_params: dict) -> dict:
+        _notify(progress_cb, {"phase": "stage", "stage": "assembling"})
+        mix = assemble_timeline(timeline, duration, tier=tier, sfx_fn=_sfx_fn,
+                                orig_audio_path=orig_wav if has_orig else None)
+        write_mix(mix, mix_path)
+        return {"output_path": mix_path, "media_type": "audio/wav"}
+
+    def _mux_stage(_params: dict) -> dict:
+        _notify(progress_cb, {"phase": "stage", "stage": "muxing"})
+        mux_video(video_path, mix_path, video_out)
+        return {"output_path": video_out, "media_type": "video/mp4"}
+
+    def _qa_stage(_params: dict) -> dict:
+        # Measured against the WAV that was actually written, not the array in
+        # memory — the file on disk is what a listener gets, and what ebur128
+        # can measure.
+        _notify(progress_cb, {"phase": "stage", "stage": "qa"})
+        return {"report": build_report(store.load_scenes(project_id),
+                                       audio_path=mix_path, run_id=run.id)}
+
+    stage_results = run_stages(
+        f"foleyflow-render-{run.id}",
+        [("mix", _mix_stage), ("mux", _mux_stage), ("qa", _qa_stage)],
+        log=stage_log, project_id=project_id)
 
     mix_key = store.mix_key(project_id, run.id)
     video_key = store.mix_video_key(project_id, run.id)
@@ -185,14 +277,8 @@ def render_mix(store: ProjectStore, project_id: str, *, run: Run,
     inventory = [_stem_record(s) for s in stems]
     store.save_stem_inventory(project_id, run.id, inventory)
 
-    # QA against the mix that was actually written, not the array in memory —
-    # the WAV on disk is what a listener gets, and what ebur128 can measure.
-    _notify(progress_cb, {"phase": "stage", "stage": "qa"})
     report = store.save_qa_report(
-        project_id,
-        build_report(store.load_scenes(project_id), audio_path=mix_path,
-                     run_id=run.id),
-        run_id=run.id)
+        project_id, (stage_results.get("qa") or {}).get("report"), run_id=run.id)
 
     store.record_mix(project_id, run_id=run.id, mix_key=mix_key,
                      video_key=video_key, tier=tier, timeline_version=version,
@@ -206,6 +292,7 @@ def render_mix(store: ProjectStore, project_id: str, *, run: Run,
         mix_key=mix_key, video_key=video_key, stems_key=stems_key,
         mix_path=mix_path, video_path=video_out, stems=inventory, qa=report,
         ledger_delta=summarize_ledger()["total"] - ledger_before,
+        stages=stage_log.to_list(), genblaze_run_id=stage_log.genblaze_run_id,
     )
 
 
@@ -305,6 +392,20 @@ def _stem_record(stem: Dict[str, Any]) -> Dict[str, Any]:
 
         record["sha256"] = file_sha256(path)
     return record
+
+
+def _first_genblaze_run_id(stem_results) -> Optional[str]:
+    """The Genblaze run that generated this render's stems, if any ran.
+
+    First rather than last: escalation rounds each get their own run, and the
+    one worth surfacing is the round the render started with. The rest are on
+    the per-stem attempt history.
+    """
+    for result in stem_results or []:
+        for attempt in result.attempts:
+            if attempt.genblaze_run_id:
+                return attempt.genblaze_run_id
+    return None
 
 
 def _notify(cb: Optional[Callable[[dict], None]], payload: dict) -> None:

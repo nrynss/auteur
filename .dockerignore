@@ -1,0 +1,19 @@
+# Keep the build context small and, more importantly, keep secrets and local
+# artifacts out of an image that will be pushed to a registry.
+.env
+.venv/
+.git/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# Local artifact scratch — canonical artifacts live in B2.
+work/
+sfx_cache/
+ledger.jsonl
+
+# Not needed at runtime.
+tests/
+docs/
+samples/
+SPEC.md

@@ -1,5 +1,7 @@
 """Offline unit tests for src/foleyflow/sfx.py. NO network / fal API calls here —
-execute_with_ledger and net.download are monkeypatched wherever exercised.
+ledger.execute_with_ledger and net.download are monkeypatched wherever
+exercised — those are the two seams the Genblaze provider reaches the wire
+through, so stubbing them leaves the orchestration itself running for real.
 ffmpeg/ffprobe are local binaries (no network) and are used directly, same
 as tests/test_analyze.py's use of ffprobe via get_video_duration.
 """
@@ -10,7 +12,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from foleyflow import net, sfx
+from foleyflow import ledger, net, sfx
 from foleyflow.routing import SfxRequest
 
 CASSETTEAI = "cassetteai/sound-effects-generator"
@@ -271,8 +273,12 @@ def test_get_sfx_cache_hit_skips_execute_and_download(tmp_path, monkeypatch):
         shutil.copy(fixture_path, dest_path)
         return dest_path
 
-    monkeypatch.setattr(sfx, "execute_with_ledger", fake_execute)
-    monkeypatch.setattr(sfx.net, "download", fake_download)
+    # Patched on `ledger`, not on `sfx`: generation goes through
+    # providers.genblaze.FoleyAdapterProvider, which calls
+    # ledger.execute_with_ledger and then net.download to materialize the
+    # result. The Genblaze pipeline around them is exercised for real.
+    monkeypatch.setattr(ledger, "execute_with_ledger", fake_execute)
+    monkeypatch.setattr(net, "download", fake_download)
 
     cache_dir = str(tmp_path / "sfx_cache_test")
     request = _req(endpoint=CASSETTEAI, prompt="test cache hit", duration_s=1.0)
@@ -299,8 +305,12 @@ def test_get_sfx_different_requests_produce_different_cache_files(tmp_path, monk
         shutil.copy(fixture_path, dest_path)
         return dest_path
 
-    monkeypatch.setattr(sfx, "execute_with_ledger", fake_execute)
-    monkeypatch.setattr(sfx.net, "download", fake_download)
+    # Patched on `ledger`, not on `sfx`: generation goes through
+    # providers.genblaze.FoleyAdapterProvider, which calls
+    # ledger.execute_with_ledger and then net.download to materialize the
+    # result. The Genblaze pipeline around them is exercised for real.
+    monkeypatch.setattr(ledger, "execute_with_ledger", fake_execute)
+    monkeypatch.setattr(net, "download", fake_download)
 
     cache_dir = str(tmp_path / "sfx_cache_test2")
     path_a = sfx.get_sfx(_req(prompt="footsteps on gravel"), cache_dir=cache_dir)

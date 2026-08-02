@@ -118,6 +118,15 @@ def ingest_source_video(
     durably-stored record before any analysis runs. Returns Genblaze's
     PipelineResult — `.manifest.canonical_hash` is the value a judge can verify
     with `genblaze verify`.
+
+    `sink` is required rather than defaulted to `get_sink()`. Genblaze supports
+    `sink=None` as an offline mode — the run and the hash-verified manifest are
+    still produced, only the asset upload is skipped — and that is exactly what
+    a FoleyFlow instance running against local storage should do. Building a B2
+    sink implicitly would mean an offline deployment (and every test) reaching
+    for credentials it was deliberately not given. The API decides: see
+    `api.app._ingest_work`, which supplies a sink only when the project store is
+    itself B2-backed.
     """
     if not os.path.exists(video_path):
         raise FileNotFoundError(video_path)
@@ -138,6 +147,6 @@ def ingest_source_video(
             "title": title or os.path.basename(video_path),
             "original_filename": os.path.basename(video_path),
         },
-        sink=sink or get_sink(),
+        sink=sink,
         name=f"ingest-{project_id}",
     )

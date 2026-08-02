@@ -13,6 +13,7 @@ from foleyflow.providers.config import (
     get_defaults,
     get_model_spec,
     get_routing_config,
+    get_tier_config,
     load_config,
 )
 
@@ -28,6 +29,7 @@ __all__ = [
     "get_defaults",
     "get_model_spec",
     "get_routing_config",
+    "get_tier_config",
     "load_config",
 ]
 

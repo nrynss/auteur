@@ -12,7 +12,9 @@
 
 Kept at the top because the rest of this document describes the intended
 product, and a reader needs to know which parts of it exist. Updated
-2026-07-30.
+2026-08-02.
+
+**Live:** <https://foleyflow-142385844755.us-east4.run.app>
 
 | Area | State | Notes |
 |---|---|---|
@@ -22,21 +24,22 @@ product, and a reader needs to know which parts of it exist. Updated
 | VLM analysis → timeline | **Built** | Gemini direct; verified end-to-end on a real clip |
 | Timeline + SFX caches | **Built** | Content-addressed; protect the 20/day analysis budget |
 | Cost ledger + quota accounting | **Built** | Estimates, explicitly labelled as such |
-| Genblaze integration | **Partial** | Ingest + hash-verified manifest only; generation not yet orchestrated |
+| Genblaze integration | **Built** | Every provider call and every deterministic local stage runs as a Genblaze step; stems fan out, failures retry per-stem across tiers |
 | HTTP API | **Partial** | Everything but repair and the dossier; see §14 |
 | Throwaway dashboard | **Built** | One static file; the §6.1 control room replaces it |
 | Command-line client | **Built** | Single command `foleyflow` — project verbs over HTTP; `render` / `direct` file-scoped (§14.1) |
-| Self-hosted SFX worker | **Built** | MOSS-SoundEffect v2 behind HTTP; every routing category resolves to it (§9.1) |
+| Self-hosted SFX worker | **Built** | MOSS-SoundEffect v2 behind HTTP + bearer auth; every routing category resolves to it (§9.1) |
+| SFX tier selection | **Built** | paid / fallback / test, chosen by config; all three go through Genblaze, so the tier is a config difference not a code one |
 | Foley generation (stems) | **Built** | Driven from a mix run; shared B2 cache in front, so a re-mix generates nothing |
 | Mix / export | **Built** | `POST /mixes` renders and measures; `POST /exports` writes the §11.6 manifest and moves the pointer |
 | Artifact dossier | **Not built** | The one read view still missing (§14) |
 | QA (loudness, true peak, continuity) | **Built** | Continuity from scene stats; loudness via ebur128 when a mix is measured |
 | Targeted repair | **Partial** | `render_mix(variant_fn=…)` regenerates one stem and re-mixes; no per-event API route yet |
-| Deployment | **Not built** | Required by §16 |
+| Deployment | **Built** | Cloud Run `us-east4`, single instance, CPU always allocated; SFX worker reached over a Cloudflare tunnel at `sfx.nryn.dev` |
 
-Test suite: 376 passing, 1 skipped. Offline: the only stub in the render path
-is the billed provider call, so ffmpeg, the mix, the shared cache, and storage
-all run for real.
+Test suite: 429 passing, 1 skipped. Offline: the only stubs in the render path
+are the billed provider calls, so ffmpeg, the mix, the shared cache, storage,
+and the Genblaze pipelines themselves all run for real.
 
 The SFX worker is a separate CUDA process outside this repo and is **not** part
 of that suite — it needs a GPU and an 11 GB model. Nothing here imports torch.
@@ -251,25 +254,76 @@ The app should show the workflow run ID, current stage, and stage-level outcome 
 
 #### What is actually integrated (genblaze-core 0.3.7, pinned `<0.4`)
 
-**Ingest, with a hash-verified manifest.** Verified live: a 25.8 MB source clip
-ingested, hashed, stored content-addressably, `Manifest.verify()` true. The
-manifest exceeds §11.6's requirements — it carries `canonical_hash`, per-asset
-sha256, retries, `cost_usd`, and deterministic serialisation — and the CLI's
+Every bullet above is implemented for generation and for the deterministic
+local stages. One gap remains, named here rather than glossed: **analysis is not
+yet a Genblaze step.** `analyze.py` still calls Google directly through
+`execute_with_ledger`. Genblaze ships a `google` connector, so this is the same
+lift the fal adapter got and not a blocked path — it is simply not done. Every
+other provider call in the system goes through a pipeline.
+
+Concretely:
+
+**Ingest, with a hash-verified manifest, in the live path.** `POST /uploaded`
+runs `Pipeline.ingest()`: the source is hashed, stored content-addressably, and
+its `canonical_hash` recorded on the run alongside `genblaze_run_id`. The
+manifest exceeds §11.6's requirements — `canonical_hash`, per-asset sha256,
+retries, `cost_usd`, deterministic serialisation — and the CLI's
 `genblaze verify` lets a judge check it independently, which is a better demo
-beat than browsing a file list.
+beat than browsing a file list. An instance running against local storage passes
+`sink=None`, which Genblaze supports: the manifest is still produced, only the
+upload is skipped.
 
-**There is no fal connector, and we no longer need one.** The shipped
-connectors are assemblyai, decart, elevenlabs, gmicloud, google, hume,
-langsmith, lmnt, luma, nvidia, openai, replicate, runway, s3, stability-audio.
-Every call that still went through fal was *analysis*, and fal's OpenRouter
-gateway was only a proxy in front of the same Gemini model, so analysis now
-talks to Google directly.
+**Three SFX tiers, one code path (§9.1).** Selected by `[sfx_tiers]` in
+providers.toml, overridable with `$FOLEYFLOW_SFX_TIER`:
 
-**Local deterministic work is first-class.** `FFmpegTransform` ships as a
-`SyncProvider` shelling out to local ffmpeg, so mix, mux, and QA become
-providers Genblaze orchestrates, times, retries, and records — not stages that
-happen invisibly beside it. `SyncProvider.generate(step) -> step` is the whole
-contract.
+| tier | endpoint | reached through |
+|---|---|---|
+| `paid` | ElevenLabs sound-effects v2 | the shipped `genblaze-elevenlabs` connector |
+| `fallback` | `fal-ai/elevenlabs/sound-effects/v2` | `providers/fal.py`, lifted to a `SyncProvider` |
+| `test` | `openmoss/moss-soundeffect-v2` | `providers/local.py`, lifted to a `SyncProvider` |
+
+`paid` falls back to `fallback` on error; `test` deliberately does not escalate
+(a free local model quietly becoming a paid API call is what a spend guard
+exists to prevent). Putting the offline tier behind Genblaze too is the point:
+switching tiers changes *configuration*, not code, so the paid path's
+orchestration is exercised by every offline test run rather than for the first
+time in front of a judge.
+
+**There is no fal connector, so we wrote the lift.** The shipped connectors are
+assemblyai, decart, elevenlabs, gmicloud, google, hume, langsmith, lmnt, luma,
+nvidia, openai, replicate, runway, s3, stability-audio — `genblaze-fal` 404s on
+PyPI. `providers/base.py`'s `Adapter` protocol was always shaped like
+`SyncProvider.generate(step) -> Step` for exactly this, so `providers/genblaze.py`
+is thin translation over the existing vendor code rather than a rewrite. Going
+direct to ElevenLabs through its own connector is what upgrades the paid tier
+from "a dependency we import" to "the orchestrator making the call".
+
+**Fan-out and targeted retry.** A render plans its stems up front
+(`assemble.plan_requests`, shared with the mixer so the two cannot disagree) and
+warms them in one Genblaze run with `chain=False` and `arun(max_concurrency=…)`.
+Independent events go out concurrently; a failed stem is retried *by itself*
+against the next tier, because the next round's pipeline is built only from the
+steps that failed. Cross-provider escalation cannot use
+`Pipeline.step(fallback_models=…)` — that switches models within one provider —
+so the round-per-tier loop is the honest implementation.
+
+**Local deterministic work is first-class.** `providers/genblaze.py`'s
+`FFmpegStageProvider` is a sibling of core's `FFmpegTransform`: the same
+`SyncProvider.generate(step) -> Step` contract, FoleyFlow's own operations. Mix,
+mux and QA run as Genblaze steps, so they are timed, retried and recorded like
+any provider call instead of happening invisibly beside the orchestrator.
+
+**Stage state is readable.** Each stage is appended to the project event log as
+it completes and frozen onto the finished `Run`, so `GET /runs/{id}` answers with
+`genblaze_run_id`, `current_stage`, and a `stages` array carrying per-stage
+status, elapsed time, retry count and provider — for a run still in flight as
+well as a finished one.
+
+One thing deliberately left as-is: `sfx_cache.generate_canonical_wav` caches a
+fallback-served clip at the *requested* tier's address. The cache answers "what
+was asked for"; which tier answered is provenance and is recorded on the stem
+inventory and in the ledger. During a primary-provider outage this reuses the
+fallback's clip instead of re-hammering a dead endpoint on every render.
 
 Three constraints worth writing down, all discovered by running it:
 
@@ -827,17 +881,16 @@ The demo must use the real deployed app, a real B2-backed project, and a real Ge
 
 ## 16. Submission requirements checklist
 
-- [ ] Public working app URL that a judge can open without local dependencies
-- [ ] Public GitHub repository with setup, environment variables, and local run instructions — **the repo has no remote yet**
-- [x] Exact providers and model IDs listed — `providers.toml` is authoritative; mirror it into the README
+- [x] Public working app URL that a judge can open without local dependencies — <https://foleyflow-142385844755.us-east4.run.app>
+- [~] GitHub repository with setup, environment variables, and local run instructions — repo exists but is **private**; must be made public before submission
+- [x] Exact providers and model IDs listed — `providers.toml` is authoritative; mirrored into the README
 - [x] Clear B2 explanation: object layout (§10), signed upload/download, manifests
-- [~] Clear Genblaze explanation: §8.2 documents what is integrated and what is not
+- [x] Clear Genblaze explanation: §8.2 documents what is integrated and what is not
 - [ ] 3-minute demo video showing an actual workflow, targeted repair, B2 dossier, and final export
 - [ ] Explicit limitations and roadmap, especially for visual continuity checks
 
-The two unchecked infrastructure items — a public URL and a public repo — are
-the only ones that cannot be produced quickly at the end, which is why §17 moves
-deployment earlier.
+The remaining items are content, not infrastructure. See `handoff.md` for the
+atomic task list.
 
 ---
 
@@ -928,14 +981,15 @@ FoleyFlow is ready to submit when a judge can verify all of the following:
 | # | Criterion | State |
 |---|---|---|
 | 1 | A real video enters a B2-backed project | **Met** — verified live |
-| 2 | Genblaze orchestrates visible, meaningful workflow stages | Partial — ingest and its manifest only |
-| 3 | The app produces an audible, synchronized Foley transformation | Not met — the headline feature, blocked on the SFX worker |
+| 2 | Genblaze orchestrates visible, meaningful workflow stages | **Met** — ingest, stem fan-out with per-stem retry, and mix/mux/QA all run as Genblaze steps; run id, current stage and per-stage outcome are on `GET /runs/{id}`. Analysis is the one call still outside (§8.2) |
+| 3 | The app produces an audible, synchronized Foley transformation | **Met** — verified 2026-08-02 on the deployed app: `proj_01KYJD1RKETS3KTX5HA3H5JPDQ` mixed and exported, 5 stems generated live through the tunnelled worker, mix measured at −21.4 LUFS / −1.0 dBTP |
 | 4 | The app surfaces at least one useful technical or visual QA finding | **Met** for continuity after analysis; audio when a mix is measured |
 | 5 | A targeted repair updates only the relevant asset/mix version | Not met |
-| 6 | The final export traces to source, prompts, models, QA, and B2 objects | Partial — Genblaze's manifest covers ingest |
+| 6 | The final export traces to source, prompts, models, QA, and B2 objects | **Met** — §11.6 manifest covers source, every stem (prompt, endpoint, tier, sha256), mix, export and QA; Genblaze's own canonical-hashed manifest covers ingest and is recorded on the run |
 
-**Criterion 3 is the one that decides the submission.** It is the product's
-entire premise, and it is the only criterion with an external dependency.
+**Criterion 5 is the only one still unmet.** It needs the per-event regenerate
+route; the engine behind it (`render_mix(variant_fn=…)`) exists and is tested.
+See `handoff.md`.
 
 ---
 

@@ -205,6 +205,25 @@ class QaReportResponse(BaseModel):
 
 # -- runs and events --------------------------------------------------------
 
+class StageOut(BaseModel):
+    """One workflow stage's outcome — SPEC §8.2's job-history row.
+
+    Written by our own stage recorder, never from provider or user input, so
+    `error` here is safe to serve verbatim (unlike `RunOut.error`): it is
+    Genblaze's own step error, not an arbitrary exception message.
+    """
+
+    name: str
+    status: str
+    elapsed_s: float = 0.0
+    provider: Optional[str] = None
+    retries: int = 0
+    error: Optional[str] = None
+    genblaze_run_id: Optional[str] = None
+    started_at: Optional[str] = None
+    detail: Optional[str] = None
+
+
 class RunOut(BaseModel):
     id: str
     project_id: str
@@ -214,6 +233,12 @@ class RunOut(BaseModel):
     timeline_version: Optional[int] = None
     parent_run_id: Optional[str] = None
     genblaze_run_id: Optional[str] = None
+    # SPEC §8.2: "the workflow run ID, current stage, and stage-level outcome
+    # in its job history". `stages` is the whole history; `current_stage` is the
+    # last one to have been recorded, which for a run still in flight is the one
+    # a UI should be showing as active.
+    stages: List[StageOut] = Field(default_factory=list)
+    current_stage: Optional[str] = None
     # A classification, never the exception text — see docs/api.md §3.6.
     error: Optional[str] = None
     error_code: Optional[str] = None

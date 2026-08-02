@@ -295,29 +295,92 @@ def assemble_timeline(timeline: Timeline, clip_duration_s: float,
                       gain, _event_seed(ev.name, ev.start_time))
 
         # Continuous events: ambience treatment over their interval, ducked
-        # -6 dB under the main bed. Concurrency rule: timeline order wins —
-        # a continuous event overlapping >= 2 already-accepted continuous
-        # layers is dropped with a warning (first-come priority; simple and
-        # deterministic, revisit by ear at T5 if it ever fires on a demo clip).
+        # -6 dB under the main bed.
         duck = _db_to_linear(CONTINUOUS_DUCK_DB)
-        accepted = []  # list of (start_s, end_s)
-        for ev in timeline.events:
-            if ev.kind != "continuous":
-                continue
-            s = ev.start_time
-            e = min(ev.start_time + ev.duration, clip_duration_s)
-            overlapping = [a for a in accepted if a[0] < e and s < a[1]]
-            if len(overlapping) >= MAX_CONTINUOUS_LAYERS:
-                print(f"[assemble] WARNING: dropping continuous layer "
-                      f"'{ev.name}' at {s:.2f}s — already "
-                      f"{MAX_CONTINUOUS_LAYERS} concurrent continuous layers "
-                      f"(first-come priority).")
-                continue
-            accepted.append((s, e))
+        for ev, s, e in accepted_continuous(timeline, clip_duration_s):
             clip = load_clip(sfx_fn(route_event(ev)))
             _add_bed(mix, clip, s, e, GAINS["continuous"] * duck)
 
     return master_normalize(mix)
+
+
+def accepted_continuous(timeline: Timeline, clip_duration_s: float,
+                        warn: bool = True) -> list:
+    """The continuous events that survive the concurrency rule, as (ev, s, e).
+
+    Concurrency rule: timeline order wins — a continuous event overlapping
+    >= MAX_CONTINUOUS_LAYERS already-accepted continuous layers is dropped
+    (first-come priority; simple and deterministic).
+
+    Extracted so `plan_requests` and `assemble_timeline` cannot disagree about
+    which layers exist. If they did, the prewarm would either generate a stem
+    the mix never uses — a real charge for silence — or miss one the mix needs
+    and stall the render on a synchronous generation it was meant to avoid.
+    `warn=False` keeps the planning pass quiet so the drop is reported once.
+    """
+    accepted = []
+    spans = []
+    for ev in timeline.events:
+        if ev.kind != "continuous":
+            continue
+        s = ev.start_time
+        e = min(ev.start_time + ev.duration, clip_duration_s)
+        overlapping = [a for a in spans if a[0] < e and s < a[1]]
+        if len(overlapping) >= MAX_CONTINUOUS_LAYERS:
+            if warn:
+                print(f"[assemble] WARNING: dropping continuous layer "
+                      f"'{ev.name}' at {s:.2f}s — already "
+                      f"{MAX_CONTINUOUS_LAYERS} concurrent continuous layers "
+                      f"(first-come priority).")
+            continue
+        spans.append((s, e))
+        accepted.append((ev, s, e))
+    return accepted
+
+
+def plan_requests(timeline: Timeline, clip_duration_s: float,
+                  tier: str = "full") -> list:
+    """Every SfxRequest `assemble_timeline` will ask for, in order, deduped.
+
+    The point of knowing this up front is fan-out: `assemble_timeline` pulls
+    stems one at a time as the mix is built, which is the right shape for the
+    mixer and the wrong shape for generation. Planning lets the render warm
+    every stem concurrently through Genblaze first, after which assembly is all
+    cache hits.
+
+    Deduped on (endpoint, prompt, duration) — the SFX cache key — because
+    several events routinely resolve to one clip and asking for it twice would
+    show as two stems in the job history.
+    """
+    if tier not in TIERS:
+        raise ValueError(f"assemble: unknown tier {tier!r}, expected one of {TIERS}")
+
+    requests = []
+    seen = set()
+
+    def _add(request) -> None:
+        key = (request.endpoint, request.prompt, round(request.duration_s, 2))
+        if key in seen:
+            return
+        seen.add(key)
+        requests.append(request)
+
+    if timeline.ambience:
+        _add(route_ambience(timeline.ambience, clip_duration_s))
+
+    if tier in ("discrete", "full"):
+        for ev in timeline.events:
+            if ev.kind == "discrete":
+                _add(route_event(ev))
+
+    if tier == "full":
+        for ev in timeline.events:
+            if ev.kind == "rhythmic":
+                _add(route_event(ev))
+        for ev, _s, _e in accepted_continuous(timeline, clip_duration_s, warn=False):
+            _add(route_event(ev))
+
+    return requests
 
 
 def write_mix(mix: np.ndarray, path: str) -> None:

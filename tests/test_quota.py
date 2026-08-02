@@ -190,3 +190,45 @@ def test_ledger_attributes_usage_to_the_model_actually_called(tmp_path, monkeypa
     assert captured["endpoint"] == "gemini-3.5-flash-lite", \
         "the ledger endpoint must be the model actually invoked"
     assert captured["model_arg"] == "gemini-3.5-flash-lite"
+
+
+def test_ledger_path_is_overridable_by_environment(tmp_path, monkeypatch):
+    """A read-only container layer must not silently disable quota counting.
+
+    LEDGER_PATH is resolved at import, so this reimports the module under a
+    patched environment rather than poking the constant — the point is that a
+    process started with the variable set picks it up.
+    """
+    import importlib
+
+    target = tmp_path / "nested" / "ledger.jsonl"
+    monkeypatch.setenv("FOLEYFLOW_LEDGER_PATH", str(target))
+
+    import foleyflow.ledger as ledger_module
+    reloaded = importlib.reload(ledger_module)
+    try:
+        assert reloaded.LEDGER_PATH == str(target)
+
+        import foleyflow.quota as quota_module
+        quota_reloaded = importlib.reload(quota_module)
+        # The directory does not exist yet — ledger_writable must create it
+        # rather than report the path unusable.
+        assert quota_reloaded.ledger_writable() is True
+        assert target.exists()
+    finally:
+        # Restore both modules for every test that follows.
+        monkeypatch.delenv("FOLEYFLOW_LEDGER_PATH", raising=False)
+        importlib.reload(ledger_module)
+        import foleyflow.quota as quota_module
+        importlib.reload(quota_module)
+
+
+def test_ledger_path_falls_back_to_the_repo_root(monkeypatch):
+    """Unset means the historical default, so local runs are unaffected."""
+    import importlib
+
+    monkeypatch.delenv("FOLEYFLOW_LEDGER_PATH", raising=False)
+    import foleyflow.ledger as ledger_module
+    reloaded = importlib.reload(ledger_module)
+    assert reloaded.LEDGER_PATH.endswith("ledger.jsonl")
+    assert "src" not in reloaded.LEDGER_PATH.split(os.sep)

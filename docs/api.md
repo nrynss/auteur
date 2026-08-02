@@ -7,6 +7,16 @@ here, the product does not have it.
 
 Base path: `/api/v1`
 
+Deployed at <https://foleyflow-142385844755.us-east4.run.app>.
+
+> **Not everything here is built.** This document is the contract and is
+> deliberately written ahead of the code, so two endpoints below describe
+> intent rather than behaviour. Both are marked **NOT IMPLEMENTED** at their
+> definition, and both are tracked in [../handoff.md](../handoff.md):
+> `POST /projects/{id}/events/{index}/regenerate` and
+> `GET /projects/{id}/dossier`. Everything else in this file is live and
+> covered by tests.
+
 ---
 
 ## 1. Principles
@@ -226,6 +236,21 @@ GET /api/v1/projects/{id}/runs/{run_id}
 by the server's own work functions. It is not a stable contract field by field:
 each `kind` puts different keys in it.
 
+**Workflow stages.** `genblaze_run_id`, `current_stage`, and `stages` are the
+job history SPEC §8.2 asks for. `stages` is an ordered array; each entry carries
+`name` (`ingest` | `stems` | `mix` | `mux` | `qa`), `status`
+(`succeeded` | `failed`), `elapsed_s`, `provider`, `retries`, `detail`, its own
+`genblaze_run_id`, and `error` when it failed. `current_stage` is the last stage
+recorded — for a run still in flight, the one to render as active.
+
+Unlike `error`, a stage's `error` is Genblaze's own step error rather than an
+arbitrary exception message, so it is safe to display.
+
+Stages are readable *while the run is in flight*: each one is appended to the
+event log as it completes, and the finished run also carries the whole list on
+its immutable record. That is why a client polling a long render sees progress
+instead of nothing until the end.
+
 This is the polling target for every `202`. A running run is reported from the
 event log; a terminal run from its immutable record.
 
@@ -248,6 +273,11 @@ SPEC.md §6.3 calls "History", served directly rather than reconstructed.
 ---
 
 ### 3.7 Repair
+
+> **NOT IMPLEMENTED.** The engine exists and is tested —
+> `render_mix(variant_fn=…)` regenerates exactly one stem and re-mixes, every
+> other stem still served from cache — but this route and the version lineage
+> it should record do not exist. See handoff.md task 4.
 
 ```
 POST /api/v1/projects/{id}/events/{event_index}/regenerate
@@ -328,6 +358,10 @@ manifest carries `qa_override: true`.
 
 The published video and manifest come back as signed `export_url` and
 `manifest_url` on `GET /projects/{id}`.
+
+> **NOT IMPLEMENTED.** Every artifact it would assemble is already in B2 and
+> reachable through `ProjectStore`; this is composition, not new storage. See
+> handoff.md task 5.
 
 ```
 GET /api/v1/projects/{id}/dossier

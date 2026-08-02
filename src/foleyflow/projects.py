@@ -67,6 +67,7 @@ EVENT_MIX_COMPLETED = "postproduction.mix.completed"
 EVENT_QA_FLAGGED = "postproduction.qa.flagged"
 EVENT_QA_CLEARED = "postproduction.qa.cleared"
 EVENT_EXPORT_APPROVED = "postproduction.export.approved"
+EVENT_STAGE_RECORDED = "postproduction.stage.recorded"
 EVENT_RUN_STARTED = "postproduction.run.started"
 EVENT_RUN_COMPLETED = "postproduction.run.completed"
 EVENT_RUN_FAILED = "postproduction.run.failed"
@@ -660,7 +661,8 @@ class ProjectStore:
 
     def record_stem(self, project_id: str, *, run_id: str, cache_key: str,
                     endpoint: str, prompt: str, duration_s: float,
-                    variant: str = "", actor: str = "system") -> Event:
+                    variant: str = "", served_endpoint: Optional[str] = None,
+                    actor: str = "system") -> Event:
         """Record one *billed* stem generation.
 
         Cache hits are deliberately not logged. A full render touches every
@@ -668,12 +670,37 @@ class ProjectStore:
         so logging hits would bury the handful of real generations — and the
         thing this log exists to answer is "what did this run actually spend".
         The manifest inventories every stem, hit or miss; this records the spend.
+
+        `endpoint` is what was *asked for* — it is the cache address. When a
+        fallback tier answered instead, `served_endpoint` names who actually
+        produced the audio and therefore who actually charged for it. Omitted
+        when the requested tier served it, so the common case stays quiet.
         """
+        payload = {"cache_key": cache_key, "endpoint": endpoint,
+                   "prompt": prompt, "duration_s": duration_s,
+                   "variant": variant}
+        if served_endpoint and served_endpoint != endpoint:
+            payload["served_endpoint"] = served_endpoint
         return self.append_event(
             project_id, EVENT_STEM_GENERATED, actor=actor, run_id=run_id,
-            payload={"cache_key": cache_key, "endpoint": endpoint,
-                     "prompt": prompt, "duration_s": duration_s,
-                     "variant": variant})
+            payload=payload)
+
+    def record_stage(self, project_id: str, *, run_id: str, stage,
+                     actor: str = "system") -> Event:
+        """Record one workflow stage's outcome as it happens.
+
+        SPEC §8.2 wants the workflow run id, the current stage, and the
+        stage-level outcome visible in job history. The finished `Run` carries
+        the whole list, but it is only written when the job ends — so a client
+        watching a render would see nothing until it was over. Appending each
+        stage to the event log as it completes is what makes "current stage"
+        answerable for a run still in flight.
+
+        `stage` is a `foleyflow.stages.StageRecord`.
+        """
+        return self.append_event(
+            project_id, EVENT_STAGE_RECORDED, actor=actor, run_id=run_id,
+            payload=stage.to_dict())
 
     def record_mix(self, project_id: str, *, run_id: str, mix_key: str,
                    video_key: str, tier: str, timeline_version: int,

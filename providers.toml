@@ -2,8 +2,14 @@
 version = 1
 
 # ---------------------------------------------------------------- adapters --
+# `module` is the plain-HTTP adapter (foleyflow.providers.base:Adapter).
+# `genblaze_provider` is the same vendor code lifted into a Genblaze
+# SyncProvider — see foleyflow/providers/genblaze.py. Every generation call in
+# the live path goes through the latter; the former is the vendor logic it
+# wraps, not a second route to the network.
 [adapters.fal]
 module = "foleyflow.providers.fal:FalAdapter"
+genblaze_provider = "foleyflow.providers.genblaze:FalSfxProvider"
 api_key_env = "FAL_KEY"
 method = "subscribe"          # fal_client.subscribe | run | submit
 
@@ -13,10 +19,19 @@ api_key_env = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
 
 [adapters.local]
 module = "foleyflow.providers.local:LocalAdapter"
+genblaze_provider = "foleyflow.providers.genblaze:LocalSfxProvider"
 enabled = true
 # The self-hosted SFX worker (§9.1). Overridden by $FOLEYFLOW_SFX_WORKER_URL,
 # which is how a tunnel URL gets swapped in without editing this file.
 base_url = "http://127.0.0.1:8600"
+
+# The paid tier. Genblaze ships an ElevenLabs connector, so there is nothing to
+# lift — `genblaze_provider` points straight at it and there is no
+# `module` entry, because no plain-HTTP path to ElevenLabs exists or should.
+# The connector reads ELEVENLABS_API_KEY itself; FoleyFlow never holds the key.
+[adapters.elevenlabs]
+genblaze_provider = "genblaze_elevenlabs:ElevenLabsSFXProvider"
+api_key_env = "ELEVENLABS_API_KEY"
 
 # ------------------------------------------------------------------ models --
 # NOTE: the table key is the canonical model ID and is part of the SFX cache
@@ -43,6 +58,25 @@ cost_per_call_usd = 0.05
 duration_min_s = 0.5
 duration_max_s = 22.0
 prompt_field = "text"
+duration_field = "duration_seconds"
+duration_type = "float"
+
+# The paid tier's model. `eleven_text_to_sound_v2` is the slug the
+# genblaze-elevenlabs connector's ModelFamily matches, and the field names below
+# are the ones its `generate()` reads off `step.params` — so build_arguments
+# produces a payload the connector accepts with no special-casing.
+#
+# Pricing is bucketed by duration upstream (<=5s $0.10, <=15s $0.20, <=30s
+# $0.30) and the connector ships no pricing table. A single per-call figure at
+# the top of the range is the honest choice for a spend guard: over-estimating
+# is recoverable, under-estimating is what empties an account.
+[models."eleven_text_to_sound_v2"]
+adapter = "elevenlabs"
+role = "sfx"
+cost_per_call_usd = 0.30
+duration_min_s = 0.5
+duration_max_s = 30.0
+prompt_field = "prompt"
 duration_field = "duration_seconds"
 duration_type = "float"
 
@@ -201,6 +235,41 @@ cost_per_call_usd = 0.02
 adapter = "fal"
 role = "analysis"
 cost_per_call_usd = 0.02
+
+# -------------------------------------------------------------- sfx tiers --
+# Which endpoint a routed SFX request actually goes to (§9.1). All three tiers
+# are invoked through Genblaze, so the code path is identical between testing
+# and the demo and the fallback branch is exercised on every offline run rather
+# than for the first time in front of a judge.
+#
+# `active` is overridden by $FOLEYFLOW_SFX_TIER.
+#
+# Do not casually change `active`. The SFX cache is keyed on the endpoint, so a
+# different active tier means different keys — which is correct (MOSS output
+# must never be served as if ElevenLabs produced it) but does mean the ~170
+# already-cached stems only serve the tier they were generated under. `test`
+# resolves to the same endpoint every routing category below already declares,
+# so today's cache stays warm.
+[sfx_tiers]
+active = "test"
+
+[sfx_tiers.paid]
+endpoint = "eleven_text_to_sound_v2"
+fallback = "fallback"
+label = "ElevenLabs sound-effects v2 (genblaze-elevenlabs connector)"
+
+# Reached only when `paid` errors. Same model, one gateway further away: fal
+# bills separately, so a dead ElevenLabs key does not stop a demo.
+[sfx_tiers.fallback]
+endpoint = "fal-ai/elevenlabs/sound-effects/v2"
+label = "ElevenLabs sound-effects v2 via fal"
+
+# No `fallback`: the offline tier is the end of the chain. Escalating from a
+# free local model to a paid API on error is exactly the surprise a spend guard
+# exists to prevent.
+[sfx_tiers.test]
+endpoint = "openmoss/moss-soundeffect-v2"
+label = "Self-hosted MOSS-SoundEffect v2"
 
 # ---------------------------------------------------------------- routing --
 # Ordered list — the first category whose keyword list has a word-boundary
