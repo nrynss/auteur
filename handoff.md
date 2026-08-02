@@ -16,8 +16,8 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   `docs/api.md` is written ahead of the code and treated as source of truth;
   every endpoint in it is live and covered by tests.
 - Task numbers are the current queue; DONE items keep their titles. Remaining:
-  **6 (per-project budgets) → 7 (control-room UI)**.
-- `uv run pytest -q` → **483 passed, 1 skipped**. No provider credentials
+  **7 (control-room UI)**.
+- `uv run pytest -q` → **509 passed, 1 skipped**. No provider credentials
   required: the billed calls are stubbed at two seams, `stems.generate_many`
   and `sfx_cache.generate_canonical_wav`. Everything else — ffmpeg, the mix, the
   shared cache, storage, the Genblaze pipelines — runs for real.
@@ -104,69 +104,27 @@ as an optional local-JSONL override for tests; it is not the deploy path.
 Failed storage writes mark the process unwritable so `ledger_writable()` is
 honest without double-billing a successful generation.
 
-## 6. Per-project budgets — M
+## 6. Per-project budgets — M — **DONE**
 
-Budgets are the product's spine: a project is approved with a dollar cap, and
-the ledger work (task 5) is what makes spend queryable. But a ledger row has
-no project attribution, so "what has this project spent" is unanswerable —
-run metadata covers only mix runs, and analysis spend is invisible per
-project. The control-room UI (task 7) should render a budget, so this lands
-before it.
+A project is approved with a dollar cap and every billed row is attributed
+back to it. `log_transaction` rows carry `project_id` from a contextvar the
+job runner sets per run — analysis, mix and repair all tag their rows with no
+call-site change; a direct `foleyflow render` stays unattributed (global)
+unless `--project` opts it in. `budget_usd` is set at creation (create body
+or `providers.toml [budgets]` default) and fixed on the frozen project
+record. `GET /projects/{id}/budget` reports configured, spent (failed calls
+counted), remaining, per-model breakdown, `estimate: true` and
+`ledger_writable`; the dossier carries a compact block. Analyze and
+regenerate are gated at the route (422 with the numbers when `remaining <
+estimate`); free calls and cap-less projects are never refused; no reservation
+(documented).
 
-API-first, like every feature here: `docs/api.md` changes first (the budget
-endpoint, the create-body field), and the CLI is a client of that contract.
-
-### The gate policy (nailed before coding)
-
-Refuse at the route, against the estimate, when a billable call would take the
-project past its budget: `remaining < estimate` → `422 precondition_failed`
-with the numbers (configured, spent, estimated, remaining). Free calls
-(estimate $0.00 — the self-hosted tier) skip the gate entirely.
-
-There is no reservation: two concurrent jobs can both pass the check and
-overspend. That window is accepted and documented — the same posture B2's
-conditional-write weakening already takes for a single-instance deployment.
-
-Spend is estimated from the ledger and labelled `estimate: true` like
-`/quota`; a real provider bill can drift from it, and the payload says so.
-Overage is therefore possible but visible: the budget payload always carries
-`ledger_writable`, and `false` means the figures are fiction.
-
-### What ships
-
-1. **Attribution.** `log_transaction` gains an optional `project_id`;
-   `execute_with_ledger` reads it from a contextvar the job runner sets per
-   run, so the deep provider seam keeps its signature. Every run kind
-   inherits it automatically — analysis, mix, and the repair route all tag
-   their rows without touching their call sites. Old rows stay valid (the
-   field is optional). A direct `foleyflow render` has no project: its rows
-   stay unattributed and the CLI footer still sums globally.
-2. **Definition.** `budget_usd` on the project, set at creation (optional in
-   the create body) or from the `providers.toml [budgets]` default. Fixed at
-   creation for v1 — the project record is frozen, so any later change would
-   be an appended event (`postproduction.budget.set`) folded into state,
-   noted but not built. Models priced at $0.00 simply do not consume the
-   budget.
-3. **Read.** `GET /projects/{id}/budget` — configured, spent (sum of
-   attributed rows), estimated, remaining, per-model breakdown,
-   `ledger_writable`, `estimate: true`. The dossier gains a compact budget
-   block that reuses the same read; the UI (task 7) renders it.
-4. **CLI project context.** The CLI gets a first-class notion of *the current
-   project*: `FOLEYFLOW_PROJECT` env, a `--project` flag, and `foleyflow use
-   <id>` persisting a default, so project verbs (`show`, `mix`, `budget`,
-   `regenerate`, …) can omit the id and act on it. `foleyflow budget` reads
-   the same endpoint the UI will — nothing is computed in the CLI.
-
-### Acceptance
-
-- Analysis, mix and repair rows for project A never appear in project B's
-  spent (two projects that each spend $0.30 report their own numbers).
-- With `budget_usd = 0.50` and a $0.30 estimate, a second $0.30 call is
-  refused with the numbers; a $0.00 estimate is never refused.
-- `ledger_writable: false` → the budget payload still returns, figures marked
-  fiction (same as `/quota`).
-- `foleyflow use <id>` then `foleyflow budget` (no id) reports the current
-  project's budget.
+The CLI has a first-class current project — positional id > `--project` >
+`$FOLEYFLOW_PROJECT` > `foleyflow use`'s persisted default — and `foleyflow
+budget` reads the same endpoint the UI will. Project-less rows are never
+stranded: `POST /projects/{id}/attributions` (and `foleyflow attribute`)
+writes an immutable rescue override claiming unattributed rows written before
+a time, first-come by `before` so a row can never land in two projects.
 
 ## 7. Control room UI — L
 

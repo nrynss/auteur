@@ -523,6 +523,16 @@ Generation budget: $0.07 estimated / $0.05 spent
 
 Every generated asset records the provider, model, requested duration, pricing estimate shown at approval, incurred cost when available, and the routing rationale. These fields are included in the B2-backed provenance manifest so costs and quality decisions remain auditable.
 
+Each project carries a dollar cap set at creation (`budget_usd`, default from
+config), every billed row is attributed to the project that triggered it via a
+run-scoped context, and `GET /projects/{id}/budget` reports spent/remaining
+with the same estimate-and-`ledger_writable` honesty as `/quota`. Analyze and
+regenerate are refused at the route when the estimate exceeds the remaining
+cap. Work that ran outside any project (a direct `foleyflow render`) stays
+unattributed and can be adopted later through an attribution override
+(`POST /projects/{id}/attributions`); rows are immutable, so adoption is a
+record, never a rewrite.
+
 ---
 
 ## 10. B2 object layout
@@ -563,7 +573,11 @@ monotonic ULID names make a sorted listing an ordered log.
 
 **The cost ledger uses the same pattern.** Each provider call is
 `ledger/{ulid}.json`, written with a conditional put, shared across every
-project on the same backend. A process-local file under `/tmp` was the previous
+project on the same backend, and attributed to the project that triggered it
+(a run-scoped contextvar stamps `project_id`; a direct render writes no
+project). Rescue overrides live under `ledger/attr/{ulid}.json`: an immutable
+adoption record that claims unattributed rows written before a time for one
+project. A process-local file under `/tmp` was the previous
 default on Cloud Run; that path is per-instance, so quota counting reset on
 every cold start and the ledger was the only cost record that was not a durable
 artifact. It lives next to `cache/` and `projects/` now. `FOLEYFLOW_LEDGER_PATH`
