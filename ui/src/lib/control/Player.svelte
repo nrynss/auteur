@@ -248,7 +248,7 @@
       <button
         class:on={shownSource === "preview"}
         aria-pressed={shownSource === "preview"}
-        disabled={previewItems.length === 0}
+        disabled={previewItems.length === 0 || !sourceUrl}
         onclick={() => switchTo("preview")}
       >
         Preview

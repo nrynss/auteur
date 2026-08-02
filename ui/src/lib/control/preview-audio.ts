@@ -53,7 +53,7 @@ export class PreviewEngine {
       .map(async (it) => {
         try {
           const r = await fetch(
-            `/api/v1/projects/${this.projectId}/preview/stems/${encodeURIComponent(it.key)}`,
+            `/api/v1/projects/${this.projectId}/preview/stems/${it.key}`,
           );
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           const data = await r.arrayBuffer();

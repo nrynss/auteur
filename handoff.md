@@ -154,7 +154,14 @@ with targets + continuity comparisons, never a fault) / History (versions,
 runs, event log, latest mix's real peaks) / Dossier, and a read-only
 kind-lane timeline with a resizable separator grip. Verified against the
 live seeded `standoff_kling` project. `npm test` 54, svelte-check 0/0.
-Remaining: frontend chain from 7.9.
+**7.9 landed**: A/B player (Original / Foley mix, playhead preserved,
+K/Space + arrows) and the browser preview — real stems scheduled over the
+original video at their transient offsets via Web Audio, labelled "not the
+measured mix". Two honest enablers: stamped `Event.stem_key` (event→audio
+link, refreshed per run) and `GET /preview/stems/{key}` (same-origin stem
+streaming — B2 has no CORS). Transient hit-point ticks on the timeline
+ruler. Suite 695, npm test 62, svelte-check 0/0. Remaining: frontend chain
+from 7.10.
 
 The throwaway static dashboard (`api/static/index.html`) is deleted outright
 when 7.6 lands.

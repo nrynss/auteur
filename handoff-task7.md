@@ -567,7 +567,7 @@ the label) instead of the tabular-mono −21.4 LUFS slot. The regression test
 asserts structural position (compare inside the body slot, nothing in the
 bar), which the substring-based tests could not catch.
 
-## 7.9 A/B player and browser preview — L
+## 7.9 A/B player and browser preview — L — **DONE**
 
 **Depends on:** 7.4, 7.8.
 
@@ -588,6 +588,50 @@ measurement.
 Discrete events are placed at `start_time + DISCRETE_BIAS_S - onset_s`
 (`assemble.py:284`) — a deliberate +50 ms late bias minus the clip's trimmed
 onset. A ruler labelling `start_time` as the hit point is wrong by tens of
+milliseconds, exactly the resolution a director works at.
+
+**Landed:** `Player.svelte` replaces the unfinished video slot when the project
+serves `source_url`/`mix_url` (7.4) — one transport, two stacked `<video>`
+sources (Original / Foley mix), toggle preserves the playhead (seek on
+loadedmetadata when the target isn't ready), scrubber, timecode,
+K/Space play-pause + ←/→ seek (window-level, typing contexts skipped), and a
+Preview mode: the real stems scheduled over the original video via Web Audio
+at their **transient** offsets — discrete = `start + 0.05` (the bias; the
+per-clip onset trim is not exposed by the API and the marker says so),
+rhythmic/continuous at `start_time`. Labelled "Browser preview — not the
+measured mix"; a stem that fails to load is counted, never substituted; QA
+numbers untouched (server's measured mix only). The timeline ruler draws teal
+hit-point ticks at the transient positions, not `start_time`.
+
+**Two honest enablers the API did not have** (same pattern as the 7.8 review
+finding: the mechanism assumed something unreachable):
+
+- **`Event.stem_key`** — the event→audio link, stamped at mix time from the
+  run's own inventory (7.1/7.2 provenance pattern; full A.4 round-trip
+  through `timeline_io` + analyze; exposed on `TimelineEventOut`). The stamp
+  refreshes `stem_key` on every run: a repair moves the cache address (new
+  variant), so the repair's mix allocates a new version recording the truth
+  (repair lineage + run record now use the stamped version; the repair test
+  moved from v3 to v4).
+- **`GET /projects/{id}/preview/stems/{key}`** (§3.13, docs/api.md) —
+  same-origin streaming of a project-inventory-validated stem. B2's signed
+  URLs carry no CORS, so the browser cannot decode them directly; this route
+  re-serves the bytes (immutable cache header — the address is
+  content-addressed).
+
+**Review fixes folded in:** the timeline GET response was silently dropping
+`stem_key` (the A.4 trap at the response-shaping door — would have killed the
+preview; now pinned by the repair test's API assertion); Preview is disabled
+without a source video (it overlays the original); the stem fetch uses the
+raw key (Cloud Run proxies can reject `%2F`, and the key is server-validated);
+preview listeners attach once (toggling off/on must not stack duplicate
+play handlers); the deployed `run.app` build predates 7.4 (no `source_url`/
+`mix_url` on the live project — the frontend is typed against the current
+schema and verified by construction + tests, not against the stale deploy).
+
+Tests: `preview.test.ts` (transient offsets, schedule builder). Suite 695
+passed / 1 skipped (handoff.md / SPEC.md updated); npm test 62; svelte-check
+0/0.
 milliseconds, exactly the resolution a director works at.
 
 ## 7.10 Direct manipulation — L

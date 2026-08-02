@@ -415,6 +415,14 @@ def test_repair_route_changes_only_the_target_stem(store, project, stub_ffmpeg,
     # The new version is a real generation of the project, not an overwrite.
     assert store.list_timeline_versions(project.id) == [1, 2, 3, 4]
 
+    # The API exposes the stamped address (the A.4-style passthrough that a
+    # hand-enumerated response could silently drop): the repaired event's
+    # stem_key in the GET response is the repaired stem's address.
+    tl = client.get(f"{API_PREFIX}/projects/{project.id}/timeline").json()
+    assert tl["version"] == 4
+    repaired_event = next(e for e in tl["events"] if e["index"] == 2)
+    assert repaired_event["stem_key"] == repaired_gunshot["b2_key"]
+
     # The stamped stem_key follows the address: the repaired event now names
     # the repaired stem, every other event keeps its key.
     repaired_timeline = store.load_timeline(project.id, 4)

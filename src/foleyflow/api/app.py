@@ -877,7 +877,13 @@ def create_app(store: Optional[ProjectStore] = None,
         except StorageError as e:
             raise err.StorageUnavailable(
                 "Project storage is unreachable") from e
-        return Response(content=data, media_type="audio/wav")
+        # The stem address is content-addressed (the cache key is a sha256 of
+        # endpoint|prompt|duration|variant), so the same bytes always live at
+        # the same key — safe to cache forever, like /assets.
+        return Response(
+            content=data, media_type="audio/wav",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
 
     # -- runs and events --------------------------------------------------
 
@@ -1383,6 +1389,7 @@ def _timeline_response(store: ProjectStore, project_id: str, timeline,
                 duration=e.duration,
                 seed=e.seed,
                 source_duration_s=e.source_duration_s,
+                stem_key=e.stem_key,
                 scene_id=scene_ids[i] if i < len(scene_ids) else None,
             )
             for i, e in enumerate(timeline.events)
