@@ -15,7 +15,7 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
 - One package, `src/foleyflow`. One CLI, `foleyflow`. The HTTP contract in
   `docs/api.md` is written ahead of the code and treated as source of truth;
   every endpoint in it is live and covered by tests.
-- `uv run pytest -q` → **470 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **475 passed, 1 skipped**. No provider credentials
   required: the billed calls are stubbed at two seams, `stems.generate_many`
   and `sfx_cache.generate_canonical_wav`. Everything else — ffmpeg, the mix, the
   shared cache, storage, the Genblaze pipelines — runs for real.
@@ -86,17 +86,13 @@ or absent in a deployed store). Hashes are provenance where the system records
 one — the source video and each stem — never recomputed or invented. One entry
 per physical object: content-addressed stems shared across runs are listed once.
 
-## 4. Route analysis through Genblaze — M
+## 4. Route analysis through Genblaze — M — **DONE**
 
-The one remaining §8.2 gap, and the only provider call still outside the spine:
-`analyze.py` calls Google directly via `execute_with_ledger`.
-
-`genblaze-google` exists on PyPI. This is the same lift `providers/genblaze.py`
-already performed for the local and fal adapters, so follow that shape rather
-than inventing a second one. Two things must survive unchanged: the tuned
-`TIMELINE_PROMPT` with its validated event timings, and the timeline cache key —
-re-analysing a clip that is already cached must stay free, because the free tier
-is 20 calls/day and that budget is the binding constraint on all development.
+Analysis is a one-step Genblaze pipeline via `AnalysisProvider` (Google and
+OpenAI lifts in `providers/genblaze.py`). Same ledger seam as SFX; response
+envelope stays `{"output": ...}`. Default VLM is Gemini (`gemini-2.5-flash`);
+OpenAI `gpt-5.6-luna` is optional via `--model`. Video is frame-sampled in the
+OpenAI adapter. TIMELINE_PROMPT and the timeline cache key are unchanged.
 
 ## 5. Move the cost ledger into B2 — M — **DONE**
 

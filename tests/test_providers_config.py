@@ -78,13 +78,14 @@ def test_unknown_model_raises_keyerror():
 # -- analysis config --
 
 def test_analysis_config():
-    """Analysis routes to Google directly; fal's gateway was only a proxy in
-    front of the same Gemini model."""
+    """Default analysis is Gemini; OpenAI gpt-5.6-luna is optional."""
     config = load_config(TOML_PATH)
     analysis = get_analysis_config(_config=config)
     assert analysis["video_model"] == "gemini-2.5-flash"
     assert analysis["vision_model"] == "gemini-2.5-flash"
     assert analysis["default_vlm"] == "gemini-2.5-flash"
+    assert get_model_spec(analysis["default_vlm"], _config=config).adapter == "google"
+    assert get_model_spec("gpt-5.6-luna", _config=config).adapter == "openai"
 
 
 def test_every_analysis_model_is_declared_and_routable():

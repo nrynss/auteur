@@ -107,7 +107,7 @@ config edit, not a code change.
 
 | Role | Provider / model | Cost |
 |---|---|---|
-| Video understanding → event timeline | `gemini-2.5-flash` (Google GenAI) | ~$0.005/call |
+| Video understanding → event timeline | `gemini-2.5-flash` (default); `gpt-5.6-luna` optional | ~$0.005 / ~$0.02 |
 | SFX, tier `test` (default) | `openmoss/moss-soundeffect-v2` (self-hosted) | $0.00 |
 | SFX, tier `paid` | `eleven_text_to_sound_v2` (`genblaze-elevenlabs`) | ~$0.10–0.30/call |
 | SFX, tier `fallback` | `fal-ai/elevenlabs/sound-effects/v2` (fal) | ~$0.05/call |

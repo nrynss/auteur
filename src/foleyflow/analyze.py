@@ -12,13 +12,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from foleyflow.models import Event, Timeline
-from foleyflow.ledger import execute_with_ledger
 from foleyflow.providers.config import get_analysis_config
 
 # Default VLM model — read from providers.toml [analysis] section.
-# Any video-capable model behind fal's OpenRouter gateway works here, e.g.
-# "google/gemini-2.5-flash", "google/gemini-3-flash-preview", "qwen/qwen3.6-flash".
-DEFAULT_MODEL = get_analysis_config().get("default_vlm", "google/gemini-2.5-flash")
+# Default is Gemini Flash; OpenAI gpt-5.6-luna is optional via --model.
+# The string is a model id in providers.toml, not a vendor hardcode.
+DEFAULT_MODEL = get_analysis_config().get("default_vlm", "gemini-2.5-flash")
 
 # Cache upload URIs so the same clip is uploaded once when several models
 # analyze it (direct runs + refinement passes).
@@ -144,8 +143,21 @@ def clean_json_text(text: str) -> str:
     text = re.sub(r"\s*```$", "", text, flags=re.MULTILINE)
     return text.strip()
 
+def _vlm_call(endpoint: str, arguments: dict) -> dict:
+    """One analysis provider call, through Genblaze.
+
+    SPEC §8.2: every provider call is a Genblaze step. The cost ledger still
+    records the row because the lifted provider goes through
+    ``execute_with_ledger``. Response envelope is ``{"output": ...}`` so
+    parsers stay adapter-agnostic.
+    """
+    from foleyflow.providers.genblaze import run_analysis_step
+
+    return run_analysis_step(endpoint, arguments)
+
+
 def repair_json_with_vlm(broken_json: str, error_msg: str) -> str:
-    """Use Gemini via OpenRouter to repair broken JSON."""
+    """Ask the configured vision model to repair broken JSON."""
     analysis = get_analysis_config()
     vision_model = analysis["vision_model"]
 
@@ -156,9 +168,9 @@ JSON:
 {broken_json}"""
 
     try:
-        response = execute_with_ledger(
+        response = _vlm_call(
             vision_model,
-            arguments={
+            {
                 "image_urls": [],
                 "prompt": repair_prompt,
                 # No `model` override: the adapter prefers arguments["model"] over the
@@ -277,7 +289,7 @@ def analyze_video_direct(path: str, model: str = DEFAULT_MODEL, extra_args: dict
     }
     if extra_args:
         arguments.update(extra_args)
-    response = execute_with_ledger(effective_model, arguments=arguments)
+    response = _vlm_call(effective_model, arguments)
 
     response_text = response.get("output") or response.get("text") or ""
     timeline = parse_timeline_json(response_text, clip_duration=duration)
@@ -293,7 +305,7 @@ def analyze_video_fal(path: str, endpoint: str, extra_args: dict = None) -> Time
     args = {"video_url": video_url, "prompt": prompt}
     if extra_args:
         args.update(extra_args)
-    response = execute_with_ledger(endpoint, arguments=args)
+    response = _vlm_call(endpoint, args)
     timeline = parse_timeline_json(response.get("output") or response.get("text") or "",
                                    clip_duration=duration)
     timeline.duration = duration  # ffprobe is the sole source of truth
@@ -310,9 +322,9 @@ def find_event_span(video_path_or_url: str, query: str):
 
     video_url = (video_path_or_url if video_path_or_url.startswith("http")
                  else upload_video(video_path_or_url))
-    response = execute_with_ledger(
+    response = _vlm_call(
         localization_model,
-        arguments={"video_url": video_url, "prompt": query}
+        {"video_url": video_url, "prompt": query},
     )
     span = response.get("span")
     # Schema says [EventSegment]; the documented example shows a single object.
@@ -355,13 +367,13 @@ Video duration is exactly {duration:.3f} seconds.
 
 {TIMELINE_PROMPT}"""
 
-        response = execute_with_ledger(
+        response = _vlm_call(
             vision_model,
-            arguments={
+            {
                 "image_urls": image_uris,
                 "prompt": prompt,
-                "model": model
-            }
+                "model": model,
+            },
         )
         
         response_text = response.get("output") or response.get("text") or ""
@@ -382,10 +394,10 @@ def analyze_video(path: str, strategy: str = "direct", model: str = DEFAULT_MODE
       'direct'  — direct video upload to the VLM; raises on failure. (default)
       'sampled' — frame sampling; raises on failure. Research only.
       'auto'    — direct first, loud fallback to sampled. Research only.
-    model: any video-capable (direct) or vision-capable (sampled) model id
-    behind fal's OpenRouter gateway.
-    Explicit strategies never fall back silently: measurements labeled 'direct'
-    must actually come from the direct path.
+    model: any declared analysis model id (Gemini direct video, OpenAI vision
+    via frame sampling inside the adapter, …). Explicit strategies never fall
+    back silently: measurements labeled 'direct' must actually come from the
+    direct path.
     """
     if strategy == "direct":
         return analyze_video_direct(path, model=model)

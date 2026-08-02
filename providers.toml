@@ -15,7 +15,17 @@ method = "subscribe"          # fal_client.subscribe | run | submit
 
 [adapters.google]
 module = "foleyflow.providers.google:GoogleAdapter"
+genblaze_provider = "foleyflow.providers.genblaze:GoogleAnalysisProvider"
 api_key_env = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+
+# OpenAI vision (GPT-5.6 family). Same Adapter + Genblaze lift as Google so
+# analysis is a config choice, not a code path. Chat Completions take images
+# not raw video — the OpenAI adapter samples frames when handed a video path.
+# API id: gpt-5.6-luna (cost-efficient tier; see OpenAI model docs).
+[adapters.openai]
+module = "foleyflow.providers.openai:OpenAIAdapter"
+genblaze_provider = "foleyflow.providers.genblaze:OpenAIAnalysisProvider"
+api_key_env = "OPENAI_API_KEY"
 
 [adapters.local]
 module = "foleyflow.providers.local:LocalAdapter"
@@ -133,10 +143,12 @@ num_inference_steps = 50
 cfg_scale = 4.0
 
 # --------------------------------------------------------------- analysis --
-# Analysis runs against Google directly. fal's OpenRouter gateway was only a
-# proxy in front of the same gemini-2.5-flash, so this is the identical model
-# minus a middleman and a credit balance — the tuned TIMELINE_PROMPT and its
-# validated event timings are unaffected.
+# Analysis runs through Genblaze (providers.genblaze.AnalysisProvider) so the
+# VLM call is timed, retried and recorded like every other provider step.
+# Default is Gemini Flash (free tier). OpenAI GPT-5.6 Luna is optional via
+# --model gpt-5.6-luna / the analyze body when OPENAI_API_KEY is set.
+# TIMELINE_PROMPT and the timeline cache key are model-agnostic — only the
+# endpoint string in the cache key changes when you switch.
 [analysis]
 video_model = "gemini-2.5-flash"
 vision_model = "gemini-2.5-flash"
@@ -173,6 +185,17 @@ cost_per_call_usd = 0.005
 requests_per_minute = 15
 requests_per_day = 500
 tokens_per_minute = 250000
+
+# OpenAI GPT-5.6 Luna — optional analysis path (not the default). Cost-efficient
+# tier ($0.20 / $1.20 per 1M tokens as of 2026-07-30). Image input, text output;
+# video is frame-sampled in the adapter. API id is exactly `gpt-5.6-luna`
+# (not "gpt-5.6"; that alias is Sol). Soft daily guard for /quota.
+[models."gpt-5.6-luna"]
+adapter = "openai"
+role = "analysis"
+cost_per_call_usd = 0.02
+requests_per_minute = 500
+requests_per_day = 2000
 
 # Retired fal analysis routes. Kept so historical ledger rows and any pinned
 # --model argument still resolve; nothing routes here by default.

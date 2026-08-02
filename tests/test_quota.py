@@ -181,7 +181,7 @@ def test_ledger_attributes_usage_to_the_model_actually_called(tmp_path, monkeypa
         captured["model_arg"] = arguments.get("model")
         return {"output": '{"duration": 15.0, "ambience": "wind", "events": []}'}
 
-    monkeypatch.setattr(analyze, "execute_with_ledger", fake_execute)
+    monkeypatch.setattr(analyze, "_vlm_call", fake_execute)
     monkeypatch.setattr(analyze, "upload_video", lambda p, model_id=None: "files/fake")
     monkeypatch.setattr(analyze, "get_video_duration", lambda p: 15.0)
 

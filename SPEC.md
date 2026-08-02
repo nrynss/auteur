@@ -21,7 +21,7 @@ product, and a reader needs to know which parts of it exist. Updated
 | B2 storage layer | **Built** | Content-addressed, atomic conditional writes, presigned up/download |
 | Project / run / version records | **Built** | Immutable records + append-only event log; state is derived, never stored |
 | Scene detection, per-scene stats, thumbnails | **Built** | ffmpeg-based; deterministic |
-| VLM analysis → timeline | **Built** | Gemini direct; verified end-to-end on a real clip |
+| VLM analysis → timeline | **Built** | Genblaze step; Gemini default, OpenAI `gpt-5.6-luna` optional; cache protects re-runs |
 | Timeline + SFX caches | **Built** | Content-addressed; protect the 20/day analysis budget |
 | Cost ledger + quota accounting | **Built** | One object per call under `ledger/` on B2; estimates, explicitly labelled as such |
 | Genblaze integration | **Built** | Every provider call and every deterministic local stage runs as a Genblaze step; stems fan out, failures retry per-stem across tiers |
@@ -252,14 +252,14 @@ Genblaze must visibly orchestrate the workflow—not simply appear as an install
 
 The app should show the workflow run ID, current stage, and stage-level outcome in its job history.
 
-#### What is actually integrated (genblaze-core 0.3.7, pinned `<0.4`)
+#### What is actually integrated (genblaze-core 0.3.8, pinned `<0.4`)
 
-Every bullet above is implemented for generation and for the deterministic
-local stages. One gap remains, named here rather than glossed: **analysis is not
-yet a Genblaze step.** `analyze.py` still calls Google directly through
-`execute_with_ledger`. Genblaze ships a `google` connector, so this is the same
-lift the fal adapter got and not a blocked path — it is simply not done. Every
-other provider call in the system goes through a pipeline.
+Every bullet above is implemented for generation, for analysis, and for the
+deterministic local stages. Analysis is a one-step pipeline through
+`AnalysisProvider` (Google Gemini by default; OpenAI `gpt-5.6-luna`
+optional). The call still bills via the cost ledger; Genblaze owns timing,
+status and provenance. Every provider call in the system goes through a
+pipeline.
 
 Concretely:
 
@@ -743,7 +743,7 @@ Use the fewest providers needed for an impressive and repeatable demo. All names
 
 | Need | Implementation | State | Constraint |
 |---|---|---|---|
-| Video/scene understanding | `gemini-2.5-flash` via the Google GenAI SDK | **Built** | Schema-validated JSON; a repair pass handles malformed output |
+| Video/scene understanding | `gemini-2.5-flash` (default); `gpt-5.6-luna` optional | **Built** | Schema-validated JSON; a repair pass handles malformed output |
 | Scene boundaries + colour statistics | ffmpeg | **Built** | Deterministic; exit codes honoured so a failed probe is not a single-shot clip |
 | Foley sound effects | Self-hosted open-weight model; ElevenLabs on approval | **Not built** | Ambience and discrete events generated independently; cached by request hash |
 | Visual continuity | Per-scene statistics first; optional multimodal explanation | **Built** | Adjacent mean-luma comparison; warning only — never automatic colour correction |
@@ -992,7 +992,7 @@ FoleyFlow is ready to submit when a judge can verify all of the following:
 | # | Criterion | State |
 |---|---|---|
 | 1 | A real video enters a B2-backed project | **Met** — verified live |
-| 2 | Genblaze orchestrates visible, meaningful workflow stages | **Met** — ingest, stem fan-out with per-stem retry, and mix/mux/QA all run as Genblaze steps; run id, current stage and per-stage outcome are on `GET /runs/{id}`. Analysis is the one call still outside (§8.2) |
+| 2 | Genblaze orchestrates visible, meaningful workflow stages | **Met** — ingest, analysis, stem fan-out with per-stem retry, and mix/mux/QA all run as Genblaze steps; run id, current stage and per-stage outcome are on `GET /runs/{id}` |
 | 3 | The app produces an audible, synchronized Foley transformation | **Met** — verified 2026-08-02 on the deployed app: `proj_01KYJD1RKETS3KTX5HA3H5JPDQ` mixed and exported, 5 stems generated live through the tunnelled worker, mix measured at −21.4 LUFS / −1.0 dBTP |
 | 4 | The app surfaces at least one useful technical or visual QA finding | **Met** for continuity after analysis; audio when a mix is measured |
 | 5 | A targeted repair updates only the relevant asset/mix version | **Met** — `POST /events/{index}/regenerate` regenerates one stem (variant salt) and re-mixes; verified end to end: the target stem's `b2_key` moves, every other stem's is identical, the mixes differ, and the lineage names the superseded take |
