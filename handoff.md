@@ -126,14 +126,27 @@ will. Project-less rows are never stranded: `POST /projects/{id}/attributions`
 unattributed rows written before a time, first-come by `before` so a row can
 never land in two projects.
 
-## 7. Control room UI — L
+## 7. Control room UI — L — **see `handoff-task7.md`**
 
-SPEC §6.1. Only the throwaway static dashboard (`api/static/index.html`) exists.
+SPEC §6.1, and the only thing left. Scoped in full in its own file because it
+outgrew a section: it is not a status page but a director's tool — a directly
+editable timeline, an AI addressed in text that proposes edits rather than
+applying them, and a browser-side preview so the edit loop costs nothing.
 
-The API already serves everything it needs, including per-stage status: runs
-carry `stages`, `current_stage` and `genblaze_run_id`, and the event log is the
-history view. The two pieces with no UI at all are the silent-versus-mixed A/B
-toggle and the readiness checklist.
+The throwaway static dashboard (`api/static/index.html`) is deleted outright.
+
+Three things about the current state that the earlier version of this section
+got wrong, and that shape the work:
+
+- **Readiness is already rendered** — `index.html` draws the percent bar and
+  checklist rows. What has no UI at all is far larger: no video player, no A/B,
+  no QA report, no stage progress, no repair action, no dossier, no budget.
+- **The API does not already serve everything it needs.** There is no timeline
+  write path at all, and the source video's signed URL exists only inside the
+  dossier. Direct manipulation needs new endpoints, not just a new front end.
+- **The timeline data model needs three changes first** — a frozen per-event
+  mix `seed`, a `source_duration_s` split from the placement span, and trim
+  support — or the editor lies about what it is doing.
 
 Evidence-first, per SPEC §8.4: show the measured number and its source, never a
 synthesised verdict. QA warnings are review prompts, not automatic corrections —
