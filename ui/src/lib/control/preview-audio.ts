@@ -68,15 +68,26 @@ export class PreviewEngine {
   }
 
   /** Schedule every stem whose window is still ahead of the playhead.
-   * Call on the video's play event; stop() on pause/seek. */
+   * Call on the video's play event; stop() on pause/seek.
+   *
+   * A stem that straddles the playhead starts at the offset INTO its buffer
+   * (start(when, into)), never from its beginning — a 15 s bed resumed at
+   * t=10 must continue at its 10 s mark, not restart and run past the end
+   * of the video. The release ramp uses the REMAINING duration for the same
+   * reason: shaping past the source's actual end would never fire and the
+   * stem would click. */
   schedule(): void {
     const ctx = this.ensureCtx();
     const videoTime = this.video.currentTime;
     for (const item of this.items) {
       const buf = this.buffers.get(item.key);
       if (!buf) continue;
-      if (item.offset + buf.duration < videoTime) continue; // already passed
-      const when = ctx.currentTime + Math.max(0, item.offset - videoTime);
+      // How far the playhead is INTO this stem's window; negative = ahead.
+      const behind = videoTime - item.offset;
+      if (behind >= buf.duration) continue; // fully in the past
+      const into = Math.max(0, behind); // offset into the buffer
+      const remaining = buf.duration - into;
+      const when = ctx.currentTime + Math.max(0, -behind);
 
       const src = ctx.createBufferSource();
       src.buffer = buf;
@@ -84,13 +95,29 @@ export class PreviewEngine {
       // 8 ms attack/release so stems do not click; nothing else is shaped —
       // the server's envelopes are not replicated.
       gain.gain.setValueAtTime(0, when);
-      gain.gain.linearRampToValueAtTime(PREVIEW_GAIN, when + 0.008);
-      gain.gain.setValueAtTime(PREVIEW_GAIN, when + buf.duration - 0.008);
-      gain.gain.linearRampToValueAtTime(0, when + buf.duration);
+      gain.gain.linearRampToValueAtTime(
+        PREVIEW_GAIN,
+        when + Math.min(0.008, remaining / 2),
+      );
+      if (remaining > 0.016) {
+        gain.gain.setValueAtTime(PREVIEW_GAIN, when + remaining - 0.008);
+        gain.gain.linearRampToValueAtTime(0, when + remaining);
+      }
 
       src.connect(gain).connect(ctx.destination);
-      src.start(when);
+      src.start(when, into);
       this.sources.push(src);
+    }
+  }
+
+  /** Stop everything and release the context. Call on unmount: browsers cap
+   * concurrent AudioContexts (Chrome historically ~6), so navigating between
+   * projects must not leak one per visit. */
+  dispose(): void {
+    this.stop();
+    if (this.ctx) {
+      void this.ctx.close();
+      this.ctx = null;
     }
   }
 

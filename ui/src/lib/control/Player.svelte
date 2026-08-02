@@ -174,7 +174,7 @@
   });
 
   onDestroy(() => {
-    engine?.stop();
+    engine?.dispose();
   });
 </script>
 
