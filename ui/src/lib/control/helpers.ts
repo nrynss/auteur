@@ -20,12 +20,25 @@ export function groupLanes(events: TimelineEventOut[]): Lane[] {
     byKind.set(e.kind, list);
   }
   const order = ["continuous", "rhythmic", "discrete"];
-  const kinds = [...byKind.keys()].sort(
-    (a, b) => (order.indexOf(a) - order.indexOf(b)) || a.localeCompare(b),
-  );
+  // Unknown kinds go LAST, never to the top: an unrecognised kind taking a
+  // deliberate-looking position is the same failure mode as an unknown stage
+  // reading "Done". They keep their own name as the lane label.
+  const kinds = [...byKind.keys()].sort((a, b) => {
+    const ia = order.indexOf(a);
+    const ib = order.indexOf(b);
+    return (
+      (ia === -1 ? order.length : ia) - (ib === -1 ? order.length : ib) ||
+      a.localeCompare(b)
+    );
+  });
+  const LABELS: Record<string, string> = {
+    continuous: "Beds",
+    rhythmic: "Rhythmic",
+    discrete: "One-shots",
+  };
   return kinds.map((kind) => ({
     kind,
-    label: kind === "continuous" ? "Beds" : kind === "rhythmic" ? "Rhythmic" : "One-shots",
+    label: LABELS[kind] ?? kind,
     events: byKind.get(kind)!,
   }));
 }
@@ -60,38 +73,6 @@ export function loudnessDelta(
   return delta < 0
     ? `${(-delta).toFixed(1)} LU under target`
     : `${delta.toFixed(1)} LU over target`;
-}
-
-/** Continuity: the measured jump and the confidence — a comparison, never a
- * fault. Returns null when the issue carries no scene figures to compare. */
-export function continuityFigures(
-  issue: {
-    scene_id?: string | null;
-    compared_with?: string | null;
-    confidence?: number | null;
-    detail?: string | null;
-  },
-  threshold: number,
-  scenes: { id: string; start_s: number }[],
-): {
-  left: string | null;
-  right: string | null;
-  lumaJump: string | null;
-  threshold: string;
-  confidence: string | null;
-} | null {
-  if (!issue.scene_id && !issue.compared_with && !issue.detail) return null;
-  const left = issue.compared_with ?? null;
-  const right = issue.scene_id ?? null;
-  const conf =
-    issue.confidence == null ? null : Number(issue.confidence.toFixed(2));
-  return {
-    left,
-    right,
-    lumaJump: issue.detail ?? null,
-    threshold: String(threshold),
-    confidence: conf == null ? null : String(conf),
-  };
 }
 
 /** History: postproduction.run.started → "run.started" — the stable tail of

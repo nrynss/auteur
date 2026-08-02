@@ -44,3 +44,16 @@ export function toggleTheme(): Theme {
   setTheme(next);
   return next;
 }
+
+// System-tracking users (no saved preference) follow their OS live — the
+// pre-paint script sets data-theme only when a preference exists. When the OS
+// flips, the CSS tokens (and --wave with them) change but no toggle ran, so
+// canvas-drawn components would keep the old theme's ink. Bridge the system
+// path to the same repaint event setTheme dispatches.
+if (typeof window !== "undefined") {
+  window
+    .matchMedia("(prefers-color-scheme: dark)")
+    .addEventListener("change", () => {
+      window.dispatchEvent(new Event("ff:theme-change"));
+    });
+}

@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  continuityFigures,
-  friendlyEventType,
-  groupLanes,
-  loudnessDelta,
-  placeEvent,
-} from "./helpers";
+import { friendlyEventType, groupLanes, loudnessDelta, placeEvent } from "./helpers";
 import type { TimelineEventOut } from "../api/projects";
 
 const ev = (partial: Partial<TimelineEventOut> & { index: number }): TimelineEventOut => ({
@@ -36,6 +30,16 @@ describe("groupLanes", () => {
   it("is empty for no events", () => {
     expect(groupLanes([])).toEqual([]);
   });
+
+  it("sorts unknown kinds LAST with their own name as the label", () => {
+    const lanes = groupLanes([
+      ev({ index: 0, kind: "discrete" }),
+      ev({ index: 1, kind: "mystery" }),
+      ev({ index: 2, kind: "continuous" }),
+    ]);
+    expect(lanes.map((l) => l.kind)).toEqual(["continuous", "discrete", "mystery"]);
+    expect(lanes[2].label).toBe("mystery"); // honest, not "One-shots"
+  });
 });
 
 describe("placeEvent", () => {
@@ -64,38 +68,6 @@ describe("loudnessDelta", () => {
   it("renders absent measurements as a dash", () => {
     expect(loudnessDelta(null, -14)).toBe("—");
     expect(loudnessDelta(undefined, -14)).toBe("—");
-  });
-});
-
-describe("continuityFigures", () => {
-  it("keeps confidence to two decimals", () => {
-    const f = continuityFigures(
-      { scene_id: "s5", compared_with: "s4", confidence: 0.789, detail: "jumps 31.8" },
-      20,
-      [{ id: "s4", start_s: 0 }, { id: "s5", start_s: 5 }],
-    );
-    expect(f).not.toBeNull();
-    expect(f!.left).toBe("s4");
-    expect(f!.right).toBe("s5");
-    expect(f!.confidence).toBe("0.79");
-    expect(f!.threshold).toBe("20");
-  });
-
-  it("returns null when there is nothing to compare or quote", () => {
-    expect(
-      continuityFigures({ confidence: 0.7 }, 20, []),
-    ).toBeNull();
-  });
-
-  it("still renders from the detail when scene ids are absent", () => {
-    const f = continuityFigures(
-      { confidence: 0.7, detail: "jumps 31.8" },
-      20,
-      [],
-    );
-    expect(f).not.toBeNull();
-    expect(f!.lumaJump).toBe("jumps 31.8");
-    expect(f!.left).toBeNull();
   });
 });
 

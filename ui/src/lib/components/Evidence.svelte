@@ -25,8 +25,11 @@
     /** Measured comparison when the value is past its threshold — present
      * means warn-tone + glyph + word. */
     warn?: string | null;
-    /** Extra row below the value (e.g. a meter bar with a threshold). */
+    /** Meter-bar row (3px, with a threshold marker) — see EvidencePanel. */
     children?: Snippet;
+    /** Full-width content between the value row and the source row — e.g.
+     * the continuity comparison (thumbnails + note). */
+    body?: Snippet;
   }
 
   let {
@@ -36,6 +39,7 @@
     sourcePhrase = "measured from",
     warn = null,
     children,
+    body,
   }: Props = $props();
 </script>
 
@@ -53,6 +57,7 @@
     </span>
   </div>
   {#if children}<div class="bar">{@render children()}</div>{/if}
+  {#if body}<div class="body">{@render body()}</div>{/if}
   <div class="src">
     <span class="k">{sourcePhrase}</span>
     <span class="v num">{source}</span>
@@ -114,6 +119,11 @@
   .bar {
     height: 3px;
     background: var(--sunken);
+  }
+
+  .body {
+    border-top: 1px solid var(--line);
+    background: var(--surface);
   }
 
   .src {

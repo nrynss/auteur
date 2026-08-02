@@ -72,7 +72,12 @@
     <p class="eyebrow">Visual continuity</p>
     <div class="cards">
       {#each qa.visual.issues ?? [] as issue (issue.code + (issue.scene_id ?? "") + (issue.compared_with ?? ""))}
-        <ContinuityCard issue={issue} threshold={qa.visual.luma_delta_threshold} {scenes} />
+        <ContinuityCard
+          issue={issue}
+          threshold={qa.visual.luma_delta_threshold}
+          {scenes}
+          runId={qa.run_id ?? null}
+        />
       {/each}
     </div>
   {/if}

@@ -25,11 +25,11 @@ ui/src/lib/api/schema.d.ts
 ui/node_modules/
 
 # Home-directory dotfiles that sometimes get touched into the repo root by
-# tooling in this workspace — never part of the project.
+# tooling in this workspace — never part of the project. (.gitmodules is a
+# git-managed project file and is deliberately NOT here.)
 .bash_profile
 .bashrc
 .gitconfig
-.gitmodules
 .mcp.json
 .profile
 .ripgreprc
