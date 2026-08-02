@@ -16,10 +16,9 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   `docs/api.md` is written ahead of the code and treated as source of truth;
   every endpoint in it is live and covered by tests.
 - Task numbers are the current queue; DONE items keep their titles. Remaining:
-  **14**, then **7 (control-room UI)** last. Tasks **9–13**, **15–17** are
-  **DONE**.
-- CI (10), build identity (11), post-deploy smoke (12), doctor (13), demo
-  evidence (15), and Secret Manager (16) are in place.
+  **7 (control-room UI)** last. Tasks **9–17** are **DONE**.
+- CI (10), build identity (11), post-deploy smoke (12), doctor (13), live paid
+  + fallback SFX (14), demo evidence (15), and Secret Manager (16) are in place.
 - `uv run pytest -q` → **565 passed, 1 skipped**. No provider credentials
   required for tests: the billed calls are stubbed at two seams,
   `stems.generate_many` and `sfx_cache.generate_canonical_wav`. Everything else
@@ -196,55 +195,22 @@ local HEAD (null on non-local API is STOP), optional local SFX cache coverage
 (labelled process-local, not remote). Exit non-zero on STOP; health stays 0
 when only the worker is down.
 
-## 14. Exercise the paid tier and the fallback for real — M
+## 14. Exercise the paid tier and the fallback for real — M — **DONE**
 
-Both are implemented and unit-tested against stubs, and **neither has ever made
-a live call**. The first time the paid path runs should not be during a
-recording.
+Live exercise 2026-08-02 via `scripts/exercise_tiers.py` (results in
+`scripts/task14_results.json`).
 
-Two halves. The second reaches the escalation branch for free; only serving the
-stem from fal costs anything.
+- **Paid:** unique prompt → ElevenLabs `eleven_text_to_sound_v2` served;
+  stem at `cache/<key>.wav` under the paid endpoint; ledger row
+  `$0.30` / `cost_source: estimate` / `project_id` attributed
+  (`LedgerRecordingMixin`).
+- **Fallback:** invalid ElevenLabs key → auth_failure → fal
+  `fal-ai/elevenlabs/sound-effects/v2` serves; stem inventory and §11.6
+  manifest both carry `served_endpoint` / `served_by: fallback` while
+  `endpoint` stays the *requested* paid address.
 
-- **Paid:** needs ElevenLabs credits (available as of 2026-08-02). One real
-  generation, end to end, checking the stem is cached under the paid tier's own
-  key and the cost lands in the ledger attributed to the project.
-
-  Two of the original checks are already settled without spending. The response
-  envelope is verified statically: the connector reads `text` /
-  `duration_seconds` off `prepare_payload`, matching this repo's `prompt_field`
-  / `duration_field`, and it writes a local mp3 and returns a `file://` asset —
-  the shape `asset_local_path` requires. And `cost_source` will read
-  `"estimate"`, not `"actual"`: `text_to_sound_effects.convert()` returns audio
-  bytes with no billing metadata, so the row carries providers.toml's declared
-  $0.30 (the top of ElevenLabs' duration buckets).
-
-  **Ledger seam — fixed 2026-08-02.** The paid tier previously wrote *no*
-  ledger row at all. `execute_with_ledger` is called from inside
-  `FoleyAdapterProvider.generate`, and the paid tier is not a lift — it is
-  `genblaze_elevenlabs:ElevenLabsSFXProvider`, constructed raw, owning its own
-  HTTP. So the most expensive tier in the table was the only one billing
-  invisibly: no row, no project attribution, no budget alert (tasks 6/9/17
-  silently did not cover it). `get_provider` now mixes `LedgerRecordingMixin`
-  into any provider that is not one of our own lifts, so a future connector is
-  ledgered by existence rather than by remembering to wrap it.
-
-  **Order matters.** Fix before the live call, not after: the SFX cache is
-  keyed on `(endpoint, prompt, duration, variant)`, so a stem generated first
-  would be served from cache on the re-run — no call, no bill, and no ledger
-  row to point at.
-- **Fallback escalation, no ElevenLabs credits needed:** unsetting
-  `ELEVENLABS_API_KEY` is enough — the connector takes no key at construction
-  and builds its client lazily inside `generate`, so the paid tier fails on the
-  real code path with no API contact and no bill. Note the fallback tier *is*
-  fal (`fal-ai/elevenlabs/sound-effects/v2`, ~$0.05/call), so a *served*
-  fallback run is not free unless the chain is temporarily pointed at the free
-  `test` tier. Confirm the chain escalates, the stem is served, and
-  `served_endpoint` reaches the stem inventory and the §11.6 manifest. That
-  provenance path was fixed this session and has only ever run under stubs — if
-  it is wrong, a manifest credits ElevenLabs for audio fal produced.
-
-**Acceptance:** a manifest from a fallback-served run names the endpoint that
-actually generated the audio.
+Re-run: `FAL_KEY=… uv run python scripts/exercise_tiers.py` (loads
+`ELEVENLABS_API_KEY` from `.env`; needs B2 + ffmpeg).
 
 ## 15. More evidence in the bucket — S — **DONE**
 

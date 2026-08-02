@@ -1,0 +1,57 @@
+[
+  {
+    "half": "fallback",
+    "ok": true,
+    "prompt": "task14 fallback single dry wooden door creak short 1785676902209 212866",
+    "requested_endpoint": "eleven_text_to_sound_v2",
+    "served_endpoint": "fal-ai/elevenlabs/sound-effects/v2",
+    "served_by": "fallback",
+    "inventory_served": [
+      {
+        "b2_key": "cache/f7167d52095d1f2c.wav",
+        "cache_key": "f7167d52095d1f2c",
+        "cached": false,
+        "duration_s": 2.0,
+        "endpoint": "eleven_text_to_sound_v2",
+        "prompt": "task14 fallback single dry wooden door creak short 1785676902209 212866",
+        "served_by": "fallback",
+        "served_endpoint": "fal-ai/elevenlabs/sound-effects/v2",
+        "sha256": "933d5dd36b6682b9697ba9a9bb8ccad0a576b7d38a2946245bb55cafb924477f",
+        "variant": ""
+      }
+    ],
+    "manifest_served_stems": [
+      {
+        "endpoint": "eleven_text_to_sound_v2",
+        "served_endpoint": "fal-ai/elevenlabs/sound-effects/v2",
+        "served_by": "fallback",
+        "b2_key": "cache/f7167d52095d1f2c.wav",
+        "prompt": "task14 fallback single dry wooden door creak short 1785676902209 212866"
+      }
+    ],
+    "manifest_artifact_types": [
+      "audio_stem",
+      "final_export",
+      "mix",
+      "timeline"
+    ],
+    "local_project_id": "proj_01KZ1A6BT304BX1ATNHFTQHZJB",
+    "mix_run_id": "run_01KZ1A6BWC1BMSGRXT57K62K01",
+    "mix_key": "projects/proj_01KZ1A6BT304BX1ATNHFTQHZJB/runs/run_01KZ1A6BWC1BMSGRXT57K62K01/mix.wav"
+  },
+  {
+    "half": "paid",
+    "ok": true,
+    "prompt": "task14 paid single dry wooden door creak short 1785676972608 212865",
+    "endpoint": "eleven_text_to_sound_v2",
+    "served_endpoint": "eleven_text_to_sound_v2",
+    "cache_key": "cache/2f76cad3b6f74335.wav",
+    "local_bytes": 568408,
+    "ledger": {
+      "cost_estimate": 0.3,
+      "cost_source": "estimate",
+      "project_id": "proj_01KZ117JH73KC0E442E79KSCW2",
+      "success": true
+    }
+  }
+]
