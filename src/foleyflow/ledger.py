@@ -489,6 +489,9 @@ def project_spend(project_id: str) -> Dict[str, float]:
 def iter_attributions() -> List[dict]:
     """Rescue overrides, oldest first (by `before`). Each claims every ledger
     row with no project_id whose timestamp precedes its `before`."""
+    if _file_ledger_path() is not None:
+        return []          # file mode keeps no attributions
+
     from foleyflow.storage import ObjectNotFound, get_backend
 
     backend = get_backend()
@@ -531,24 +534,56 @@ def record_attribution(project_id: str,
     Writes one immutable override object claiming every row with no
     `project_id` written before `before` (default: now). Rows are never
     rewritten — this is an adoption record, not an edit. Returns how many
-    unattributed rows the rescue claims at write time.
+    unattributed rows the rescue actually adopts: rows an earlier override
+    already owns are not counted, and a row is only counted when this rescue
+    is its first-come owner once the override is in place.
 
-    Storage mode only: the local-JSONL override is a test path and keeps no
-    attributions.
+    Storage mode only: the local-JSONL override keeps no attributions, and a
+    rescue attempt in that mode is refused rather than split-brained between
+    two stores.
     """
     from foleyflow.ids import new_ulid
-    from foleyflow.storage import get_backend
+    from foleyflow.storage import PreconditionFailed, StorageError, get_backend
 
-    before = before if before is not None else time.time()
+    if _file_ledger_path() is not None:
+        raise ValueError(
+            "attribution rescues are storage-mode only; the local-JSONL "
+            "ledger keeps no attributions")
+
+    now = time.time()
+    if before is not None and before > now:
+        # A future `before` (e.g. a unix-ms timestamp mistaken for seconds)
+        # would claim every row written from now on, forever — first-come
+        # means a later honest rescue could never take them back.
+        raise ValueError(
+            f"cannot rescue rows written in the future: "
+            f"before={before} > now={now}")
+    before = before if before is not None else now
+
+    # Count rows whose first-come owner resolves to this project once the new
+    # override is in place — rows an earlier override owns must not be
+    # reported as adopted by this rescue.
+    attributions = iter_attributions()
+    attributions.append({"project_id": project_id, "before": before})
+    attributions.sort(key=lambda a: float(a["before"]))
     claimed = sum(
         1 for row in iter_transactions()
         if row.get("project_id") is None
-        and isinstance(row.get("timestamp"), (int, float))
-        and row["timestamp"] < before)
+        and _attribution_owner(row, attributions) == project_id)
 
     body = json.dumps({"project_id": project_id, "before": before,
-                       "created_at": time.time()},
+                       "created_at": now},
                       separators=(",", ":")).encode("utf-8")
-    key = f"{ATTR_PREFIX}{new_ulid()}.json"
-    get_backend().put_if_absent(key, body, content_type="application/json")
-    return claimed
+    # ULID collision retry, like _append_storage.
+    last_err: Optional[Exception] = None
+    for _ in range(3):
+        key = f"{ATTR_PREFIX}{new_ulid()}.json"
+        try:
+            get_backend().put_if_absent(key, body, content_type="application/json")
+            return claimed
+        except PreconditionFailed as exc:
+            last_err = exc
+            continue
+    raise StorageError(
+        f"could not allocate a unique attribution key after retries: "
+        f"{last_err}")

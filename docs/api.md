@@ -431,8 +431,8 @@ so the closing beat shows the money as well as the media. This is the §15
 demo's closing beat, so it is a single call that returns everything rather
 than something the UI assembles.
 
-Composition only: nothing here writes, and nothing is downloaded to build the
-listing. Size comes from one backend HEAD per object; sha256 comes from
+Composition only: no artifacts are written and nothing is downloaded to build
+the listing. Size comes from one backend HEAD per object; sha256 comes from
 provenance where one is recorded (the source video, each stem) or from a local
 backend's own hash. B2's S3 API exposes no sha256, so in a deployed store that
 column is the recorded value or absent — never a guess. `url` is signed with
@@ -505,7 +505,14 @@ project cannot silently exceed its cap on a known cost. Calls priced at $0.00
 are never refused. Mix is not gated: its cost depends on cache hits and is
 only knowable after the run, so an overage there is reported, not prevented.
 There is no reservation: two concurrent calls can both pass the check and
-overspend; the window is accepted for a single-instance deployment.
+overspend; the window is accepted for a single-instance deployment. The gate
+fails closed when the ledger is unwritable: spend is counted from ledger rows,
+so a write outage makes the count read low, and authorizing against it would
+let the cap become a pass-through — such calls are refused with
+`detail.ledger_writable: false`. Re-analysis is budget-bound even when the
+timeline cache would serve it for $0, because cache state is not known until
+the worker runs; a project at its cap should use the dossier/CLI to see where
+it stands first.
 
 **Adopting project-less work.** A direct `foleyflow render` writes ledger rows
 with no project (`project_id: null`), and rows written before attribution
@@ -520,7 +527,7 @@ POST /api/v1/projects/{id}/attributions
 `201` — `{"project_id": …, "before": …, "claimed": 7}` — every unattributed
 row written before `before` (unix seconds; default now) is counted for this
 project from now on. Overrides apply first-come by `before`, so a row can
-never land in two projects. `foleyflow render --project <id>` opts future
+never land in two projects. `foleyflow --project <id> render` opts future
 project-less renders into a project instead, and `foleyflow attribute <id>`
 writes the adoption.
 

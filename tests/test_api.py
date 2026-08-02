@@ -1302,3 +1302,51 @@ def test_attributions_404_for_an_unknown_project(client):
     r = client.post(f"{API_PREFIX}/projects/{VALID_ID}/attributions", json={})
     assert r.status_code == 404
     assert r.json()["error"]["code"] == "project_not_found"
+
+
+def test_attributions_reject_a_future_before(client, store, budget_ledger):
+    """A `before` in the future would claim rows written after the rescue; the
+    API refuses it rather than recording a time-bomb override."""
+    import time
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4", budget_usd=1.0)
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/attributions",
+                    json={"before": time.time() + 3600})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_request"
+
+
+def test_budget_gate_fails_closed_when_the_ledger_is_unwritable(
+        client, store, budget_ledger, monkeypatch):
+    """A ledger write outage must not turn the cap into a pass-through: spend
+    reads low, so authorizing against it spends real money blind."""
+    import foleyflow.ledger as ledger_mod
+
+    project = store.create_project(title="B", input_key="k", source_sha256="",
+                                   source_filename="s.mp4", budget_usd=1.0)
+    store.save_timeline(project.id, _timeline())
+    monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
+    monkeypatch.setattr(ledger_mod, "ledger_writable", lambda *a, **k: False)
+
+    r = client.post(
+        f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+        json={"confirm_cost_usd": 0.30})
+    assert r.status_code == 422
+    detail = r.json()["error"]["detail"]
+    assert detail["ledger_writable"] is False
+    assert detail["budget_usd"] == 1.0
+
+
+def test_budget_read_503s_on_a_ledger_outage(client, store, project,
+                                             monkeypatch):
+    """A ledger storage failure must read as 503 storage_unavailable, never a
+    500 or a $0 balance."""
+    import foleyflow.ledger as ledger_mod
+
+    def boom(project_id):
+        raise StorageError("ledger down")
+
+    monkeypatch.setattr(ledger_mod, "project_spend", boom)
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/budget")
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "storage_unavailable"

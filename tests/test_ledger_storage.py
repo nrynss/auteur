@@ -284,7 +284,44 @@ def test_attribution_overrides_apply_first_come(storage_ledger):
 
 def test_attribution_records_are_not_transactions(storage_ledger):
     import time
-    ledger.record_attribution("proj_A", before=time.time() + 10)
+    ledger.record_attribution("proj_A", before=time.time() - 10)
     rows = ledger.iter_transactions()
     assert all(r.get("endpoint") is not None for r in rows)
     assert len(ledger.iter_attributions()) == 1
+
+
+def test_record_attribution_rejects_a_future_before(storage_ledger):
+    import time
+    with pytest.raises(ValueError, match="future"):
+        ledger.record_attribution("proj_A", before=time.time() + 3600)
+
+
+def test_record_attribution_reports_only_rows_it_actually_owns(storage_ledger):
+    """`claimed` must count rows whose first-come owner is THIS rescue, not
+    every unattributed row inside the window — an earlier override keeps its
+    rows and must not be reported as adopted twice."""
+    import time as _time
+    old = _time.time() - 3600
+    backend = storage_ledger
+    for i in range(3):
+        row = {"endpoint": "gemini-2.5-flash", "params_hash": f"u{i}",
+               "cost_estimate": 0.10, "success": True, "timestamp": old,
+               "project_id": None}
+        backend.put_bytes(f"{ledger.LEDGER_PREFIX}u{i}.json",
+                          json.dumps(row).encode())
+    ledger._invalidate_row_cache()
+
+    assert ledger.record_attribution("proj_A", before=old + 10) == 3
+    # Wider window, but proj_A got there first: nothing left for proj_B.
+    assert ledger.record_attribution("proj_B", before=old + 20) == 0
+    assert ledger.project_spend("proj_A")["total"] == pytest.approx(0.30)
+    assert ledger.project_spend("proj_B")["total"] == pytest.approx(0.0)
+
+
+def test_record_attribution_refuses_file_mode(tmp_path, monkeypatch):
+    """A rescue in file mode would split-brain between the JSONL rows and the
+    backend attr records — refuse instead of silently writing to another
+    store."""
+    monkeypatch.setattr(ledger, "LEDGER_PATH", str(tmp_path / "ledger.jsonl"))
+    with pytest.raises(ValueError, match="storage-mode only"):
+        ledger.record_attribution("proj_A")

@@ -825,11 +825,9 @@ def _build_render_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         "--cache-dir", default=DEFAULT_CACHE_DIR,
         help=f"SFX cache directory (default: {DEFAULT_CACHE_DIR}).",
     )
-    parser.add_argument(
-        "--project", default=None,
-        help="Attribute this render's ledger rows to a project (its budget "
-             "then counts them). Rows are unattributed without this.",
-    )
+    # No --project here: the top-level flag (`foleyflow --project <id>
+    # render …`) must survive into args.project. A subparser default would
+    # clobber it and silently drop the attribution.
     return parser
 
 

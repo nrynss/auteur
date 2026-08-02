@@ -684,3 +684,14 @@ def test_render_project_tags_its_ledger_rows(monkeypatch, tmp_path):
     rc = cli_mod.run_render(argparse.Namespace(**base, project=None))
     assert rc == 0
     assert seen["project"] is None
+
+
+def test_global_project_flag_survives_into_render():
+    """`foleyflow --project X render …` must keep X — a subparser default must
+    not clobber the top-level flag and silently drop the attribution."""
+    from foleyflow.cli import build_parser
+
+    args = build_parser().parse_args(
+        ["--project", "proj_01K", "render", "clip.mp4"])
+    assert args.project == "proj_01K"
+    assert args.clip == "clip.mp4"

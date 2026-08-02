@@ -92,6 +92,22 @@ def _validate(raw: dict, path: str) -> None:
             "(route_ambience depends on it)"
         )
 
+    # --- budgets ---
+    # A negative or zero default would silently create projects whose every
+    # billable call is refused at the budget gate — validate it here, the same
+    # rule the create body applies to budget_usd.
+    default_budget = raw.get("budgets", {}).get("default")
+    if default_budget is not None:
+        try:
+            value = float(default_budget)
+        except (TypeError, ValueError) as e:
+            raise ConfigError(
+                f"providers.toml: [budgets] default={default_budget!r} is not a "
+                f"number") from e
+        if value <= 0:
+            raise ConfigError(
+                f"providers.toml: [budgets] default={value} must be > 0")
+
     # --- sfx tiers ---
     # Validated here rather than at selection time: a tier pointing at an
     # undeclared model resolves to an endpoint with no adapter, and the first

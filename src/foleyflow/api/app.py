@@ -506,10 +506,10 @@ def create_app(store: Optional[ProjectStore] = None,
     def get_dossier(project_id: str) -> DossierResponse:
         """Every artifact the project has produced, in one call (docs/api.md §3.9).
 
-        Composition only — nothing here writes, and nothing is downloaded to
-        build the listing. Size comes from one cheap backend HEAD per object;
-        sha256 comes from provenance where the system records one (the source
-        video, each stem) and from the backend where it can produce one
+        Composition only — no artifacts are written and nothing is downloaded
+        to build the listing. Size comes from one cheap backend HEAD per
+        object; sha256 comes from provenance where the system records one (the
+        source video, each stem) and from the backend where it can produce one
         locally. Keys appear for provenance, exactly as docs/api.md §1
         allows; every `url` is the signed, time-limited way to actually read
         the object, so a dossier is browsable but never a durable public
@@ -721,7 +721,12 @@ def create_app(store: Optional[ProjectStore] = None,
         _check_project_id(project_id)
         _load_state(store, project_id)   # 404 before doing any work
         before = body.before if body.before is not None else time.time()
-        claimed = record_attribution(project_id, before)
+        try:
+            claimed = record_attribution(project_id, before)
+        except ValueError as exc:
+            # A future `before`, or a file-mode ledger that keeps no
+            # attributions: the request is well-formed but cannot be honoured.
+            raise err.InvalidRequest(str(exc)) from exc
         return AttributionOut(project_id=project_id, before=before,
                               claimed=claimed)
 
@@ -968,16 +973,22 @@ def _budget_response(store: ProjectStore, project_id: str) -> BudgetResponse:
     dossier's compact block."""
     from foleyflow.ledger import ledger_writable, project_spend
 
-    state = store.get_state(project_id)
-    spend = project_spend(project_id)
-    budget = state.project.budget_usd
-    remaining = None if budget is None else max(budget - spend["total"], 0.0)
+    try:
+        state = store.get_state(project_id)
+        spend = project_spend(project_id)
+        budget = state.project.budget_usd
+        remaining = None if budget is None else max(budget - spend["total"], 0.0)
+        writable = ledger_writable()
+    except StorageError as e:
+        # Same classification as every other read that cannot proceed: a
+        # ledger outage must not read as a $0 balance or a 500.
+        raise err.StorageUnavailable("Project storage is unreachable") from e
     return BudgetResponse(
         project_id=project_id,
         budget_usd=budget,
         spent=round(spend["total"], 4),
         remaining=None if remaining is None else round(remaining, 4),
-        ledger_writable=ledger_writable(),
+        ledger_writable=writable,
         by_model=[BudgetModelOut(endpoint=endpoint, spent=round(value, 4))
                   for endpoint, value in sorted(spend["by_endpoint"].items())],
     )
@@ -990,14 +1001,25 @@ def _budget_gate(store: ProjectStore, project_id: str, estimate: float) -> None:
     calls (estimate $0.00) are never refused, and a project with no configured
     budget is never gated. No reservation: two concurrent calls can both pass
     and overspend; the window is accepted for a single-instance deployment.
+
+    Fail-closed on an unwritable ledger: spend is counted from ledger rows,
+    and a write outage means the count reads low — authorizing against it
+    would let the cap become a pass-through. So a billable, capped call is
+    refused while `ledger_writable()` is False, with the reason in the detail.
     """
-    from foleyflow.ledger import project_spend
+    from foleyflow.ledger import ledger_writable, project_spend
 
     if estimate <= 0:
         return
     budget = store.get_project(project_id).budget_usd
     if budget is None:
         return
+    if not ledger_writable():
+        raise err.PreconditionFailed(
+            "Cannot enforce the project budget while the ledger is unwritable",
+            detail={"project_id": project_id, "ledger_writable": False,
+                    "budget_usd": budget,
+                    "estimated_cost_usd": estimate})
     remaining = budget - project_spend(project_id)["total"]
     if remaining < estimate:
         raise err.PreconditionFailed(
