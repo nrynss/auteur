@@ -302,9 +302,16 @@ def test_repair_route_changes_only_the_target_stem(store, project, stub_ffmpeg,
     from fastapi.testclient import TestClient
 
     from foleyflow import sfx_cache, stems
+    from foleyflow import ledger as ledger_mod
     from foleyflow.api.app import API_PREFIX, create_app
     from foleyflow.api.jobs import JobRunner
     from foleyflow.projects import EVENT_REPAIR_APPROVED
+
+    # Keep the ledger on a local JSONL so budget/attribution scans do not hit
+    # a live B2 bucket when the operator's shell has FOLEYFLOW_CACHE_BACKEND=b2
+    # (that scan is multi-second and the old 4s poll window timed out).
+    monkeypatch.setenv("FOLEYFLOW_LEDGER_PATH", str(tmp_path / "ledger.jsonl"))
+    monkeypatch.setattr(ledger_mod, "LEDGER_PATH", str(tmp_path / "ledger.jsonl"))
 
     # Generation stub whose output varies per call, so the regenerated take is
     # genuinely different audio and the two mixes differ byte-for-byte.
@@ -354,12 +361,12 @@ def test_repair_route_changes_only_the_target_stem(store, project, stub_ffmpeg,
         assert resp.status_code == 202, resp.text
         run_id = resp.json()["run_id"]
         run = None
-        for _ in range(400):
+        for _ in range(1000):
             run = client.get(
                 f"{API_PREFIX}/projects/{project.id}/runs/{run_id}").json()
             if run["status"] != "running":
                 break
-            time.sleep(0.01)
+            time.sleep(0.02)
         assert run["status"] == "completed", run
     runner.shutdown(wait=True)
 
