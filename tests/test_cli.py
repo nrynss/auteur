@@ -100,6 +100,20 @@ def test_health(client, capsys):
     assert "storage=ok" in out
     assert "worker  ok" in out
     assert "stub-gpu" in out
+    # Unstamped local process: stamps print as the word null, not omitted.
+    assert "git_sha=null" in out
+    assert "build_time=null" in out
+
+
+def test_health_prints_build_identity_when_present(client, capsys, monkeypatch):
+    import foleyflow.api.app as app_mod
+
+    monkeypatch.setattr(app_mod, "GIT_SHA", "deadbee")
+    monkeypatch.setattr(app_mod, "BUILD_TIME", "2026-08-02T12:00:00Z")
+    assert run(client, "health") == EXIT_OK
+    out = capsys.readouterr().out
+    assert "git_sha=deadbee" in out
+    assert "build_time=2026-08-02T12:00:00Z" in out
 
 
 def test_health_warns_when_the_worker_wants_a_token_we_lack(client, capsys, monkeypatch):

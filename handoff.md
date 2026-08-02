@@ -16,14 +16,12 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   `docs/api.md` is written ahead of the code and treated as source of truth;
   every endpoint in it is live and covered by tests.
 - Task numbers are the current queue; DONE items keep their titles. Remaining:
-  **10–16**, then **7 (control-room UI)** last. Task 9 (budget alerts) and
-  **17** (alert on budget set below spend) are **DONE**.
-- **10, 11 and 12 are independent and unblock the rest** — CI, build provenance,
-  and a post-deploy smoke check. Do those first when running several agents in
-  parallel: with no CI, two agents can each be green locally and broken
-  together, and a human finds out. 13 depends on 11. 14 and 15 are demo-risk
-  work and can run alongside.
-- `uv run pytest -q` → **526 passed, 1 skipped**. No provider credentials
+  **12–16**, then **7 (control-room UI)** last. Tasks **9–11** and **17** are
+  **DONE**.
+- **12 unblocks 13** (smoke check needs build provenance from 11). 14 and 15
+  are demo-risk work and can run alongside. CI (10) and build identity (11)
+  are in place.
+- `uv run pytest -q` → **532 passed, 1 skipped**. No provider credentials
   required: the billed calls are stubbed at two seams, `stems.generate_many`
   and `sfx_cache.generate_canonical_wav`. Everything else — ffmpeg, the mix, the
   shared cache, storage, the Genblaze pipelines — runs for real.
@@ -166,46 +164,21 @@ it cannot absorb re-summing). Mix 202 carries a cache-miss cost projection
 (shared with `prewarm --dry-run`). Hard refusals removed; `confirm_cost_usd`
 stays. Unwritable ledger → alerts unreliable, work continues.
 
-## 10. Continuous integration — S
+## 10. Continuous integration — S — **DONE**
 
-516 tests and nothing runs them automatically. With several agents landing work
-in parallel this is the largest process risk in the repo: the failure mode is
-two agents each green locally and broken together, discovered by a human.
+GitHub Actions (`.github/workflows/ci.yml`): ffmpeg required on PATH, `uv sync
+--frozen --group dev`, then `scripts/check_test_count.py` which runs the full
+suite and asserts handoff/SPEC match runtime `passed` and `skipped` exactly.
+Permissions `contents: read`, concurrency cancel-in-progress, 25m job timeout.
+No provider credentials. Offline suite only.
 
-- GitHub Actions on push and PR: `uv sync` then `uv run pytest -q`.
-- **Install ffmpeg in the runner.** The suite skips rather than fails when it is
-  absent (`HAS_FFMPEG` / `needs_ffmpeg` in `tests/test_render.py`), so without it
-  CI goes green while the test that proves the milestone exit condition never
-  runs. A silently-skipping suite is worse than no CI.
-- Provide **no** provider credentials and no B2 config. The suite is offline by
-  design; a test that starts needing the network should fail loudly in CI, which
-  is the point.
-- Add a docs check: the test count quoted in `handoff.md` and `SPEC.md` must
-  match the suite. That drift has been corrected twice by hand already, and it
-  is the number a reader uses to judge whether the docs are current.
+## 11. Report the deployed build in `/health` — S — **DONE**
 
-Note `.dockerignore` excludes `tests/`, so the built image cannot self-verify —
-run tests from the checkout, not the image, unless that changes.
-
-**Acceptance:** a PR with a deliberately broken test fails CI; a run with ffmpeg
-removed fails rather than skips.
-
-## 11. Report the deployed build in `/health` — S
-
-`VERSION` is hardcoded `"0.1.0"` (`api/app.py:66`). There is no way to ask a
-running instance which code it has. Establishing that production was 15 commits
-behind took probing individual endpoints for 404s — that should have been one
-curl.
-
-- Bake the git SHA and build timestamp into the image at build time (a
-  `--build-arg`, or a generated file the app reads; do not shell out to `git` at
-  runtime, the container has no repo).
-- Add them to `HealthResponse` beside `version`.
-- Absent build info must degrade gracefully — a local `uv run uvicorn` has no
-  build stamp and must not crash or lie.
-
-**Acceptance:** `curl /api/v1/health` on the deployed app names the commit it is
-running, and it matches what was pushed.
+`HealthResponse` carries `git_sha` / `build_time` from `FOLEYFLOW_GIT_SHA` /
+`FOLEYFLOW_BUILD_TIME` (Dockerfile ARG for image builds; runtime
+`--update-env-vars` for `gcloud run deploy --source`). Sentinels and non-hex
+SHAs become `null`. `foleyflow health` prints both stamps. README documents
+both deploy paths.
 
 ## 12. Post-deploy smoke check — S
 

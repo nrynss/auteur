@@ -453,4 +453,9 @@ class HealthResponse(BaseModel):
     status: str
     storage: str
     version: str
+    # Baked into the image at build time (FOLEYFLOW_GIT_SHA /
+    # FOLEYFLOW_BUILD_TIME). Null when absent — a local `uv run uvicorn` has
+    # no stamp and must not invent one.
+    git_sha: Optional[str] = None
+    build_time: Optional[str] = None  # ISO8601 UTC
     worker: Optional[WorkerHealth] = None

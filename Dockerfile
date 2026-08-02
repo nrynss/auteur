@@ -47,6 +47,21 @@ COPY --from=build --chown=foley:foley /app /app
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 
+# Build identity reported by GET /api/v1/health. Pass at image build so a
+# running container can name the commit it is serving without a .git tree:
+#
+#   docker build \
+#     --build-arg FOLEYFLOW_GIT_SHA="$(git rev-parse HEAD)" \
+#     --build-arg FOLEYFLOW_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+#     -t foleyflow .
+#
+# Empty defaults: a build that omits the args still runs; health just reports
+# null for git_sha / build_time (same as a local `uv run uvicorn`).
+ARG FOLEYFLOW_GIT_SHA=
+ARG FOLEYFLOW_BUILD_TIME=
+ENV FOLEYFLOW_GIT_SHA=$FOLEYFLOW_GIT_SHA \
+    FOLEYFLOW_BUILD_TIME=$FOLEYFLOW_BUILD_TIME
+
 # providers.toml is NOT found via the working directory. config.py resolves it
 # as `__file__/../../../providers.toml` — the repo root relative to the *package
 # source*. That lands on /app/providers.toml only because `uv sync` installs the

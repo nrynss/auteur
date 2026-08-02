@@ -179,6 +179,40 @@ pipeline needs `ffmpeg` at runtime. `providers.toml` is resolved relative to the
 sync` installs the project editable — keep `src/` and `providers.toml` side by
 side under `/app`.
 
+To stamp a deploy so `GET /api/v1/health` reports the commit it is running,
+set `FOLEYFLOW_GIT_SHA` and `FOLEYFLOW_BUILD_TIME`. How you set them depends
+on the deploy path:
+
+**A) Preferred for this repo's `gcloud run deploy --source` flow** — Cloud
+Build builds the Dockerfile without custom build-args, so stamp at runtime
+instead:
+
+```bash
+gcloud run deploy foleyflow --source . \
+  --region us-east4 --allow-unauthenticated \
+  --no-cpu-throttling --min-instances 1 --max-instances 1 \
+  --memory 4Gi --cpu 2 --timeout 300 \
+  --env-vars-file env.yaml \
+  --update-env-vars "FOLEYFLOW_GIT_SHA=$(git rev-parse HEAD),FOLEYFLOW_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+```
+
+If you keep identity in `env.yaml` instead of `--update-env-vars`, add the two
+keys there (values must be refreshed each deploy). Do not combine conflicting
+values for the same key across both mechanisms without knowing which wins on
+your `gcloud` version — pick one place per deploy.
+
+**B) Image-based deploys** (`docker build` / registry push) can bake the
+stamps into the image via Dockerfile `ARG`/`ENV`:
+
+```bash
+docker build \
+  --build-arg FOLEYFLOW_GIT_SHA="$(git rev-parse HEAD)" \
+  --build-arg FOLEYFLOW_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  -t foleyflow .
+```
+
+Omit them and health still works — `git_sha` / `build_time` are just `null`.
+
 ### Tunnelling the worker
 
 ```bash

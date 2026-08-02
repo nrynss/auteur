@@ -109,11 +109,91 @@ def test_unknown_project_is_404_with_the_id_in_detail(client):
 
 # -- health -----------------------------------------------------------------
 
-def test_health_reports_storage(client):
+def test_health_reports_storage(client, monkeypatch):
+    # Module constants are set at import; clear them so an ambient deploy env
+    # in a developer shell cannot invent a SHA for the unstamped path.
+    import foleyflow.api.app as app_mod
+    monkeypatch.setattr(app_mod, "GIT_SHA", None)
+    monkeypatch.setattr(app_mod, "BUILD_TIME", None)
+
     body = client.get(f"{API_PREFIX}/health").json()
     assert body["status"] == "ok"
     assert body["storage"] == "ok"
     assert body["version"]
+    # Local / unstamped process: build identity is absent, not invented.
+    assert body["git_sha"] is None
+    assert body["build_time"] is None
+
+
+def test_health_includes_build_identity_when_env_is_set(store, monkeypatch):
+    """Deployed images bake FOLEYFLOW_GIT_SHA / FOLEYFLOW_BUILD_TIME at build.
+
+    Module-level constants are set once at import from env. Tests patch the
+    GIT_SHA / BUILD_TIME attributes directly rather than re-importing the
+    module, so the rest of the suite stays unstamped.
+    """
+    import foleyflow.api.app as app_mod
+
+    monkeypatch.setattr(app_mod, "GIT_SHA", "deadbeefcafebabe0123456789abcdef01234567")
+    monkeypatch.setattr(app_mod, "BUILD_TIME", "2026-08-02T12:00:00Z")
+    app = create_app(store, JobRunner(store, max_workers=1))
+    with TestClient(app) as c:
+        body = c.get(f"{API_PREFIX}/health").json()
+    assert body["git_sha"] == "deadbeefcafebabe0123456789abcdef01234567"
+    assert body["build_time"] == "2026-08-02T12:00:00Z"
+    assert body["version"]  # product version still present
+    assert body["status"] == "ok"
+
+
+def test_health_does_not_crash_when_build_env_is_unset(client, monkeypatch):
+    """Empty/whitespace stamps degrade to null — never a 500 or a fake SHA."""
+    import foleyflow.api.app as app_mod
+
+    monkeypatch.setattr(app_mod, "GIT_SHA", None)
+    monkeypatch.setattr(app_mod, "BUILD_TIME", None)
+    body = client.get(f"{API_PREFIX}/health").json()
+    assert body["git_sha"] is None
+    assert body["build_time"] is None
+    assert body["status"] == "ok"
+
+
+def test_build_info_from_env_treats_blank_as_absent(monkeypatch):
+    """Unset, empty, and whitespace-only values must not appear as a real SHA."""
+    import foleyflow.api.app as app_mod
+
+    monkeypatch.delenv("FOLEYFLOW_GIT_SHA", raising=False)
+    assert app_mod._build_info_from_env("FOLEYFLOW_GIT_SHA") is None
+    monkeypatch.setenv("FOLEYFLOW_GIT_SHA", "")
+    assert app_mod._build_info_from_env("FOLEYFLOW_GIT_SHA") is None
+    monkeypatch.setenv("FOLEYFLOW_GIT_SHA", "   ")
+    assert app_mod._build_info_from_env("FOLEYFLOW_GIT_SHA") is None
+    # Shortest accepted SHA is 7 hex chars (git short SHA).
+    monkeypatch.setenv("FOLEYFLOW_GIT_SHA", "abc1234")
+    assert app_mod._build_info_from_env("FOLEYFLOW_GIT_SHA") == "abc1234"
+
+
+def test_build_info_from_env_rejects_sentinels(monkeypatch):
+    """Placeholder stamps (unknown, n/a, …) must not look like real identity."""
+    import foleyflow.api.app as app_mod
+
+    for junk in ("unknown", "UNKNOWN", "n/a", "none", "null", "undefined",
+                 "latest", "None", "NULL"):
+        monkeypatch.setenv("FOLEYFLOW_GIT_SHA", junk)
+        assert app_mod._build_info_from_env("FOLEYFLOW_GIT_SHA") is None, junk
+        monkeypatch.setenv("FOLEYFLOW_BUILD_TIME", junk)
+        assert app_mod._build_info_from_env("FOLEYFLOW_BUILD_TIME") is None, junk
+
+
+def test_build_info_from_env_rejects_non_hex_git_sha(monkeypatch):
+    """GIT_SHA must be a plausible short-or-full hex SHA, not free text."""
+    import foleyflow.api.app as app_mod
+
+    for junk in ("not-a-sha", "abc12", "g" * 7, "deadbeef!", "main"):
+        monkeypatch.setenv("FOLEYFLOW_GIT_SHA", junk)
+        assert app_mod._build_info_from_env("FOLEYFLOW_GIT_SHA") is None, junk
+    # BUILD_TIME stays an opaque string after the sentinel filter — no ISO gate.
+    monkeypatch.setenv("FOLEYFLOW_BUILD_TIME", "build-42")
+    assert app_mod._build_info_from_env("FOLEYFLOW_BUILD_TIME") == "build-42"
 
 
 def test_health_reports_degraded_when_storage_is_broken(store):

@@ -195,7 +195,15 @@ def cmd_health(client: Client, args) -> int:
     data = client.get("/health", params={"worker": "true"})
 
     def render(d):
-        print(f"{d['status']}  storage={d['storage']}  version={d['version']}")
+        # Null stamps print as the word "null" so an unstamped local process is
+        # obvious next to a real SHA, rather than a silently truncated line.
+        git_sha = d.get("git_sha")
+        build_time = d.get("build_time")
+        print(
+            f"{d['status']}  storage={d['storage']}  version={d['version']}"
+            f"  git_sha={git_sha if git_sha is not None else 'null'}"
+            f"  build_time={build_time if build_time is not None else 'null'}"
+        )
         worker = d.get("worker")
         if not worker:
             return

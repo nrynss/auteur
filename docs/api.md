@@ -95,6 +95,8 @@ GET /api/v1/health?worker=true
   "status": "ok",
   "storage": "ok",
   "version": "0.1.0",
+  "git_sha": "a1b2c3d4e5f6789012345678901234567890abcd",
+  "build_time": "2026-08-02T12:00:00Z",
   "worker": null
 }
 ```
@@ -104,6 +106,12 @@ can serve reads from nothing and accept writes that will fail later.
 `status` is `"ok"` when storage is reachable and `"degraded"` otherwise; a
 worker problem never flips the top-level status (a fully cached render does
 not need the GPU).
+
+`version` is the product version (`0.1.0`). `git_sha` and `build_time` name
+the deployed commit and when the image was built (ISO8601 UTC). They are
+baked into the image via `FOLEYFLOW_GIT_SHA` / `FOLEYFLOW_BUILD_TIME` (see
+Dockerfile); both are `null` when unset — a local `uv run uvicorn` has no
+build stamp and does not invent one.
 
 `?worker=true` additionally probes the SFX worker behind the active tier.
 Off by default: this endpoint is what a platform liveness check hits, and a

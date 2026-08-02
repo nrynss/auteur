@@ -13,6 +13,7 @@ handlers in a threadpool, which is what this workload wants.
 from __future__ import annotations
 
 import os
+import re
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
@@ -66,6 +67,29 @@ from foleyflow.storage.base import ObjectNotFound, StorageError
 
 API_PREFIX = "/api/v1"
 VERSION = "0.1.0"
+
+# Build identity, baked into the image at docker build (see Dockerfile ARG /
+# ENV) or stamped at deploy time via runtime env (Cloud Run `--source` cannot
+# pass Docker build-args). Empty, unset, or sentinel junk → None so a local
+# `uv run uvicorn` reports null rather than inventing a SHA. Do not shell out
+# to `git` here: the container has no repo.
+_BUILD_INFO_SENTINELS = frozenset({
+    "unknown", "n/a", "none", "null", "undefined", "latest", "",
+})
+_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+
+def _build_info_from_env(name: str) -> Optional[str]:
+    value = os.environ.get(name, "").strip()
+    if value.lower() in _BUILD_INFO_SENTINELS:
+        return None
+    if name == "FOLEYFLOW_GIT_SHA" and not _GIT_SHA_RE.fullmatch(value):
+        return None
+    return value
+
+
+GIT_SHA = _build_info_from_env("FOLEYFLOW_GIT_SHA")
+BUILD_TIME = _build_info_from_env("FOLEYFLOW_BUILD_TIME")
 
 # Signed artifact URLs. Long enough to browse a dossier, short enough that a
 # copied link is not a durable public handle to project media.
@@ -148,6 +172,7 @@ def create_app(store: Optional[ProjectStore] = None,
             storage = "unavailable"
         return HealthResponse(status="ok" if storage == "ok" else "degraded",
                               storage=storage, version=VERSION,
+                              git_sha=GIT_SHA, build_time=BUILD_TIME,
                               worker=_worker_health() if worker else None)
 
     # -- projects ---------------------------------------------------------
