@@ -69,6 +69,8 @@
   let runs = $state<RunOut[]>([]);
   let qa = $state<QaReportResponse | null>(null);
   let dossier = $state<DossierResponse | null>(null);
+  // Whether the (slow) dossier fetch has been kicked off for this load.
+  let dossierRequested = $state(false);
   let budget = $state<BudgetResponse | null>(null);
   let mixPeaks = $state<PeaksResponse | null>(null);
 
@@ -99,37 +101,70 @@
     console.error("control room: ancillary fetch failed", e);
   }
 
+  /** Load the project record, then let every panel fill in as its own fetch
+   * resolves.
+   *
+   * These were once awaited together in one Promise.all, which made first
+   * paint hostage to the slowest of eight calls. Measured against a real B2
+   * bucket: dossier 56s (one HEAD per object), budget 25s (a full ledger
+   * scan), qa 7s — while scenes and timeline, the two things a director
+   * actually looks at, both land under 1s. The screen sat on "Loading
+   * project…" for the best part of a minute with the content already in hand.
+   *
+   * The project record is still awaited: it is the shell, and without it there
+   * is nothing to render. Everything else is a panel that knows how to be
+   * empty. The dossier is not fetched here at all — see `ensureDossier`. */
   async function loadCore() {
     // Fresh load: reset sticky failure flag so a recovered poll does not
     // leave empty rows labelled as permanent failure.
     ancillaryFailed = false;
+    dossierRequested = false;
     project = await getProject(id);
-    const [sc, tl, vs, ev, rs, qaR, dos, bud] = await Promise.all([
-      quiet(getScenes(id), onAncillaryFailure),
-      quiet(getTimeline(id), onAncillaryFailure),
-      quiet(getTimelineVersions(id), onAncillaryFailure),
-      quiet(getEvents(id), onAncillaryFailure),
-      quiet(getRuns(id), onAncillaryFailure),
-      quiet(getQa(id), onAncillaryFailure),
-      quiet(getDossier(id), onAncillaryFailure),
-      quiet(getBudget(id), onAncillaryFailure),
-    ]);
-    scenes = sc?.scenes ?? [];
-    timeline = tl;
-    versions = vs;
-    events = ev?.events ?? [];
-    runs = rs?.runs ?? [];
-    qa = qaR;
-    dossier = dos;
-    budget = bud;
+
+    void quiet(getScenes(id), onAncillaryFailure).then((r) => {
+      scenes = r?.scenes ?? [];
+    });
+    void quiet(getTimeline(id), onAncillaryFailure).then((r) => {
+      timeline = r;
+    });
+    void quiet(getTimelineVersions(id), onAncillaryFailure).then((r) => {
+      versions = r;
+    });
+    void quiet(getEvents(id), onAncillaryFailure).then((r) => {
+      events = r?.events ?? [];
+    });
+    void quiet(getRuns(id), onAncillaryFailure).then((r) => {
+      runs = r?.runs ?? [];
+    });
+    void quiet(getQa(id), onAncillaryFailure).then((r) => {
+      qa = r;
+    });
+    void quiet(getBudget(id), onAncillaryFailure).then((r) => {
+      budget = r;
+    });
+
     if (project.mix_run_id) {
-      mixPeaks = await quiet(
-        getMixPeaks(id, project.mix_run_id),
-        onAncillaryFailure,
+      void quiet(getMixPeaks(id, project.mix_run_id), onAncillaryFailure).then(
+        (r) => {
+          mixPeaks = r;
+        },
       );
     } else {
       mixPeaks = null;
     }
+
+    // The dossier tab may already be the open one (a reload after a run).
+    if (tab === "dossier") void ensureDossier();
+  }
+
+  /** The dossier composes every artifact in the project with a backend HEAD
+   * per object — 56s on a real bucket. It is the closing-beat view, not
+   * first-paint data, so it is fetched the first time its tab is opened and
+   * kept until the next reload. */
+  async function ensureDossier() {
+    if (dossierRequested) return;
+    dossierRequested = true;
+    dossier = await quiet(getDossier(id), onAncillaryFailure);
   }
 
   /** Light poll: project + tracked/latest run. Stages land on get_run.
@@ -381,7 +416,12 @@
               aria-controls={`tab-${t.key}`}
               id={`tabbtn-${t.key}`}
               class:active={tab === t.key}
-              onclick={() => (tab = t.key)}
+              onclick={() => {
+                tab = t.key;
+                // The dossier is slow enough (a HEAD per object) that it is
+                // fetched on first open rather than at load.
+                if (t.key === "dossier") void ensureDossier();
+              }}
             >
               {t.label}
             </button>
@@ -403,7 +443,7 @@
           <HistoryPanel {versions} runs={displayRuns} {events} {mixPeaks} mixRunId={project.mix_run_id ?? null} />
         </div>
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-dossier" id="tab-dossier" hidden={tab !== "dossier"}>
-          <DossierPanel {dossier} />
+          <DossierPanel {dossier} loading={dossierRequested && dossier === null} />
         </div>
       </aside>
     </div>

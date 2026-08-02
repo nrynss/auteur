@@ -5,9 +5,13 @@
 
   interface Props {
     dossier: DossierResponse | null;
+    /** The fetch is in flight. It composes every artifact with one backend
+     * HEAD per object and takes tens of seconds on a real bucket, so a
+     * pending dossier must read as "working", never as "none". */
+    loading?: boolean;
   }
 
-  let { dossier }: Props = $props();
+  let { dossier, loading = false }: Props = $props();
 
   const fmtBytes = (n: number | null | undefined) => {
     if (n == null) return "—";
@@ -22,7 +26,9 @@
 </script>
 
 <div class="panel-body">
-  {#if !dossier}
+  {#if loading}
+    <p class="empty">Composing the dossier — one lookup per artifact…</p>
+  {:else if !dossier}
     <p class="empty">No dossier yet.</p>
   {:else}
     <p class="summary num">

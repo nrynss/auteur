@@ -170,3 +170,48 @@ it("a failed ancillary fetch says failure — never 'analysis has not run'", asy
 
   unmount(app);
 });
+
+it("first paint does not wait on the slow calls, and the dossier is lazy", async () => {
+  // The regression this pins: awaiting all eight ancillary fetches together
+  // made first paint hostage to the slowest. Against a real bucket the
+  // dossier took 56s and the budget 25s while the timeline landed in 0.7s.
+  let dossierRequests = 0;
+  // Initialised to a no-op rather than null: TS narrows a null-union that is
+  // only assigned inside the executor to `never` at the call site.
+  let resolveSlow: () => void = () => {};
+  const slow = new Promise<void>((r) => {
+    resolveSlow = r;
+  });
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string | URL) => {
+      const path = (String(input).split("/proj_TEST")[1] ?? "").split("?")[0];
+      if (path === "/dossier") {
+        dossierRequests += 1;
+        await slow; // never resolves during the assertions below
+        return jsonResponse({ artifact_count: 0, artifacts: [] });
+      }
+      if (path === "/budget") await slow; // the 25s call
+      if (path in ROUTES) return jsonResponse(ROUTES[path]);
+      return jsonResponse({ error: { code: "not_found" } }, 404);
+    }),
+  );
+
+  const target = document.createElement("div");
+  document.body.appendChild(target);
+  const app = mount(ControlRoom, { target, props: { id: "proj_TEST" } });
+  for (let i = 0; i < 8; i += 1) await settle();
+
+  const text = target.textContent ?? "";
+  // The timeline is on screen even though budget and dossier are still open.
+  expect(text).toContain("gunshot blast");
+  expect(target.querySelectorAll(".block").length).toBe(4);
+  expect(text).not.toContain("Loading project");
+
+  // And the dossier was never requested — its tab has not been opened.
+  expect(dossierRequests).toBe(0);
+
+  resolveSlow();
+  unmount(app);
+});
