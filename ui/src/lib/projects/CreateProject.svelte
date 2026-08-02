@@ -208,6 +208,11 @@
             ? `Ingest · ${run.current_stage}`
             : `Ingest · ${run.status}`;
         },
+        onTransientError: (_e, n) => {
+          // Say it out loud rather than looking frozen — the run is still
+          // going on the server; this is only the poll failing.
+          phaseDetail = `Ingest · lost contact, retrying (${n})…`;
+        },
       });
       if (ingest.status === "failed" || ingest.status === "stale") {
         fail(
@@ -588,6 +593,13 @@
     After upload confirm, ingest hashes the source; analysis is started only once
     that finishes. The control room opens when analysis is <em>accepted</em>, not
     when it completes.
+  </p>
+  <p class="foot faint">
+    <strong>Creating spends.</strong> Analysis is a billable vision-model call
+    against a daily request quota, started automatically once ingest finishes
+    (SPEC §6.2). Upload and ingest themselves cost nothing. The run's own
+    estimate is shown when the API accepts it, and every charge is attributed
+    to this project's ledger.
   </p>
 </main>
 
