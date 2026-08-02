@@ -167,6 +167,82 @@ class AnalyzeRequest(BaseModel):
 
 # -- timeline ---------------------------------------------------------------
 
+class TimelineEventIn(BaseModel):
+    """One event in a timeline commit body. No index — order is the index."""
+
+    name: str = Field(min_length=1)
+    start_time: float
+    duration: float
+    intensity: str
+    kind: str
+    # Writable mix-variation freeze (editor may set/clear on nudge).
+    seed: Optional[int] = None
+    # Cost/cache freeze. Commit rejects silent changes; see docs/api.md §3.4.
+    source_duration_s: Optional[float] = None
+
+    @field_validator("intensity")
+    @classmethod
+    def _intensity(cls, v: str) -> str:
+        if v not in ("low", "med", "high"):
+            raise ValueError("intensity must be one of low, med, high")
+        return v
+
+    @field_validator("kind")
+    @classmethod
+    def _kind(cls, v: str) -> str:
+        if v not in ("discrete", "rhythmic", "continuous"):
+            raise ValueError("kind must be one of discrete, rhythmic, continuous")
+        return v
+
+    @field_validator("duration", "start_time")
+    @classmethod
+    def _finite_time(cls, v: float) -> float:
+        import math
+        if not math.isfinite(v):
+            raise ValueError("must be a finite number")
+        return v
+
+    @field_validator("duration")
+    @classmethod
+    def _nonneg_duration(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("duration must be >= 0")
+        return v
+
+    @field_validator("start_time")
+    @classmethod
+    def _nonneg_start(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("start_time must be >= 0")
+        return v
+
+    @field_validator("source_duration_s")
+    @classmethod
+    def _source_duration(cls, v: Optional[float]) -> Optional[float]:
+        import math
+        if v is None:
+            return None
+        if not math.isfinite(v) or v < 0:
+            raise ValueError("source_duration_s must be a non-negative finite number")
+        return v
+
+
+class TimelineCommitRequest(BaseModel):
+    """Whole timeline document for PUT /timeline (not a patch list)."""
+
+    duration: float
+    ambience: str
+    events: List[TimelineEventIn]
+
+    @field_validator("duration")
+    @classmethod
+    def _finite_duration(cls, v: float) -> float:
+        import math
+        if not math.isfinite(v) or v < 0:
+            raise ValueError("duration must be a non-negative finite number")
+        return v
+
+
 class TimelineEventOut(BaseModel):
     index: int          # the stable handle for repair — names repeat
     name: str
@@ -174,6 +250,8 @@ class TimelineEventOut(BaseModel):
     intensity: str
     start_time: float
     duration: float
+    seed: Optional[int] = None
+    source_duration_s: Optional[float] = None
     scene_id: Optional[str] = None
 
 

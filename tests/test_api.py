@@ -572,6 +572,409 @@ def test_unknown_timeline_version_404s(client, store, project):
     assert r.status_code == 404
 
 
+def _timeline_commit_body(timeline=None, *, start_time_shift: float = 0.0):
+    """JSON body for PUT /timeline from a domain Timeline (optional nudge)."""
+    t = timeline or _timeline()
+    return {
+        "duration": t.duration,
+        "ambience": t.ambience,
+        "events": [
+            {
+                "name": e.name,
+                "start_time": e.start_time + start_time_shift,
+                "duration": e.duration,
+                "intensity": e.intensity,
+                "kind": e.kind,
+                "seed": e.seed,
+                "source_duration_s": e.source_duration_s,
+            }
+            for e in t.events
+        ],
+    }
+
+
+def test_timeline_commit_creates_new_version_prior_unchanged(client, store, project):
+    """Happy path: PUT modified placement → v2; v1 still readable as-is."""
+    from foleyflow.models import Event, Timeline
+
+    v1 = Timeline(duration=15.04, ambience="desert wind", events=[
+        Event(name="holster creak", start_time=0.0, duration=1.0,
+              intensity="low", kind="continuous", source_duration_s=1.5),
+        Event(name="gunshot", start_time=11.0, duration=1.5,
+              intensity="high", kind="discrete", source_duration_s=2.0),
+    ])
+    store.save_timeline(project.id, v1)
+
+    body = _timeline_commit_body(v1, start_time_shift=0.2)
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["version"] == 2
+    assert out["events"][0]["start_time"] == pytest.approx(0.2)
+    assert out["events"][0]["source_duration_s"] == 1.5
+    assert out["events"][0]["index"] == 0
+
+    versions = client.get(
+        f"{API_PREFIX}/projects/{project.id}/timeline/versions").json()
+    assert versions["versions"] == [1, 2] and versions["latest"] == 2
+
+    old = client.get(
+        f"{API_PREFIX}/projects/{project.id}/timeline?version=1").json()
+    assert old["version"] == 1
+    assert old["events"][0]["start_time"] == pytest.approx(0.0)
+
+    latest = client.get(f"{API_PREFIX}/projects/{project.id}/timeline").json()
+    assert latest["version"] == 2
+    assert latest["events"][0]["start_time"] == pytest.approx(0.2)
+
+
+def test_timeline_commit_refused_before_any_timeline(client, project):
+    """No plan yet → 422 precondition_failed (not invent a v1 from whole cloth)."""
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline",
+                   json=_timeline_commit_body())
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "precondition_failed"
+
+
+def test_timeline_commit_refused_while_run_in_flight(store, project):
+    """Any in-flight job locks editing — same 409 as analyze/mix/export."""
+    import threading
+
+    runner = JobRunner(store, max_workers=2)
+    app = create_app(store, runner)
+    gate = threading.Event()
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            store.save_timeline(project.id, _timeline())
+            run = runner.submit(project.id, "analyze",
+                                lambda r: gate.wait(5))
+            r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline",
+                           json=_timeline_commit_body())
+            assert r.status_code == 409, r.text
+            err = r.json()["error"]
+            assert err["code"] == "already_running"
+            assert err["detail"]["run_id"] == run.id
+            assert err["detail"]["kind"] == "analyze"
+    finally:
+        gate.set()
+        runner.shutdown(wait=True)
+
+
+def test_timeline_commit_rejects_altered_source_duration(client, store, project):
+    """Changing a freeze is a client bug — refuse, leave version count alone."""
+    from foleyflow.models import Event, Timeline
+
+    t = Timeline(duration=15.04, ambience="desert wind", events=[
+        Event(name="gunshot", start_time=11.0, duration=1.5,
+              intensity="high", kind="discrete", source_duration_s=2.0),
+    ])
+    store.save_timeline(project.id, t)
+    body = _timeline_commit_body(t)
+    body["events"][0]["source_duration_s"] = 3.0  # illegal rewrite
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 400, r.text
+    err = r.json()["error"]
+    assert err["code"] == "invalid_request"
+    assert err.get("detail", {}).get("violations") or "freeze" in err["message"].lower()
+    assert store.list_timeline_versions(project.id) == [1]
+
+
+def test_timeline_commit_rejects_invented_freeze_on_new_event(
+        client, store, project):
+    """New content may not invent source_duration_s without Regenerate."""
+    from foleyflow.models import Event, Timeline
+
+    t = Timeline(duration=15.04, ambience="desert wind", events=[
+        Event(name="gunshot", start_time=11.0, duration=1.5,
+              intensity="high", kind="discrete", source_duration_s=2.0),
+    ])
+    store.save_timeline(project.id, t)
+    body = _timeline_commit_body(t)
+    body["events"].append({
+        "name": "boot step",
+        "start_time": 5.0,
+        "duration": 0.5,
+        "intensity": "med",
+        "kind": "discrete",
+        "seed": None,
+        "source_duration_s": 1.0,  # invent freeze on new content
+    })
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_request"
+    assert store.list_timeline_versions(project.id) == [1]
+
+
+def test_timeline_commit_rejects_empty_when_freezes_exist(client, store, project):
+    """Empty document would drop freezes and enable re-add unfreeze — refuse."""
+    from foleyflow.models import Event, Timeline
+
+    t = Timeline(duration=15.04, ambience="desert wind", events=[
+        Event(name="gunshot", start_time=11.0, duration=1.5,
+              intensity="high", kind="discrete", source_duration_s=2.0),
+    ])
+    store.save_timeline(project.id, t)
+
+    empty = {"duration": 15.04, "ambience": "desert wind", "events": []}
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=empty)
+    assert r.status_code == 400, r.text
+    assert r.json()["error"]["code"] == "invalid_request"
+    assert store.list_timeline_versions(project.id) == [1]
+
+
+def test_timeline_commit_rejects_in_place_unfreeze(client, store, project):
+    from foleyflow.models import Event, Timeline
+
+    t = Timeline(duration=15.04, ambience="wind", events=[
+        Event(name="gunshot", start_time=1.0, duration=1.0,
+              intensity="high", kind="discrete", source_duration_s=2.0),
+    ])
+    store.save_timeline(project.id, t)
+    body = _timeline_commit_body(t)
+    body["events"][0]["source_duration_s"] = None
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 400
+    assert store.list_timeline_versions(project.id) == [1]
+
+
+def test_timeline_commit_rejects_invent_freeze_on_existing_unfrozen_slot(
+        client, store, project):
+    from foleyflow.models import Event, Timeline
+
+    t = Timeline(duration=15.04, ambience="wind", events=[
+        Event(name="gunshot", start_time=1.0, duration=1.0,
+              intensity="high", kind="discrete"),  # no freeze
+    ])
+    store.save_timeline(project.id, t)
+    body = _timeline_commit_body(t)
+    body["events"][0]["source_duration_s"] = 2.0
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 400
+    assert store.list_timeline_versions(project.id) == [1]
+
+
+def test_timeline_commit_allows_reorder_keeping_freezes(client, store, project):
+    """Freezes travel with content — reorder is legal; rebind is not."""
+    from foleyflow.models import Event, Timeline
+
+    t = Timeline(duration=15.04, ambience="wind", events=[
+        Event(name="holster creak", start_time=0.0, duration=1.0,
+              intensity="low", kind="continuous", source_duration_s=1.5),
+        Event(name="gunshot", start_time=11.0, duration=1.5,
+              intensity="high", kind="discrete", source_duration_s=2.0),
+    ])
+    store.save_timeline(project.id, t)
+    body = _timeline_commit_body(t)
+    body["events"] = list(reversed(body["events"]))  # freezes travel with events
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 200, r.text
+    names = [e["name"] for e in r.json()["events"]]
+    assert names == ["gunshot", "holster creak"]
+    by_name = {e["name"]: e["source_duration_s"] for e in r.json()["events"]}
+    assert by_name["gunshot"] == 2.0
+    assert by_name["holster creak"] == 1.5
+
+
+def test_timeline_commit_rejects_rebound_freezes(client, store, project):
+    from foleyflow.models import Event, Timeline
+
+    t = Timeline(duration=15.04, ambience="wind", events=[
+        Event(name="holster creak", start_time=0.0, duration=1.0,
+              intensity="low", kind="continuous", source_duration_s=1.5),
+        Event(name="gunshot", start_time=11.0, duration=1.5,
+              intensity="high", kind="discrete", source_duration_s=2.0),
+    ])
+    store.save_timeline(project.id, t)
+    body = _timeline_commit_body(t)
+    # Swap freezes only — content keeps positions
+    body["events"][0]["source_duration_s"] = 2.0
+    body["events"][1]["source_duration_s"] = 1.5
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 400
+    assert store.list_timeline_versions(project.id) == [1]
+
+
+def test_timeline_commit_rejects_delete_of_frozen_event(client, store, project):
+    """Dropping frozen content strips freezes — refused on free-edit commit."""
+    from foleyflow.models import Event, Timeline
+
+    t = Timeline(duration=15.04, ambience="wind", events=[
+        Event(name="holster creak", start_time=0.0, duration=1.0,
+              intensity="low", kind="continuous", source_duration_s=1.5),
+        Event(name="gunshot", start_time=11.0, duration=1.5,
+              intensity="high", kind="discrete", source_duration_s=2.0),
+    ])
+    store.save_timeline(project.id, t)
+    body = _timeline_commit_body(t)
+    body["events"] = [body["events"][0]]  # drop frozen gunshot
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 400
+    assert store.list_timeline_versions(project.id) == [1]
+
+
+def test_timeline_commit_allows_delete_unfrozen_event(client, store, project):
+    from foleyflow.models import Event, Timeline
+
+    t = Timeline(duration=15.04, ambience="wind", events=[
+        Event(name="holster creak", start_time=0.0, duration=1.0,
+              intensity="low", kind="continuous", source_duration_s=1.5),
+        Event(name="wind puff", start_time=3.0, duration=0.5,
+              intensity="low", kind="discrete"),  # unfrozen
+    ])
+    store.save_timeline(project.id, t)
+    body = _timeline_commit_body(t)
+    body["events"] = [body["events"][0]]
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 200, r.text
+    assert len(r.json()["events"]) == 1
+    assert r.json()["events"][0]["source_duration_s"] == 1.5
+
+def test_timeline_commit_preserves_freeze_while_editing_placement(
+        client, store, project):
+    """Free resize/nudge: duration and start_time change; freeze stays."""
+    from foleyflow.models import Event, Timeline
+
+    t = Timeline(duration=15.04, ambience="desert wind", events=[
+        Event(name="holster creak", start_time=0.0, duration=1.0,
+              intensity="low", kind="continuous", seed=42,
+              source_duration_s=1.5),
+    ])
+    store.save_timeline(project.id, t)
+    body = _timeline_commit_body(t)
+    body["events"][0]["start_time"] = 0.35
+    body["events"][0]["duration"] = 0.8  # window shorter — free
+    body["events"][0]["seed"] = 99       # seed is writable
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 200, r.text
+    ev = r.json()["events"][0]
+    assert ev["start_time"] == pytest.approx(0.35)
+    assert ev["duration"] == pytest.approx(0.8)
+    assert ev["source_duration_s"] == 1.5
+    assert ev["seed"] == 99
+
+
+def test_timeline_commit_source_duration_zero_is_a_real_freeze(
+        client, store, project):
+    """source_duration_s=0 is present, not absent — nulling it is an unfreeze."""
+    from foleyflow.models import Event, Timeline
+
+    t = Timeline(duration=5.0, ambience="wind", events=[
+        Event(name="click", start_time=0.0, duration=0.1,
+              intensity="low", kind="discrete", source_duration_s=0.0),
+    ])
+    store.save_timeline(project.id, t)
+    body = _timeline_commit_body(t)
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["events"][0]["source_duration_s"] == 0.0
+
+    body["events"][0]["source_duration_s"] = None
+    r2 = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r2.status_code == 400
+
+
+def test_timeline_commit_rejects_negative_start_time(client, store, project):
+    store.save_timeline(project.id, _timeline())
+    body = _timeline_commit_body()
+    body["events"][0]["start_time"] = -0.1
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_request"
+
+
+def test_timeline_commit_refused_for_storage_running_run(client, store, project):
+    """Storage-side non-stale running run locks commit even without runner job."""
+    store.save_timeline(project.id, _timeline())
+    store.start_run(project.id, "mix")  # running in the log; no JobRunner claim
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline",
+                   json=_timeline_commit_body())
+    assert r.status_code == 409, r.text
+    assert r.json()["error"]["code"] == "already_running"
+
+
+def test_timeline_commit_records_user_actor_and_source(client, store, project):
+    from foleyflow.models import Event, Timeline
+    from foleyflow.projects import EVENT_PLAN_PROPOSED
+
+    t = Timeline(duration=5.0, ambience="wind", events=[
+        Event(name="click", start_time=0.0, duration=0.1,
+              intensity="low", kind="discrete"),
+    ])
+    store.save_timeline(project.id, t)
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline",
+                   json=_timeline_commit_body(t, start_time_shift=0.05))
+    assert r.status_code == 200, r.text
+
+    plans = [e for e in store.list_events(project.id)
+             if e.type == EVENT_PLAN_PROPOSED]
+    commit_events = [e for e in plans if e.payload.get("source") == "commit"]
+    assert commit_events, [e.payload for e in plans]
+    assert commit_events[-1].actor == "user"
+    assert commit_events[-1].payload.get("timeline_version") == 2
+
+
+def test_timeline_commit_preserves_history_and_extra_fields(client, store, project):
+    from foleyflow.models import Event, Timeline
+
+    t = Timeline(
+        duration=5.0, ambience="wind",
+        events=[Event(name="click", start_time=0.0, duration=0.1,
+                      intensity="low", kind="discrete")],
+        history=[{"note": "director said earlier"}],
+        extra_fields={"label": "take-a"},
+    )
+    store.save_timeline(project.id, t)
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline",
+                   json=_timeline_commit_body(t, start_time_shift=0.1))
+    assert r.status_code == 200, r.text
+    loaded = store.load_timeline(project.id, 2)
+    assert loaded.history == [{"note": "director said earlier"}]
+    assert loaded.extra_fields.get("label") == "take-a"
+
+
+def test_timeline_commit_unknown_project_is_404(client):
+    r = client.put(f"{API_PREFIX}/projects/{VALID_ID}/timeline",
+                   json=_timeline_commit_body())
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "project_not_found"
+
+
+def test_timeline_commit_malformed_body_is_invalid_request(client, store, project):
+    store.save_timeline(project.id, _timeline())
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline",
+                   json={"duration": 15.0, "ambience": "x", "events": [
+                       {"name": "x"}  # missing required placement fields
+                   ]})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_request"
+
+
+def test_timeline_get_exposes_seed_and_source_duration(client, store, project):
+    """GET must round-trip freezes for the editor (unit 7.10 prep)."""
+    from foleyflow.models import Event, Timeline
+
+    t = Timeline(duration=5.0, ambience="wind", events=[
+        Event(name="rain", start_time=0.0, duration=5.0,
+              intensity="low", kind="rhythmic", seed=7, source_duration_s=8.0),
+        Event(name="clap", start_time=1.0, duration=0.3,
+              intensity="high", kind="discrete"),  # freezes absent
+    ])
+    store.save_timeline(project.id, t)
+    events = client.get(f"{API_PREFIX}/projects/{project.id}/timeline").json()["events"]
+    assert events[0]["seed"] == 7
+    assert events[0]["source_duration_s"] == 8.0
+    assert events[1]["seed"] is None
+    assert events[1]["source_duration_s"] is None
+
+
 # -- scenes -----------------------------------------------------------------
 
 def test_scenes_empty_before_analysis(client, project):

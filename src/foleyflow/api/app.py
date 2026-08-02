@@ -52,6 +52,7 @@ from foleyflow.api.schemas import (
     SceneListResponse,
     SceneOut,
     SetBudgetRequest,
+    TimelineCommitRequest,
     TimelineEventOut,
     TimelineResponse,
     TimelineVersionsResponse,
@@ -631,18 +632,45 @@ def create_app(store: Optional[ProjectStore] = None,
 
         resolved = version or versions[-1]
         timeline = store.load_timeline(project_id, resolved)
-        scene_ids = _scene_ids_for(store, project_id, timeline)
+        return _timeline_response(store, project_id, timeline, resolved)
 
-        return TimelineResponse(
-            version=resolved, duration=timeline.duration, ambience=timeline.ambience,
-            events=[
-                TimelineEventOut(
-                    index=i, name=e.name, kind=e.kind, intensity=e.intensity,
-                    start_time=e.start_time, duration=e.duration,
-                    scene_id=scene_ids[i] if i < len(scene_ids) else None)
-                for i, e in enumerate(timeline.events)
-            ],
-        )
+    @app.put(f"{API_PREFIX}/projects/{{project_id}}/timeline",
+             response_model=TimelineResponse, tags=["timeline"])
+    def put_timeline(project_id: str,
+                     body: TimelineCommitRequest) -> TimelineResponse:
+        """Commit a whole timeline document as a new immutable version.
+
+        Synchronous storage write — does not claim a job slot. Refuses while
+        any run is in flight (runner memory *or* a non-stale storage run), and
+        refuses silent changes to ``source_duration_s`` freezes (docs/api.md
+        §3.4).
+        """
+        _check_project_id(project_id)
+        _load_state(store, project_id)  # 404 unknown project
+        _assert_no_in_flight_run(store, runner, project_id)
+
+        versions = store.list_timeline_versions(project_id)
+        if not versions:
+            raise err.PreconditionFailed(
+                "The project has no timeline to edit",
+                detail={"project_id": project_id, "required": "POST /analyze"},
+            )
+
+        # Validate freezes against the latest plan. Re-load immediately before
+        # save so a concurrent commit cannot slip a stripped freeze under us
+        # without a second check (still best-effort; immutability is put_if_absent).
+        prev = store.load_timeline(project_id, versions[-1])
+        timeline = _commit_request_to_timeline(body, previous=prev)
+        _assert_source_duration_freezes(prev, timeline)
+
+        latest = store.latest_timeline_version(project_id)
+        if latest is not None and latest != versions[-1]:
+            prev = store.load_timeline(project_id, latest)
+            _assert_source_duration_freezes(prev, timeline)
+
+        new_version = store.save_timeline(
+            project_id, timeline, actor="user", source="commit")
+        return _timeline_response(store, project_id, timeline, new_version)
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/timeline/versions",
              response_model=TimelineVersionsResponse, tags=["timeline"])
@@ -1208,6 +1236,189 @@ def _scene_ids_for(store: ProjectStore, project_id: str, timeline) -> List[Optio
     scenes = [Scene(id=s["id"], index=s["index"], start_s=s["start_s"],
                     end_s=s["end_s"]) for s in raw]
     return assign_scene_ids(timeline, scenes)
+
+
+def _timeline_response(store: ProjectStore, project_id: str, timeline,
+                       version: int) -> TimelineResponse:
+    """Shape a Timeline for GET/PUT responses (events carry freezes + index)."""
+    scene_ids = _scene_ids_for(store, project_id, timeline)
+    return TimelineResponse(
+        version=version,
+        duration=timeline.duration,
+        ambience=timeline.ambience,
+        events=[
+            TimelineEventOut(
+                index=i,
+                name=e.name,
+                kind=e.kind,
+                intensity=e.intensity,
+                start_time=e.start_time,
+                duration=e.duration,
+                seed=e.seed,
+                source_duration_s=e.source_duration_s,
+                scene_id=scene_ids[i] if i < len(scene_ids) else None,
+            )
+            for i, e in enumerate(timeline.events)
+        ],
+    )
+
+
+def _assert_no_in_flight_run(store: ProjectStore, runner: JobRunner,
+                             project_id: str) -> None:
+    """Refuse timeline commits while work is in flight for this project.
+
+    Checks both the in-process JobRunner table *and* event-log runs that are
+    still ``running`` and within the lease. Running work has no ``run.json``
+    until it terminates (`start_run` only appends an event), so ``list_runs``
+    is the wrong source — fold the log the same way ``get_state`` does.
+    Stale (lease-expired) runs do not block — they surface as stuck-run errors
+    elsewhere rather than locking the editor forever.
+    """
+    active = runner.active_for_project(project_id)
+    if active is not None:
+        raise err.AlreadyRunning(project_id, active.run_id, active.kind)
+
+    # get_state folds RUN_STARTED without a terminal event as running, then
+    # demotes lease-expired ones into stale_run_ids.
+    state = store.get_state(project_id)
+    live = _live_storage_run(store, project_id, state)
+    if live is not None:
+        raise err.AlreadyRunning(project_id, live[0], live[1])
+
+
+def _live_storage_run(store: ProjectStore, project_id: str, state) -> Optional[tuple]:
+    """Return ``(run_id, kind)`` for a non-stale running run, or None.
+
+    Reconstructs from the event log: a started run with no terminal event is
+    live unless ``get_state`` classified it as stale. ``list_runs`` only sees
+    terminal ``run.json`` records, so it cannot be used here.
+    """
+    from foleyflow.projects import (
+        EVENT_RUN_COMPLETED, EVENT_RUN_FAILED, EVENT_RUN_FAILED_AFTER_COMPLETION,
+        EVENT_RUN_STARTED,
+    )
+
+    stale = set(state.stale_run_ids or [])
+    runs: dict = {}
+    for event in store.list_events(project_id):
+        if not event.run_id:
+            continue
+        entry = runs.setdefault(event.run_id, {
+            "kind": "unknown", "status": "running"})
+        if event.type == EVENT_RUN_STARTED:
+            entry["kind"] = event.payload.get("kind", entry["kind"])
+            entry["status"] = "running"
+        elif event.type == EVENT_RUN_COMPLETED:
+            entry["status"] = "completed"
+        elif event.type in (EVENT_RUN_FAILED, EVENT_RUN_FAILED_AFTER_COMPLETION):
+            entry["status"] = "failed"
+
+    for run_id, entry in runs.items():
+        if entry["status"] == "running" and run_id not in stale:
+            return run_id, entry["kind"]
+    return None
+
+
+def _commit_request_to_timeline(body: TimelineCommitRequest, *, previous=None):
+    """Body → domain Timeline via dict_to_timeline (shared coercers for freezes).
+
+    Carries forward ``history`` and ``extra_fields`` from the previous version
+    when present — the commit body is the editor document, not a wipe of
+    server-side annotations.
+    """
+    from foleyflow.timeline_io import dict_to_timeline
+
+    raw = {
+        "duration": body.duration,
+        "ambience": body.ambience,
+        "events": [
+            {
+                "name": e.name,
+                "start_time": e.start_time,
+                "duration": e.duration,
+                "intensity": e.intensity,
+                "kind": e.kind,
+                "seed": e.seed,
+                "source_duration_s": e.source_duration_s,
+            }
+            for e in body.events
+        ],
+    }
+    try:
+        timeline = dict_to_timeline(raw)
+    except (TypeError, ValueError, KeyError) as exc:
+        raise err.InvalidRequest(f"Malformed timeline: {exc}") from exc
+
+    if previous is not None:
+        if getattr(previous, "history", None):
+            timeline.history = list(previous.history)
+        if getattr(previous, "extra_fields", None):
+            timeline.extra_fields = dict(previous.extra_fields)
+    return timeline
+
+
+def _freeze_identity(ev) -> tuple:
+    """Identity of a cost freeze: content + frozen generation duration."""
+    return (ev.name, ev.intensity, ev.kind, ev.source_duration_s)
+
+
+def _assert_source_duration_freezes(prev, new) -> None:
+    """Refuse commit bodies that invent, rebind, or strip cost freezes.
+
+    Freezes are bound to event *content* ``(name, intensity, kind)``, not to
+    list index — reordering while keeping freezes on the same sounds is legal;
+    swapping freezes between different sounds is not.
+
+    The multiset of freeze identities must be **exactly conserved** between the
+    previous and submitted documents. That blocks:
+
+    - inventing freezes
+    - rebinding freezes to other content
+    - in-place unfreeze
+    - empty-document → re-add without freezes (first step drops freezes)
+    - deleting a frozen event on a free-edit commit
+
+    Unfrozen events may be added, removed, or edited freely. Placement and
+    ``seed`` on frozen events remain free.
+    """
+    from collections import Counter
+
+    prev_frozen = Counter(
+        _freeze_identity(e) for e in prev.events
+        if e.source_duration_s is not None)
+    new_frozen = Counter(
+        _freeze_identity(e) for e in new.events
+        if e.source_duration_s is not None)
+
+    if prev_frozen == new_frozen:
+        return
+
+    violations: List[str] = []
+    for identity, count in new_frozen.items():
+        if count > prev_frozen[identity]:
+            name, intensity, kind, sd = identity
+            violations.append(
+                f"invented or rebound freeze name={name!r} intensity={intensity!r} "
+                f"kind={kind!r} source_duration_s={sd!r}"
+            )
+    for identity, count in prev_frozen.items():
+        if count > new_frozen[identity]:
+            name, intensity, kind, sd = identity
+            violations.append(
+                f"stripped freeze name={name!r} intensity={intensity!r} "
+                f"kind={kind!r} source_duration_s={sd!r}"
+            )
+    if not violations:
+        violations.append(
+            f"freeze multiset changed (had {dict(prev_frozen)}, "
+            f"got {dict(new_frozen)})"
+        )
+    raise err.InvalidRequest(
+        "source_duration_s freezes must be conserved on commit "
+        "(cannot invent, rebind, strip, or drop frozen content); "
+        "Regenerate re-rolls variant only — generation duration stays frozen",
+        detail={"violations": violations},
+    )
 
 
 def _estimate(model: str) -> float:

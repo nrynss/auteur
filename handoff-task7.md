@@ -199,27 +199,25 @@ soft-unfreeze (re-bill).
 
 **Not in this unit:** the Regenerate button's behaviour, which already exists.
 
-## 7.3 Timeline write endpoint — M
+## 7.3 Timeline write endpoint — M — **DONE**
 
 **Depends on:** 7.1 and 7.2 (the schema must be final first).
 **Files:** `docs/api.md` first, then `api/app.py`, `api/schemas.py`,
 `projects.py`, tests.
 
-There is **no timeline write path**. `GET /timeline` and
-`GET /timeline/versions` are the only routes (`api/app.py:614`, `:639`).
-Timelines are produced by analysis and forked by repair; nothing lets a client
-say "this event moves 200 ms left".
+**Landed:** `PUT /api/v1/projects/{id}/timeline` submits the whole timeline
+document; server allocates immutable version N+1 via `save_timeline` with
+`actor=user` and `payload.source=commit`. GET events expose `seed` and
+`source_duration_s`.
 
-The client submits **the whole timeline document** for the new version, not a
-patch list (decision 10). The server allocates version N+1 beside the original.
-Immutability is not an obstacle here — it is the design. One commit, one
-version (decision 1).
+**Freeze conservation:** multiset of identities
+`(name, intensity, kind, source_duration_s)` must match exactly — no invent,
+rebind, strip, empty-document drop, or delete of frozen content. Reorder and
+placement/`seed` edits are free. Unfrozen events may be added/removed.
 
-Validation is the substance of this unit: the submitted document must be a
-well-formed timeline, and the fields that carry cost — `source_duration_s`
-above all — must not be silently altered by an edit that is supposed to be
-free. An edit that changes a cache-key field without going through Regenerate
-is a client bug and should be refused, not absorbed.
+**Run lock:** `409 already_running` from in-process JobRunner **or** a
+non-stale storage-side running run (event-log fold; `list_runs` has no
+in-flight records).
 
 **Acceptance:** committing a document creates a new version; the prior version
 is unchanged and still readable; a commit attempted while a run is in flight is

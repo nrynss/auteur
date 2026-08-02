@@ -266,13 +266,111 @@ GET /api/v1/projects/{id}/timeline?version=2
 `200` — the timeline, its version, and the scene id each event falls in.
 Omitting `version` returns the latest. `404 timeline_not_found` before analysis.
 
+Each event carries the placement fields plus optional freezes the editor
+round-trips:
+
+```json
+{
+  "version": 2,
+  "duration": 15.04,
+  "ambience": "desert wind",
+  "events": [
+    {
+      "index": 0,
+      "name": "holster creak",
+      "kind": "continuous",
+      "intensity": "low",
+      "start_time": 0.0,
+      "duration": 1.0,
+      "seed": null,
+      "source_duration_s": 1.5,
+      "scene_id": "scene_01"
+    }
+  ]
+}
+```
+
+`seed` is the frozen mix-variation seed (writable on commit). `source_duration_s`
+is the frozen SFX request duration (a cache-key / cost field) — readable here,
+writable only when it does not change an existing freeze (see commit rules).
+
 ```
 GET /api/v1/projects/{id}/timeline/versions
 ```
 
 `200` — `{"versions": [1, 2], "latest": 2}`
 
-Versions are immutable and coexist; a repair adds v2 without destroying v1.
+Versions are immutable and coexist; a repair or a commit adds v2 without
+destroying v1.
+
+#### Commit (write a new version)
+
+```
+PUT /api/v1/projects/{id}/timeline
+{
+  "duration": 15.04,
+  "ambience": "desert wind",
+  "events": [
+    {
+      "name": "holster creak",
+      "start_time": 0.2,
+      "duration": 1.0,
+      "intensity": "low",
+      "kind": "continuous",
+      "seed": null,
+      "source_duration_s": 1.5
+    }
+  ]
+}
+```
+
+**Synchronous** storage write (unlike analyze/mix/export). The client submits
+the **whole timeline document**; the server allocates version N+1 beside the
+prior immutable version via `put_if_absent`. There is no patch language — a
+version *is* a document. The write does **not** claim a job slot.
+
+`200` — same shape as GET for the **new** version (`version`, events with
+`index`, `seed`, `source_duration_s`, `scene_id`).
+
+| HTTP | `code` | When |
+|---|---|---|
+| 200 | — | New version stored |
+| 400 | `invalid_request` | Malformed body, or `source_duration_s` freeze violated |
+| 404 | `project_not_found` | Unknown project |
+| 409 | `already_running` | Any run is in flight for this project (same lock as analyze/mix/export) |
+| 422 | `precondition_failed` | No timeline yet — nothing to edit; analyze first |
+
+**Cost freezes (`source_duration_s`).** Bound to event *content*
+`(name, intensity, kind)`, not list index — reordering while keeping freezes on
+the same sounds is legal; swapping freezes between different sounds is not.
+
+Load the latest existing timeline and require the multiset of freeze identities
+`(name, intensity, kind, source_duration_s)` to be **exactly conserved**:
+
+- cannot invent freezes
+- cannot rebind freezes to other content
+- cannot strip freezes in place
+- cannot drop frozen content (empty document / delete frozen event) — that would
+  enable empty→re-add unfreeze on the next commit
+- unfrozen events may be added, removed, or edited freely
+
+A violation is `400 invalid_request` with `detail.violations`. Placement
+(`start_time`, placement `duration`) and `seed` remain free. Renaming or
+changing intensity/kind on a frozen event changes content identity and fails
+conservation unless an identical freeze already exists under the new identity.
+
+**Regenerate** re-rolls the SFX *variant* for one event; it does **not** rewrite
+`source_duration_s`. Generation duration stays frozen for that content until a
+future path owns an explicit duration change. Commit never absorbs a freeze
+edit.
+
+**Run lock.** `409 already_running` when the in-process job runner has work for
+this project **or** storage still has a non-stale `running` run (lease not
+expired). Stale runs do not lock the editor forever.
+
+**Audit.** `plan.proposed` for a commit carries `actor: "user"` and
+`payload.source: "commit"` so History can tell editor commits from analysis
+and repair.
 
 ---
 

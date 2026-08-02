@@ -584,7 +584,8 @@ class ProjectStore:
     # -- timelines --------------------------------------------------------
 
     def save_timeline(self, project_id: str, timeline: Timeline, *,
-                      run_id: Optional[str] = None, actor: str = "system") -> int:
+                      run_id: Optional[str] = None, actor: str = "system",
+                      source: Optional[str] = None) -> int:
         """Store the next timeline version and return its number.
 
         Allocation retries on collision. Computing `latest + 1` and then writing
@@ -596,6 +597,9 @@ class ProjectStore:
         Versions are never reused: a repair produces v2 alongside v1 rather than
         replacing it, which is what makes the history in §6.3 real and what lets
         a user go back to an earlier plan.
+
+        ``source`` is optional provenance for the plan.proposed payload
+        (e.g. ``"commit"`` for a direct editor PUT, omitted for analysis/repair).
         """
         payload = json.dumps(timeline_to_dict(timeline), indent=2,
                              sort_keys=True).encode("utf-8")
@@ -614,10 +618,14 @@ class ProjectStore:
                 f"could not allocate a timeline version for {project_id} after "
                 f"{_VERSION_RACE_RETRIES} attempts")
 
+        event_payload: Dict[str, Any] = {
+            "timeline_version": version,
+            "event_count": len(timeline.events),
+        }
+        if source is not None:
+            event_payload["source"] = source
         self.append_event(project_id, EVENT_PLAN_PROPOSED, actor=actor,
-                          run_id=run_id,
-                          payload={"timeline_version": version,
-                                   "event_count": len(timeline.events)})
+                          run_id=run_id, payload=event_payload)
         return version
 
     def load_timeline(self, project_id: str, version: Optional[int] = None) -> Timeline:
