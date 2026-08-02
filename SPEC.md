@@ -745,7 +745,7 @@ Use the fewest providers needed for an impressive and repeatable demo. All names
 |---|---|---|---|
 | Video/scene understanding | `gemini-2.5-flash` (default); `gpt-5.6-luna` optional | **Built** | Schema-validated JSON; a repair pass handles malformed output |
 | Scene boundaries + colour statistics | ffmpeg | **Built** | Deterministic; exit codes honoured so a failed probe is not a single-shot clip |
-| Foley sound effects | Self-hosted open-weight model; ElevenLabs on approval | **Not built** | Ambience and discrete events generated independently; cached by request hash |
+| Foley sound effects | Self-hosted open-weight model (default); ElevenLabs via `FOLEYFLOW_SFX_TIER=paid` | **Built** | Ambience and discrete events generated independently; cached by request hash |
 | Visual continuity | Per-scene statistics first; optional multimodal explanation | **Built** | Adjacent mean-luma comparison; warning only — never automatic colour correction |
 | Audio QA | ffmpeg `ebur128` + true-peak | **Built** | Deterministic; written when a mix is measured |
 | Mix/mux | The ported local renderer | **Built (unwired)** | `-c:v copy`, so the source video stream is bit-identical |

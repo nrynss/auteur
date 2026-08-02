@@ -15,7 +15,7 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
 - One package, `src/foleyflow`. One CLI, `foleyflow`. The HTTP contract in
   `docs/api.md` is written ahead of the code and treated as source of truth;
   every endpoint in it is live and covered by tests.
-- `uv run pytest -q` → **475 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **483 passed, 1 skipped**. No provider credentials
   required: the billed calls are stubbed at two seams, `stems.generate_many`
   and `sfx_cache.generate_canonical_wav`. Everything else — ffmpeg, the mix, the
   shared cache, storage, the Genblaze pipelines — runs for real.

@@ -343,8 +343,7 @@ so two events routing to the same request already share one clip, and
 regenerating either regenerates the shared stem. The lineage records the
 requested event index either way.
 
-The
-`provider` field names a declared SFX tier to regenerate through; the request
+The `provider` field names a declared SFX tier to regenerate through; the request
 is re-aimed at that tier and the estimate is its cost. `422 precondition_failed`
 when there is no plan yet or a billable regeneration is not confirmed;
 `400 invalid_request` for an out-of-range index or an unknown provider.
