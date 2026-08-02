@@ -16,15 +16,15 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   `docs/api.md` is written ahead of the code and treated as source of truth;
   every endpoint in it is live and covered by tests.
 - Task numbers are the current queue; DONE items keep their titles. Remaining:
-  **12–16**, then **7 (control-room UI)** last. Tasks **9–11** and **17** are
+  **14**, then **7 (control-room UI)** last. Tasks **9–13**, **15–17** are
   **DONE**.
-- **12 unblocks 13** (smoke check needs build provenance from 11). 14 and 15
-  are demo-risk work and can run alongside. CI (10) and build identity (11)
-  are in place.
-- `uv run pytest -q` → **532 passed, 1 skipped**. No provider credentials
-  required: the billed calls are stubbed at two seams, `stems.generate_many`
-  and `sfx_cache.generate_canonical_wav`. Everything else — ffmpeg, the mix, the
-  shared cache, storage, the Genblaze pipelines — runs for real.
+- CI (10), build identity (11), post-deploy smoke (12), doctor (13), demo
+  evidence (15), and Secret Manager (16) are in place.
+- `uv run pytest -q` → **561 passed, 1 skipped**. No provider credentials
+  required for tests: the billed calls are stubbed at two seams,
+  `stems.generate_many` and `sfx_cache.generate_canonical_wav`. Everything else
+  — ffmpeg, the mix, the shared cache, storage, the Genblaze pipelines — runs
+  for real.
 - Genblaze is the orchestration spine. `providers/genblaze.py` wraps a FoleyFlow
   `Adapter` in Genblaze's `SyncProvider` contract; `stems.py` is the fan-out;
   `stages.py` is the mix/mux/QA stage log; `tiers.py` resolves paid → fallback →
@@ -180,43 +180,21 @@ No provider credentials. Offline suite only.
 SHAs become `null`. `foleyflow health` prints both stamps. README documents
 both deploy paths.
 
-## 12. Post-deploy smoke check — S
+## 12. Post-deploy smoke check — S — **DONE**
 
-The same checks have been run by hand after every deploy: health, storage,
-worker probe, a dossier 200, `ledger_writable`. Script it and make it the last
-step of deploying.
+`scripts/smoke_deploy.py --base-url URL [--expect-sha SHA]`: health, storage,
+worker status present, git_sha match, ledger_writable true, projects list, and
+dossier (or OpenAPI). Wired as the last step of `scripts/deploy.sh` (fail
+deploy on smoke fail; `--skip-smoke` emergency only). Offline unit tests cover
+stale SHA and unwritable ledger.
 
-It must have caught, and must in future catch, the two failures already seen:
-production silently stale (task 11 gives it the signal), and
-`FOLEYFLOW_LEDGER_PATH` set in the deploy env forcing the ledger back into
-ephemeral local-file mode.
+## 13. `foleyflow doctor` — M — **DONE**
 
-- Takes a base URL, exits non-zero on any failure, prints one line per check.
-- Assert `ledger_writable: true`, `storage: ok`, worker `status` present, one
-  read endpoint returning 200 with real content, and the reported build matching
-  the commit just deployed.
-
-**Acceptance:** running it against a deliberately misconfigured revision fails
-with the specific reason.
-
-## 13. `foleyflow doctor` — M
-
-One command answering "can I demo right now?". Everything it needs already
-exists; this is composition, not new capability.
-
-- Worker reachable and authenticated — reuse `_worker_health()`.
-- Active SFX tier, and warm-cache coverage for a given timeline — reuse the
-  `plan_requests` + `cache_object_key` probe that `foleyflow prewarm --dry-run`
-  already runs.
-- Quota remaining and `ledger_writable`.
-- Deployed build matches local HEAD (needs task 11).
-- Exit non-zero when anything would break a live render; print a checklist.
-
-The value is that a cold cache, an unplugged GPU, a stale deploy and an
-exhausted quota all present identically today — as a render that fails partway.
-
-**Acceptance:** with the worker stopped, `doctor` says so and exits non-zero
-while `health` still reports the API healthy.
+`foleyflow doctor [--timeline PATH]`: checklist for API, storage, worker (always
+probed), ledger_writable (strict True), any blocked quota model, git_sha vs
+local HEAD (null on non-local API is STOP), optional local SFX cache coverage
+(labelled process-local, not remote). Exit non-zero on STOP; health stays 0
+when only the worker is down.
 
 ## 14. Exercise the paid tier and the fallback for real — M
 
@@ -239,33 +217,23 @@ Two halves, and the second needs no money:
 **Acceptance:** a manifest from a fallback-served run names the endpoint that
 actually generated the audio.
 
-## 15. More evidence in the bucket — S
+## 15. More evidence in the bucket — S — **DONE**
 
-One real project is thin for a judge, and it is also a single point of failure
-for the demo.
+Three ready projects in B2 (standoff + duel_kling + inhaler_kling), each with
+mix, export, and manifest. `inhaler` prewarmed 9/9 on test tier; duel already
+warm. Helpers: `scripts/seed_demo.sh` (requires DUEL_VIDEO/INHALER_VIDEO),
+`seed_timeline_cache.py`, `demo_evidence.md`. Timeline cache seed used so
+analyze does not burn Gemini quota.
 
-- Take a second clip end to end on the deployed app: create, analyze, mix,
-  export. `demo-assets/` already holds `duel_kling` and `inhaler_kling` with
-  validated timelines.
-- Warm `inhaler_kling` — still cold at 0 of 9 stems, and free on the `test`
-  tier: `foleyflow prewarm samples/timelines/inhaler_kling.json`.
-  (`duel_kling` was warmed this session; verify with `--dry-run`.)
-- Analysis spends real quota (20/day), so prefer `--from-timeline` where the
-  validated timeline already exists.
+## 16. Move deployment secrets into Secret Manager — S — **DONE**
 
-**Acceptance:** two projects in B2 with a mix, an export and a manifest each.
-
-## 16. Move deployment secrets into Secret Manager — S
-
-The B2 application key, which grants bucket write, is a plain Cloud Run
-environment variable and is readable by anyone with project access via `gcloud
-run services describe`. Same for the Gemini key and the worker token.
-
-Move them to Secret Manager and reference them with `--set-secrets`. Update the
-README's deploy section, which currently documents the `--env-vars-file` form.
-
-**Acceptance:** `gcloud run services describe` shows secret references, not
-values.
+Live on `foleyflow` (us-east4 / backblaze-504305): plain env values replaced
+with Secret Manager refs (`valueFrom.secretKeyRef`). Names:
+`foleyflow-b2-application-key`, `foleyflow-b2-key-id`,
+`foleyflow-gemini-api-key`, `foleyflow-sfx-worker-token`. Public config in
+`env.public.yaml`; helpers `scripts/setup_secrets.sh` + `scripts/deploy.sh`
+(`--set-secrets` replaces the full secret set). Verified via describe: four
+secrets are refs, not values.
 
 ## 17. Alert when a budget is set below what is already spent — S — **DONE**
 

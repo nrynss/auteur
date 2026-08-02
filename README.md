@@ -152,11 +152,109 @@ model — so it stays on a machine you control and is reached over a Cloudflare
 tunnel. That split is the whole reason the worker is "one more provider with a
 base URL" (SPEC §9.1).
 
+### Secrets vs public config
+
+Credentials must **not** sit in plain Cloud Run env vars: anyone with project
+access can read them via `gcloud run services describe`. They live in
+**Secret Manager** and are mounted with `--set-secrets`. Non-secret config
+(bucket name, endpoints, worker URL, deploy stamps) stays in
+[`env.public.yaml`](env.public.yaml).
+
+| Cloud Run env | Secret Manager name | Notes |
+|---|---|---|
+| `B2_APPLICATION_KEY` | `foleyflow-b2-application-key` | Bucket write — highest impact |
+| `B2_KEY_ID` | `foleyflow-b2-key-id` | Paired with the application key |
+| `GEMINI_API_KEY` | `foleyflow-gemini-api-key` | Analysis |
+| `FOLEYFLOW_SFX_WORKER_TOKEN` | `foleyflow-sfx-worker-token` | Bearer for the tunnelled GPU worker |
+
+Optional keys used only for other SFX tiers (`FAL_KEY`, `ELEVENLABS_API_KEY`,
+`OPENAI_API_KEY`) are not required on the default `test` tier. If you add them
+later, put them in Secret Manager the same way — never in `env.public.yaml`.
+
+**Create / rotate secrets** (values from local `.env` or the environment; never
+printed or committed):
+
 ```bash
-gcloud run deploy foleyflow --source . --region us-east4 --allow-unauthenticated --no-cpu-throttling --min-instances 1 --max-instances 1 --memory 4Gi --cpu 2 --timeout 300 --env-vars-file env.yaml
+# one-time: enable API + create secrets + grant the Cloud Run runtime SA
+./scripts/setup_secrets.sh --env-file .env
+# defaults: project backblaze-504305, service foleyflow, region us-east4
 ```
 
-Four of those flags are load-bearing, not defaults worth tuning:
+That script:
+
+1. Enables `secretmanager.googleapis.com` if needed
+2. Creates each secret (if missing) and adds a new version from stdin
+3. Grants `roles/secretmanager.secretAccessor` on each secret to the service's
+   runtime service account (required or the revision fails to start)
+
+**Manual equivalent** (values via stdin — never on the argv):
+
+```bash
+gcloud services enable secretmanager.googleapis.com --project backblaze-504305
+
+# for each secret name above:
+printf '%s' "$B2_APPLICATION_KEY" | gcloud secrets create foleyflow-b2-application-key \
+  --project=backblaze-504305 --replication-policy=automatic --data-file=-
+# or, if the secret already exists:
+printf '%s' "$B2_APPLICATION_KEY" | gcloud secrets versions add foleyflow-b2-application-key \
+  --project=backblaze-504305 --data-file=-
+
+# runtime SA needs accessor (default compute SA unless the service overrides it)
+SA="$(gcloud run services describe foleyflow --region us-east4 --project backblaze-504305 \
+  --format='value(spec.template.spec.serviceAccountName)')"
+gcloud secrets add-iam-policy-binding foleyflow-b2-application-key \
+  --project=backblaze-504305 \
+  --member="serviceAccount:${SA}" \
+  --role="roles/secretmanager.secretAccessor"
+# repeat for foleyflow-b2-key-id, foleyflow-gemini-api-key, foleyflow-sfx-worker-token
+```
+
+### Deploy
+
+Preferred path — helper stamps `FOLEYFLOW_GIT_SHA` / `FOLEYFLOW_BUILD_TIME`,
+passes public env + secret refs, and refuses an env file that still lists
+secret keys:
+
+```bash
+./scripts/deploy.sh
+# config-only (no image rebuild):
+./scripts/deploy.sh --no-source
+# emergency only — skip post-deploy smoke_deploy.py:
+./scripts/deploy.sh --skip-smoke
+```
+
+After a successful `gcloud run deploy`, `deploy.sh` resolves the service URL and
+runs `scripts/smoke_deploy.py --base-url … --expect-sha $GIT_SHA`. A smoke
+failure fails the deploy.
+
+Equivalent `gcloud` form:
+
+```bash
+gcloud run deploy foleyflow --source . --region us-east4 --project backblaze-504305 \
+  --allow-unauthenticated \
+  --no-cpu-throttling --min-instances 1 --max-instances 1 \
+  --memory 4Gi --cpu 2 --timeout 300 \
+  --env-vars-file env.public.yaml \
+  --set-secrets=\
+B2_APPLICATION_KEY=foleyflow-b2-application-key:latest,\
+B2_KEY_ID=foleyflow-b2-key-id:latest,\
+GEMINI_API_KEY=foleyflow-gemini-api-key:latest,\
+FOLEYFLOW_SFX_WORKER_TOKEN=foleyflow-sfx-worker-token:latest
+```
+
+Do **not** put secrets in `--env-vars-file` / `--set-env-vars`. The old
+all-in-one `env.yaml` pattern is retired; use `env.public.yaml` for non-secrets
+only (and keep any local file that still has credentials out of git —
+`env.yaml` is gitignored as a safety net).
+
+**`--set-secrets` replaces the full secret set.** gcloud does not merge: the
+list you pass becomes the complete secret-backed env for the next revision.
+Omitting a secret removes it. `scripts/deploy.sh` always passes all four
+entries above; if you deploy by hand, pass the same full CSV every time.
+`./scripts/deploy.sh --skip-smoke` skips the post-deploy smoke check in an
+emergency only — default is to fail the deploy when smoke fails.
+
+Four of the deploy flags are load-bearing, not defaults worth tuning:
 
 | Flag | Why |
 |---|---|
@@ -165,10 +263,9 @@ Four of those flags are load-bearing, not defaults worth tuning:
 | `--min-instances 1` | Scale-to-zero would kill in-flight jobs. This bills continuously — delete the service after judging. |
 | `--memory 4Gi` | `/tmp` is tmpfs and counts against memory. The source video, every stem, the mix WAV and the muxed MP4 all live there during a run. |
 
-`env.yaml` carries the same variables as `.env` (see `.env.example`). The cost
-ledger lives on the shared storage backend under `ledger/{ulid}.json` — the
-same B2 bucket as every other artifact — so quota counting survives restarts
-and does not need a writable container filesystem. Do not set
+The cost ledger lives on the shared storage backend under `ledger/{ulid}.json`
+— the same B2 bucket as every other artifact — so quota counting survives
+restarts and does not need a writable container filesystem. Do not set
 `FOLEYFLOW_LEDGER_PATH` to a path under `/tmp`: that is per-instance and resets
 on every cold start. Check `ledger_writable` in `GET /quota` after any deploy;
 `false` means the figures are fiction and the UI must stop presenting them.
@@ -179,27 +276,49 @@ pipeline needs `ffmpeg` at runtime. `providers.toml` is resolved relative to the
 sync` installs the project editable — keep `src/` and `providers.toml` side by
 side under `/app`.
 
+**Acceptance check** — describe must show secret *references*, never values:
+
+```bash
+gcloud run services describe foleyflow --region us-east4 --project backblaze-504305 \
+  --format='yaml(spec.template.spec.containers[0].env)'
+```
+
+Each of `B2_APPLICATION_KEY`, `B2_KEY_ID`, `GEMINI_API_KEY`, and
+`FOLEYFLOW_SFX_WORKER_TOKEN` should look like:
+
+```yaml
+- name: GEMINI_API_KEY
+  valueFrom:
+    secretKeyRef:
+      key: latest
+      name: foleyflow-gemini-api-key
+```
+
+not `value: "…"`.
+
 To stamp a deploy so `GET /api/v1/health` reports the commit it is running,
 set `FOLEYFLOW_GIT_SHA` and `FOLEYFLOW_BUILD_TIME`. How you set them depends
 on the deploy path:
 
 **A) This repo's `gcloud run deploy --source` flow** — Cloud Build builds the
-Dockerfile without custom build-args, so stamp at runtime by putting both keys
-in `env.yaml` and regenerating it each deploy:
+Dockerfile without custom build-args, so stamp at runtime via the public env
+file. `scripts/deploy.sh` does this automatically; manually:
 
 ```bash
-printf 'FOLEYFLOW_GIT_SHA: "%s"\nFOLEYFLOW_BUILD_TIME: "%s"\n' "$(git rev-parse HEAD)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> env.yaml
+printf 'FOLEYFLOW_GIT_SHA: "%s"\nFOLEYFLOW_BUILD_TIME: "%s"\n' \
+  "$(git rev-parse HEAD)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> env.public.yaml
 ```
 
-Then deploy with `--env-vars-file env.yaml` as above. Verified end to end:
-`GET /api/v1/health` on the deployed service returns the same sha as
-`git rev-parse HEAD`.
+Then deploy with `--env-vars-file env.public.yaml` and `--set-secrets=…` as
+above. Verified end to end: `GET /api/v1/health` on the deployed service
+returns the same sha as `git rev-parse HEAD`.
 
-> **Not `--update-env-vars`.** It looks like the natural way to add two keys
-> without touching the file, but gcloud rejects it: *"At most one of
-> --clear-env-vars | --env-vars-file | --set-env-vars | --remove-env-vars
-> --update-env-vars can be specified."* The two flags are mutually exclusive,
-> so identity has to live in the same place as every other variable.
+> **Not `--update-env-vars` alongside `--env-vars-file`.** gcloud rejects
+> mixing those env flags: *"At most one of --clear-env-vars | --env-vars-file
+> | --set-env-vars | --remove-env-vars | --update-env-vars can be specified."*
+> Identity stamps therefore live in the same public env file as the other
+> non-secret variables. `--set-secrets` is a separate flag and **is** allowed
+> next to `--env-vars-file`.
 
 **B) Image-based deploys** (`docker build` / registry push) can bake the
 stamps into the image via Dockerfile `ARG`/`ENV`:
@@ -212,6 +331,16 @@ docker build \
 ```
 
 Omit them and health still works — `git_sha` / `build_time` are just `null`.
+
+**After deploy** — run the post-deploy smoke check (health, storage, worker
+probe, `git_sha` vs HEAD, `ledger_writable`, one read endpoint). It exits
+non-zero on any failure and names the reason:
+
+```bash
+uv run python scripts/smoke_deploy.py --base-url https://YOUR-SERVICE.run.app
+# or pin the SHA you just shipped:
+uv run python scripts/smoke_deploy.py --base-url https://… --expect-sha "$(git rev-parse HEAD)"
+```
 
 ### Tunnelling the worker
 

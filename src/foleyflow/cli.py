@@ -5,6 +5,7 @@ File verbs (`render`, `direct`) call the media core directly — no server, no
 `Client`.
 
     foleyflow health
+    foleyflow doctor [--timeline PATH]
     foleyflow create clip.mp4 --title "Western standoff" --analyze --wait
     foleyflow show proj_01K…
     foleyflow timeline proj_01K… --json
@@ -229,6 +230,357 @@ def cmd_health(client: Client, args) -> int:
 
     _emit(data, args.json, render)
     return EXIT_OK if data["status"] == "ok" else EXIT_API_ERROR
+
+
+def _local_git_head() -> Optional[str]:
+    """Full SHA of the local checkout's HEAD, or None when git is unavailable."""
+    import subprocess
+
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    sha = (completed.stdout or "").strip()
+    return sha or None
+
+
+def _git_sha_matches(local: str, remote: str) -> bool:
+    """True when local HEAD and the health stamp name the same commit.
+
+    Accepts short or full SHAs on either side (deploy stamps are often short).
+    Prefix match requires at least 7 hex chars so a tiny fragment cannot
+    accidentally match. When both sides are full-length (>= 40), require
+    exact equality — a 40-char SHA that only prefixes another is not the
+    same commit.
+    """
+    a, b = local.lower(), remote.lower()
+    if len(a) >= 40 and len(b) >= 40:
+        return a == b
+    if a == b:
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if len(shorter) < 7:
+        return False
+    return longer.startswith(shorter)
+
+
+def _api_is_local(base_url: str) -> bool:
+    """True when the CLI is talking to a loopback API (unstamped is WARN)."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(base_url).hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1")
+
+
+def _doctor_check(key: str, state: str, label: str,
+                  detail: Optional[str] = None) -> dict:
+    item = {"key": key, "state": state, "label": label}
+    if detail:
+        item["detail"] = detail
+    return item
+
+
+def _doctor_get(client: Client, path: str, **kw) -> tuple[Optional[dict], Optional[str]]:
+    """GET that never aborts: returns (body, error_detail).
+
+    Doctor must always print a full checklist even when a probe fails mid-flight
+    (ApiError, HTTP error, or network unreachable). Client.request raises
+    SystemExit on network failure after printing to stderr — catch that and
+    fold it into a STOP row instead of leaving the operator with no sheet.
+    """
+    try:
+        body = client.get(path, **kw)
+    except ApiError as e:
+        detail = f"{e.code}: {e.message}" if e.message else e.code
+        return None, detail
+    except SystemExit:
+        return None, f"cannot reach the API at {client.base_url}"
+    if not isinstance(body, dict):
+        return None, f"expected JSON object from {path}, got {type(body).__name__}"
+    return body, None
+
+
+def cmd_doctor(client: Client, args) -> int:
+    """Answer "can I demo right now?" with a single checklist.
+
+    Composition of existing probes: API health (always with worker), /quota,
+    local HEAD vs health.git_sha, and optionally the same plan_requests +
+    project_mix_cost cache probe that ``prewarm --dry-run`` uses.
+
+    Unlike ``health``, a bad worker or a SHA mismatch is a hard failure —
+    demos break on cold GPU boxes and stale deploys even when the API process
+    itself is fine. Exit non-zero when any check is STOP (``blocked``).
+
+    Timeline cache probing talks to local storage (``get_backend()`` /
+    ``FOLEYFLOW_CACHE_BACKEND`` etc.), not the API — same as ``prewarm``.
+    """
+    checks: list = []
+    health: Optional[dict] = None
+
+    # -- remote: health (always with worker) --------------------------------
+    health, health_err = _doctor_get(
+        client, "/health", params={"worker": "true"})
+    if health_err is not None:
+        checks.append(_doctor_check(
+            "api", "blocked", "API reachable", health_err))
+        checks.append(_doctor_check(
+            "storage", "blocked", "storage ok",
+            "skipped — health unreachable"))
+        checks.append(_doctor_check(
+            "worker", "blocked", "worker",
+            "skipped — health unreachable"))
+    else:
+        checks.append(_doctor_check(
+            "api", "ok", "API reachable",
+            f"status={health.get('status')} version={health.get('version')}"))
+
+        storage = health.get("storage")
+        if storage == "ok":
+            checks.append(_doctor_check("storage", "ok", "storage ok"))
+        else:
+            checks.append(_doctor_check(
+                "storage", "blocked", "storage ok",
+                f"storage={storage!r} — reads/writes will fail"))
+
+        worker = health.get("worker") or {}
+        wstatus = worker.get("status")
+        if not worker or wstatus is None:
+            checks.append(_doctor_check(
+                "worker", "blocked", "worker",
+                "no worker probe in health response"))
+        elif wstatus == "ok":
+            bits = [wstatus]
+            if worker.get("device"):
+                bits.append(worker["device"])
+            if worker.get("tier"):
+                bits.append(f"tier={worker['tier']}")
+            detail = "  ".join(bits)
+            if (worker.get("auth_required")
+                    and worker.get("auth_configured") is False):
+                checks.append(_doctor_check(
+                    "worker", "blocked", "worker",
+                    f"{detail} — auth required but "
+                    f"FOLEYFLOW_SFX_WORKER_TOKEN unset"))
+            else:
+                checks.append(_doctor_check(
+                    "worker", "ok", "worker", detail))
+        elif wstatus == "not_applicable":
+            # Hosted paid/fallback tiers: nothing local to probe. Not a STOP for
+            # a paid-only demo, but worth flagging so a self-hosted expectation
+            # is not silently rewritten.
+            checks.append(_doctor_check(
+                "worker", "warn", "worker",
+                f"n/a (tier {worker.get('tier')} is a hosted API)"))
+        elif wstatus == "loading":
+            checks.append(_doctor_check(
+                "worker", "blocked", "worker",
+                "model still loading — generations will 503 until ready"))
+        else:
+            # unreachable, unhealthy, or anything else that breaks a live render.
+            detail = worker.get("detail") or wstatus
+            checks.append(_doctor_check(
+                "worker", "blocked", "worker",
+                f"{wstatus}: {detail}" if detail != wstatus else str(wstatus)))
+
+    # -- remote: quota + ledger ---------------------------------------------
+    # Match smoke: ledger_writable must be strictly True (missing/null → STOP).
+    quota, quota_err = _doctor_get(client, "/quota")
+    if quota_err is not None:
+        checks.append(_doctor_check(
+            "ledger", "blocked", "ledger writable",
+            f"quota probe failed — {quota_err}"))
+        checks.append(_doctor_check(
+            "quota", "blocked", "quota",
+            f"quota probe failed — {quota_err}"))
+    else:
+        if quota.get("ledger_writable") is True:
+            checks.append(_doctor_check(
+                "ledger", "ok", "ledger writable"))
+        else:
+            checks.append(_doctor_check(
+                "ledger", "blocked", "ledger writable",
+                f"ledger_writable={quota.get('ledger_writable')!r} — "
+                "spend figures are fiction"))
+
+        # STOP if ANY model is blocked (not only the default analysis VLM).
+        models_list = list(quota.get("models") or [])
+        blocked = [
+            m for m in models_list
+            if (m.get("status") or "ok") == "blocked"
+        ]
+        analysis_model = DEFAULT_MODEL
+        models = {m["model_id"]: m for m in models_list if m.get("model_id")}
+        analysis = models.get(analysis_model)
+
+        if blocked:
+            names = ", ".join(
+                m.get("model_id") or "?" for m in blocked)
+            checks.append(_doctor_check(
+                "quota", "blocked", "quota",
+                f"blocked model(s): {names}"))
+        elif analysis is None:
+            # No declared limit for the default VLM — nothing to block on.
+            checks.append(_doctor_check(
+                "quota", "ok", f"quota ({analysis_model})",
+                "no limit declared for the default analysis model"))
+        else:
+            day = analysis.get("per_day") or {}
+            used, limit = day.get("used"), day.get("limit")
+            usage = (f"{used}/{limit} today" if limit is not None
+                     else f"{used} today (no daily limit)")
+            status = analysis.get("status") or "ok"
+            if status == "warn":
+                checks.append(_doctor_check(
+                    "quota", "warn", f"quota ({analysis_model})",
+                    f"{usage} — nearing the estimated limit"))
+            else:
+                checks.append(_doctor_check(
+                    "quota", "ok", f"quota ({analysis_model})", usage))
+
+    # -- build identity: deployed vs local HEAD -----------------------------
+    remote_sha = health.get("git_sha") if health else None
+    local_sha = _local_git_head()
+    if health is None:
+        checks.append(_doctor_check(
+            "build", "blocked", "deployed build matches local HEAD",
+            "skipped — health unreachable"))
+    elif not remote_sha:
+        # Unstamped local process is a soft warning; a remote deploy without a
+        # stamp cannot prove freshness and is a hard stop for demo readiness.
+        if _api_is_local(client.base_url):
+            checks.append(_doctor_check(
+                "build", "warn", "deployed build matches local HEAD",
+                "health git_sha is null (unstamped process) — cannot verify"))
+        else:
+            checks.append(_doctor_check(
+                "build", "blocked", "deployed build matches local HEAD",
+                "health git_sha is null on non-local API — unstamped deploy"))
+    elif not local_sha:
+        checks.append(_doctor_check(
+            "build", "warn", "deployed build matches local HEAD",
+            f"deployed={remote_sha} but local git HEAD unavailable"))
+    elif _git_sha_matches(local_sha, remote_sha):
+        short = remote_sha if len(remote_sha) <= 12 else remote_sha[:12]
+        checks.append(_doctor_check(
+            "build", "ok", "deployed build matches local HEAD",
+            f"git_sha={short}"))
+    else:
+        checks.append(_doctor_check(
+            "build", "blocked", "deployed build matches local HEAD",
+            f"deployed={remote_sha} local={local_sha} — stale or wrong deploy"))
+
+    # -- optional: warm-cache coverage for a timeline -----------------------
+    # Probes the process-local storage backend only (same as prewarm), not the
+    # remote API. Label it so a green local cache is not mistaken for proof
+    # that the deployed demo's B2 bucket is warm.
+    timeline_path = getattr(args, "timeline", None)
+    if timeline_path:
+        cache_check = _doctor_timeline_cache(
+            timeline_path, api_base=client.base_url)
+        checks.append(cache_check)
+
+    payload = {
+        "ok": not any(c["state"] == "blocked" for c in checks),
+        "checks": checks,
+    }
+
+    def render(d):
+        for item in d["checks"]:
+            detail = f"  — {item['detail']}" if item.get("detail") else ""
+            print(f"{_state_marker(item['state'])} {item['label']}{detail}")
+        print()
+        if d["ok"]:
+            print("demo ready")
+        else:
+            print("demo not ready — fix STOP items above")
+
+    _emit(payload, args.json, render)
+    return EXIT_OK if payload["ok"] else EXIT_API_ERROR
+
+
+def _doctor_timeline_cache(timeline_path: str,
+                           *, api_base: Optional[str] = None) -> dict:
+    """Local SFX cache coverage for a timeline (prewarm --dry-run probe).
+
+    Uses the process-local storage backend (FOLEYFLOW_CACHE_BACKEND /
+    FOLEYFLOW_STORAGE_* etc.), not the API. Cold cache is WARN — a demo can
+    still run, but the first miss hits the worker and costs time/money. FAIL
+    when planning or the backend itself is broken.
+
+    When the CLI is aimed at a non-local API, even a fully warm local result is
+    only a local-storage signal — remote B2 may still be cold for the demo.
+    """
+    from foleyflow.assemble import plan_requests
+    from foleyflow.sfx_cache import project_mix_cost
+    from foleyflow.storage import StorageError, get_backend
+    from foleyflow.tiers import TierError, active_tier_name
+    from foleyflow.timeline_io import load_timeline
+    from foleyflow.workflow import work_dir
+
+    label = "SFX cache coverage (local storage)"
+    remote_note = ""
+    if api_base and not _api_is_local(api_base):
+        remote_note = (
+            " — local storage only; remote API cache may differ "
+            f"(FOLEYFLOW_API={api_base})"
+        )
+
+    try:
+        timeline = load_timeline(timeline_path)
+    except (OSError, ValueError) as exc:
+        return _doctor_check(
+            "cache", "blocked", label,
+            f"cannot read timeline {timeline_path}: {exc}")
+
+    duration = timeline.duration
+    if not duration:
+        return _doctor_check(
+            "cache", "blocked", label,
+            "timeline carries no duration — cannot plan stems")
+
+    try:
+        requests = plan_requests(timeline, duration, tier="full")
+        active = active_tier_name() or "(none)"
+    except TierError as exc:
+        return _doctor_check("cache", "blocked", label, str(exc))
+    except Exception as exc:
+        return _doctor_check(
+            "cache", "blocked", label,
+            f"cannot plan requests: {type(exc).__name__}: {exc}")
+
+    try:
+        backend = get_backend()
+        projection = project_mix_cost(backend, work_dir(), requests)
+    except StorageError as exc:
+        return _doctor_check(
+            "cache", "blocked", label,
+            f"storage unavailable for cache probe: {exc}")
+
+    stems = projection["stem_count"]
+    hits = projection["hits"]
+    misses = projection["misses"]
+    summary = (f"tier={active}  {stems} stems  "
+               f"{hits} cached / {misses} to generate")
+    if misses == 0:
+        # Fully warm locally — still WARN when talking to a remote API so the
+        # operator does not treat this as proof the deployed demo is warm.
+        if remote_note:
+            return _doctor_check(
+                "cache", "warn", label,
+                f"{summary}{remote_note}")
+        return _doctor_check("cache", "ok", label, summary)
+    # Cold cache: demo risk, not a hard stop — prewarm first.
+    cost = projection.get("projected_cost_usd") or 0.0
+    if cost:
+        summary += f"  projected ${cost:.4f}"
+    return _doctor_check(
+        "cache", "warn", label,
+        f"{summary} — run `foleyflow prewarm` before the demo{remote_note}")
 
 
 def cmd_use(args) -> int:
@@ -939,6 +1291,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("health", help="API and storage reachability").set_defaults(
         func=cmd_health)
+
+    p = sub.add_parser(
+        "doctor",
+        help="demo readiness checklist (API, worker, quota, build, cache)",
+        description="One command answering \"can I demo right now?\". Probes "
+                    "the API (always with worker), /quota, local HEAD vs "
+                    "deployed git_sha, and optionally SFX cache coverage for "
+                    "a timeline. Cache probing uses local storage "
+                    "(FOLEYFLOW_CACHE_BACKEND / storage env), not the API — "
+                    "same as prewarm. Exit non-zero on any STOP item.")
+    p.add_argument(
+        "--timeline", default=None, metavar="PATH",
+        help="timeline JSON to probe for warm-cache coverage (local storage; "
+             "same plan_requests + project_mix_cost path as prewarm --dry-run)")
+    p.set_defaults(func=cmd_doctor)
+
     sub.add_parser("quota", help="provider budget (estimated)").set_defaults(
         func=cmd_quota)
 

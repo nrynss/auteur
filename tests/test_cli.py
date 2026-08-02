@@ -146,6 +146,257 @@ def test_health_warns_but_succeeds_when_the_worker_is_down(client, capsys, monke
     assert "connection refused" in captured.err
 
 
+# -- doctor ------------------------------------------------------------------
+
+def test_doctor_healthy_path_exits_zero(client, capsys, monkeypatch):
+    """Happy path: API + worker + ledger + quota all green.
+
+    git_sha is null on an unstamped TestClient app. Treat the client as local
+    so unstamped stays WARN (not STOP — that applies only to non-local APIs).
+    Doctor always probes the worker (unlike a bare /health).
+    """
+    # Pin HEAD lookup so a missing .git never flips this into a flaky FAIL.
+    monkeypatch.setattr("foleyflow.cli._local_git_head", lambda: None)
+    monkeypatch.setattr(client, "base_url", "http://127.0.0.1:8000")
+    assert run(client, "doctor") == EXIT_OK
+    out = capsys.readouterr().out
+    assert "API reachable" in out
+    assert "storage ok" in out
+    assert "worker" in out
+    assert "ledger writable" in out
+    assert "demo ready" in out
+    assert "STOP" not in out
+
+
+def test_doctor_worker_bad_exits_nonzero_while_health_stays_ok(
+        client, capsys, monkeypatch):
+    """Acceptance: worker down → doctor fails; health still succeeds.
+
+    That is the whole point of doctor over health: a platform-ok API with an
+    unplugged GPU is not demo-ready.
+    """
+    import foleyflow.providers as providers
+
+    class Stub:
+        def health(self):
+            raise OSError("connection refused")
+
+    monkeypatch.setattr(providers, "get_adapter", lambda name: Stub())
+    monkeypatch.setattr("foleyflow.cli._local_git_head", lambda: None)
+    monkeypatch.setattr(client, "base_url", "http://127.0.0.1:8000")
+
+    assert run(client, "health") == EXIT_OK
+    assert run(client, "doctor") == EXIT_API_ERROR
+    out = capsys.readouterr().out
+    assert "STOP" in out
+    assert "worker" in out
+    assert "demo not ready" in out
+
+
+def test_doctor_sha_mismatch_exits_nonzero(client, capsys, monkeypatch):
+    import foleyflow.api.app as app_mod
+
+    monkeypatch.setattr(app_mod, "GIT_SHA", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    monkeypatch.setattr(
+        "foleyflow.cli._local_git_head",
+        lambda: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    assert run(client, "doctor") == EXIT_API_ERROR
+    out = capsys.readouterr().out
+    assert "STOP" in out
+    assert "deployed build matches local HEAD" in out
+    assert "aaaaaaaa" in out and "bbbbbbbb" in out
+
+
+def test_doctor_sha_match_is_ok(client, capsys, monkeypatch):
+    import foleyflow.api.app as app_mod
+
+    full = "deadbeefcafebabe0123456789abcdef01234567"
+    monkeypatch.setattr(app_mod, "GIT_SHA", full)
+    # Short stamp from local HEAD must still match.
+    monkeypatch.setattr("foleyflow.cli._local_git_head", lambda: full)
+    assert run(client, "doctor") == EXIT_OK
+    out = capsys.readouterr().out
+    assert "deployed build matches local HEAD" in out
+    # No STOP for the build row.
+    build_lines = [ln for ln in out.splitlines()
+                   if "deployed build matches local HEAD" in ln]
+    assert build_lines and build_lines[0].startswith("OK")
+
+
+def test_doctor_json_mode(client, capsys, monkeypatch):
+    monkeypatch.setattr("foleyflow.cli._local_git_head", lambda: None)
+    monkeypatch.setattr(client, "base_url", "http://127.0.0.1:8000")
+    assert run(client, "--json", "doctor") == EXIT_OK
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is True
+    keys = {c["key"] for c in body["checks"]}
+    assert {"api", "storage", "worker", "ledger", "quota", "build"} <= keys
+    # Doctor always probes the worker — it is never absent from the checklist.
+    worker = next(c for c in body["checks"] if c["key"] == "worker")
+    assert worker["state"] in ("ok", "warn", "blocked")
+
+
+def test_doctor_timeline_cold_cache_is_warn_not_stop(
+        client, capsys, monkeypatch, timeline_file, prewarm_backend):
+    """Misses are demo risk (WARN), not a hard fail — prewarm first."""
+    monkeypatch.setattr("foleyflow.cli._local_git_head", lambda: None)
+    monkeypatch.setattr(client, "base_url", "http://127.0.0.1:8000")
+    assert run(client, "doctor", "--timeline", timeline_file) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "SFX cache coverage (local storage)" in out
+    assert "to generate" in out or "WARN" in out
+    cache_lines = [ln for ln in out.splitlines() if "SFX cache coverage" in ln]
+    assert cache_lines and cache_lines[0].startswith("WARN")
+
+
+def test_doctor_timeline_unreadable_is_stop(client, capsys, monkeypatch, tmp_path):
+    monkeypatch.setattr("foleyflow.cli._local_git_head", lambda: None)
+    monkeypatch.setattr(client, "base_url", "http://127.0.0.1:8000")
+    missing = str(tmp_path / "nope.json")
+    assert run(client, "doctor", "--timeline", missing) == EXIT_API_ERROR
+    out = capsys.readouterr().out
+    assert "STOP" in out
+    assert "cannot read timeline" in out
+
+
+def test_doctor_ledger_not_writable(client, capsys, monkeypatch):
+    """ledger_writable must be strictly True (match smoke); false → STOP."""
+    # /quota imports ledger_writable from foleyflow.quota (re-export), not
+    # ledger — patch the name the route actually binds.
+    monkeypatch.setattr("foleyflow.cli._local_git_head", lambda: None)
+    monkeypatch.setattr(client, "base_url", "http://127.0.0.1:8000")
+    monkeypatch.setattr(
+        "foleyflow.quota.ledger_writable", lambda *a, **k: False)
+    assert run(client, "doctor") == EXIT_API_ERROR
+    out = capsys.readouterr().out
+    assert "STOP" in out
+    assert "ledger writable" in out
+    assert "demo not ready" in out
+
+
+def test_doctor_ledger_writable_missing_is_stop(client, capsys, monkeypatch):
+    """Missing ledger_writable key is STOP (default True was the old footgun)."""
+    monkeypatch.setattr("foleyflow.cli._local_git_head", lambda: None)
+    monkeypatch.setattr(client, "base_url", "http://127.0.0.1:8000")
+
+    real_get = client.get
+
+    def get_drop_ledger(path, **kw):
+        body = real_get(path, **kw)
+        if path == "/quota" and isinstance(body, dict):
+            body = dict(body)
+            body.pop("ledger_writable", None)
+        return body
+
+    monkeypatch.setattr(client, "get", get_drop_ledger)
+    assert run(client, "doctor") == EXIT_API_ERROR
+    out = capsys.readouterr().out
+    assert "ledger writable" in out
+    ledger_lines = [ln for ln in out.splitlines() if "ledger writable" in ln]
+    assert ledger_lines and ledger_lines[0].startswith("STOP")
+
+
+def test_doctor_any_blocked_model_is_stop(client, capsys, monkeypatch):
+    """M5: STOP if any model in /quota is blocked, not only DEFAULT_MODEL."""
+    monkeypatch.setattr("foleyflow.cli._local_git_head", lambda: None)
+    monkeypatch.setattr(client, "base_url", "http://127.0.0.1:8000")
+
+    real_get = client.get
+
+    def get_with_blocked_other(path, **kw):
+        body = real_get(path, **kw)
+        if path == "/quota" and isinstance(body, dict):
+            body = dict(body)
+            models = list(body.get("models") or [])
+            models.append({
+                "model_id": "some-other-model",
+                "status": "blocked",
+                "per_day": {"used": 99, "limit": 100},
+            })
+            body["models"] = models
+        return body
+
+    monkeypatch.setattr(client, "get", get_with_blocked_other)
+    assert run(client, "doctor") == EXIT_API_ERROR
+    out = capsys.readouterr().out
+    assert "STOP" in out
+    assert "blocked model" in out
+    assert "some-other-model" in out
+
+
+def test_doctor_null_git_sha_remote_is_stop(client, capsys, monkeypatch):
+    """M2: unstamped non-local API → STOP (local unstamped stays WARN)."""
+    import foleyflow.api.app as app_mod
+
+    monkeypatch.setattr(app_mod, "GIT_SHA", None)
+    monkeypatch.setattr("foleyflow.cli._local_git_head", lambda: None)
+    # Client base_url is http://testserver (not localhost) → treat as remote.
+    assert run(client, "doctor") == EXIT_API_ERROR
+    out = capsys.readouterr().out
+    build_lines = [ln for ln in out.splitlines()
+                   if "deployed build matches local HEAD" in ln]
+    assert build_lines and build_lines[0].startswith("STOP")
+    assert "null" in build_lines[0] or "unstamped" in build_lines[0]
+
+
+def test_doctor_null_git_sha_local_is_warn(client, capsys, monkeypatch):
+    """Local unstamped process remains WARN so offline doctor can exit 0."""
+    import foleyflow.api.app as app_mod
+
+    monkeypatch.setattr(app_mod, "GIT_SHA", None)
+    monkeypatch.setattr("foleyflow.cli._local_git_head", lambda: None)
+    monkeypatch.setattr(client, "base_url", "http://127.0.0.1:8000")
+    assert run(client, "doctor") == EXIT_OK
+    out = capsys.readouterr().out
+    build_lines = [ln for ln in out.splitlines()
+                   if "deployed build matches local HEAD" in ln]
+    assert build_lines and build_lines[0].startswith("WARN")
+
+
+def test_doctor_api_error_still_prints_checklist(client, capsys, monkeypatch):
+    """H3: ApiError mid-flight must not abort without a full checklist sheet."""
+    from foleyflow.cli import ApiError
+
+    monkeypatch.setattr("foleyflow.cli._local_git_head", lambda: None)
+
+    real_get = client.get
+    calls = {"n": 0}
+
+    def get_quota_fails(path, **kw):
+        if path == "/quota":
+            raise ApiError("http_error", "HTTP 503")
+        return real_get(path, **kw)
+
+    monkeypatch.setattr(client, "get", get_quota_fails)
+    assert run(client, "doctor") == EXIT_API_ERROR
+    out = capsys.readouterr().out
+    # Health-derived rows still present; quota/ledger are STOP; sheet printed.
+    assert "API reachable" in out
+    assert "worker" in out
+    assert "ledger writable" in out
+    assert "quota" in out
+    assert "deployed build matches local HEAD" in out
+    assert "demo not ready" in out
+    assert "STOP" in out
+
+
+def test_doctor_git_sha_short_prefix_min_length(client, capsys, monkeypatch):
+    """M1: prefix match needs >= 7 chars; tiny fragments must not match."""
+    import foleyflow.api.app as app_mod
+    from foleyflow.cli import _git_sha_matches
+
+    full = "deadbeefcafebabe0123456789abcdef01234567"
+    assert _git_sha_matches(full, "deadbee")
+    assert not _git_sha_matches(full, "deadbe")
+    other = "deadbeefcafebabe0123456789abcdef01234568"
+    assert not _git_sha_matches(full, other)
+
+    monkeypatch.setattr(app_mod, "GIT_SHA", full)
+    monkeypatch.setattr("foleyflow.cli._local_git_head", lambda: "deadbe")
+    # 6-char local prefix must not count as a match → STOP
+    assert run(client, "doctor") == EXIT_API_ERROR
+
+
 def test_quota_reports_estimates(client, capsys):
     assert run(client, "quota") == EXIT_OK
     out = capsys.readouterr().out

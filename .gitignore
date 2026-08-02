@@ -5,6 +5,12 @@ __pycache__/
 
 .env
 
+# Never commit secret-bearing deploy env files. Use env.public.yaml (committed)
+# for non-secrets only; credentials go to Secret Manager.
+env.yaml
+.env.deploy
+*.secrets.yaml
+
 # Local artifact scratch — canonical artifacts live in B2.
 work/
 sfx_cache/
