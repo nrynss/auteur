@@ -991,9 +991,11 @@ def budget_ledger(store, monkeypatch):
     return ledger_mod
 
 
-def _spend(budget_ledger, project_id, endpoint, cost, success=True):
+def _spend(budget_ledger, project_id, endpoint, cost, success=True,
+           cost_source="estimate"):
     with budget_ledger.set_project_context(project_id):
-        budget_ledger.log_transaction(endpoint, "h", cost, success=success)
+        budget_ledger.log_transaction(endpoint, "h", cost, success=success,
+                                      cost_source=cost_source)
 
 
 def test_budget_reports_spend_against_the_cap(client, store, budget_ledger):
@@ -1030,10 +1032,10 @@ def test_budget_isolates_projects(client, store, budget_ledger):
     assert b_body["remaining"] == pytest.approx(0.40)
 
 
-def test_budget_gate_refuses_a_call_past_the_cap(client, store, budget_ledger,
-                                                 monkeypatch):
-    """§3.11: a $0.50 budget that has spent $0.30 refuses a second $0.30 call,
-    with the numbers."""
+def test_budget_is_advisory_and_never_refuses_work(client, store, budget_ledger,
+                                                   monkeypatch):
+    """Task 9d: a soft budget never gates analyze/regenerate. Overspend is
+    reported, not refused; confirm_cost_usd remains the consent gate."""
     project = store.create_project(title="B", input_key="k", source_sha256="",
                                    source_filename="s.mp4", budget_usd=0.50)
     store.save_timeline(project.id, _timeline())
@@ -1043,40 +1045,16 @@ def test_budget_gate_refuses_a_call_past_the_cap(client, store, budget_ledger,
     r = client.post(
         f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
         json={"confirm_cost_usd": 0.30})
-    assert r.status_code == 422
-    detail = r.json()["error"]["detail"]
-    assert detail["budget_usd"] == 0.50
-    assert detail["remaining"] == pytest.approx(0.20)
-    assert detail["estimated_cost_usd"] == pytest.approx(0.30)
-
-
-def test_budget_gate_allows_a_call_within_the_cap(client, store, budget_ledger,
-                                                  monkeypatch):
-    project = store.create_project(title="B", input_key="k", source_sha256="",
-                                   source_filename="s.mp4", budget_usd=1.0)
-    store.save_timeline(project.id, _timeline())
-    monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
-
-    r = client.post(
-        f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
-        json={"confirm_cost_usd": 0.30})
     assert r.status_code == 202, r.text
 
-
-def test_budget_gate_never_refuses_free_calls(client, store, budget_ledger):
-    """A $0.00 estimate is never gated, even with nothing left in the cap."""
-    project = store.create_project(title="B", input_key="k", source_sha256="",
-                                   source_filename="s.mp4", budget_usd=0.01)
-    store.save_timeline(project.id, _timeline())
-    _spend(budget_ledger, project.id, "openmoss/moss-soundeffect-v2", 0.01)
-
-    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/0/regenerate",
-                    json={})
-    assert r.status_code == 202, r.text
+    body = client.get(f"{API_PREFIX}/projects/{project.id}/budget").json()
+    assert body["budget_usd"] == 0.50
+    assert body["spent"] == pytest.approx(0.30)
+    assert body["remaining"] == pytest.approx(0.20)
 
 
-def test_budget_gate_skips_projects_without_a_cap(client, store, budget_ledger,
-                                                  monkeypatch):
+def test_budget_allows_work_with_no_advisory_figure(client, store, budget_ledger,
+                                                    monkeypatch):
     project = store.create_project(title="B", input_key="k", source_sha256="",
                                    source_filename="s.mp4", budget_usd=None)
     store.save_timeline(project.id, _timeline())
@@ -1102,7 +1080,7 @@ def test_budget_still_returns_when_the_ledger_is_unwritable(
 
 def test_create_project_applies_the_budget_default(client, monkeypatch):
     """Omitted budget_usd resolves to the providers.toml [budgets] default and
-    is frozen on the project record."""
+    is seeded as the first budget.set event."""
     import foleyflow.api.app as app_mod
 
     # LocalBackend cannot sign upload URLs (B2-only), so stub the target.
@@ -1146,6 +1124,212 @@ def test_dossier_carries_the_budget_block(client, store, budget_ledger):
     assert budget["spent"] == pytest.approx(0.87)
     assert budget["remaining"] == pytest.approx(1.13)
     assert budget["estimate"] is True
+
+
+def test_put_budget_sets_changes_and_clears(client, store, budget_ledger):
+    """Task 9a: budget is mutable via PUT; the log records every change."""
+    from foleyflow.projects import EVENT_BUDGET_SET
+
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4", budget_usd=1.0)
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/budget",
+                   json={"budget_usd": 3.5})
+    assert r.status_code == 200, r.text
+    assert r.json()["budget_usd"] == 3.5
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/budget",
+                   json={"budget_usd": None})
+    assert r.status_code == 200, r.text
+    assert r.json()["budget_usd"] is None
+    assert r.json()["remaining"] is None
+
+    # Creation seed + raise + clear.
+    sets = [e for e in store.list_events(project.id)
+            if e.type == EVENT_BUDGET_SET]
+    assert len(sets) == 3
+    assert sets[0].payload["budget_usd"] == 1.0
+    assert sets[1].payload["budget_usd"] == 3.5
+    assert sets[2].payload["budget_usd"] is None
+    assert all(e.actor == "user" or e.actor == "system" for e in sets)
+
+
+def test_put_budget_rejects_non_positive(client, store):
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4", budget_usd=1.0)
+    for value in (0, -2):
+        r = client.put(f"{API_PREFIX}/projects/{project.id}/budget",
+                       json={"budget_usd": value})
+        assert r.status_code == 400, r.text
+
+
+def test_budget_alert_fires_once_per_threshold(client, store, budget_ledger):
+    """Task 9b: crossing 80% during fan-out emits exactly one alert event."""
+    from foleyflow.projects import EVENT_BUDGET_ALERT
+
+    budget_ledger.invalidate_project_spend_cache()
+    budget_ledger.invalidate_budget_cache()
+
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4", budget_usd=1.0)
+    # 0.50 → 50%, 0.80 → 80%, 1.00 → 100%. Two more rows past 80% must not
+    # re-emit 80%.
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.50,
+           cost_source="actual")
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.30,
+           cost_source="estimate")
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.10,
+           cost_source="estimate")
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.05,
+           cost_source="estimate")
+
+    alerts = [e for e in store.list_events(project.id)
+              if e.type == EVENT_BUDGET_ALERT]
+    thresholds = sorted(e.payload["threshold"] for e in alerts)
+    assert 0.5 in thresholds
+    assert 0.8 in thresholds
+    assert thresholds.count(0.5) == 1
+    assert thresholds.count(0.8) == 1
+
+    # Alert carries cost_source split.
+    at_80 = next(e for e in alerts if e.payload["threshold"] == 0.8)
+    assert at_80.payload["spent"] == pytest.approx(0.80)
+    assert at_80.payload["spent_actual"] == pytest.approx(0.50)
+    assert at_80.payload["spent_estimated"] == pytest.approx(0.30)
+
+    body = client.get(f"{API_PREFIX}/projects/{project.id}/budget").json()
+    crossed = {t["threshold"]: t["crossed"] for t in body["thresholds"]}
+    assert crossed[0.5] is True
+    assert crossed[0.8] is True
+    assert body["spent_actual"] == pytest.approx(0.50)
+    assert body["spent_estimated"] == pytest.approx(0.45)
+
+
+def test_budget_alert_is_idempotent_under_concurrent_stems(
+        client, store, budget_ledger):
+    """put_if_absent on the alert marker admits exactly one writer at 80%."""
+    import concurrent.futures
+    from foleyflow.projects import EVENT_BUDGET_ALERT
+
+    budget_ledger.invalidate_project_spend_cache()
+    budget_ledger.invalidate_budget_cache()
+
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4", budget_usd=1.0)
+    # Seed just under 80%.
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.79)
+
+    def cross():
+        _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.05)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda _: cross(), range(8)))
+
+    alerts_80 = [
+        e for e in store.list_events(project.id)
+        if e.type == EVENT_BUDGET_ALERT and e.payload.get("threshold") == 0.8
+    ]
+    assert len(alerts_80) == 1, [e.payload for e in alerts_80]
+
+
+def test_mix_response_carries_a_zero_projection_when_fully_cached(
+        client, store, budget_ledger, monkeypatch):
+    """Task 9c: a fully cached mix projects $0.00 and is never gated."""
+    from foleyflow.routing import SfxRequest
+
+    project = store.create_project(title="A", input_key="k", source_sha256="a" * 64,
+                                   source_filename="a.mp4", budget_usd=5.0,
+                                   duration_s=15.04)
+    store.save_timeline(project.id, _timeline())
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 1.0)
+
+    # Every planned request looks cached → projected $0.
+    monkeypatch.setattr(
+        "foleyflow.sfx_cache.is_cached", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "foleyflow.assemble.plan_requests",
+        lambda *a, **k: [SfxRequest(endpoint="openmoss/moss-soundeffect-v2",
+                                    prompt="x", duration_s=1.0,
+                                    category="foley", tier="test")])
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/mixes", json={})
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["projected_cost_usd"] == pytest.approx(0.0)
+    assert body["estimated_cost_usd"] == pytest.approx(0.0)
+    assert body["spent_usd"] == pytest.approx(1.0)
+    assert body["projected_total_usd"] == pytest.approx(1.0)
+    assert body["budget_usd"] == 5.0
+    assert body["cache_misses"] == 0
+
+
+def test_running_spend_tracks_rows_written_before_budget_is_set(
+        client, store, budget_ledger):
+    """Clear/absent budget must not drop running totals (adversarial #1)."""
+    from foleyflow.projects import EVENT_BUDGET_ALERT
+
+    budget_ledger.invalidate_project_spend_cache()
+    budget_ledger.invalidate_budget_cache()
+
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4", budget_usd=None)
+    # Spend while no advisory figure is set.
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.60)
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.30)
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/budget",
+                   json={"budget_usd": 1.0})
+    assert r.status_code == 200
+    # Live crossed from spend vs threshold, even with no new ledger row yet.
+    body = r.json()
+    assert body["spent"] == pytest.approx(0.90)
+    assert body["remaining"] == pytest.approx(0.10)
+    crossed = {t["threshold"]: t["crossed"] for t in body["thresholds"]}
+    assert crossed[0.5] is True
+    assert crossed[0.8] is True
+
+    # Next attributed row must still increment and can fire 100%.
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.15)
+    alerts = [e for e in store.list_events(project.id)
+              if e.type == EVENT_BUDGET_ALERT]
+    assert any(e.payload.get("threshold") == 1.0 for e in alerts)
+
+
+def test_budget_remaining_goes_negative_when_overspent(client, store,
+                                                      budget_ledger):
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4", budget_usd=1.0)
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 1.50)
+    body = client.get(f"{API_PREFIX}/projects/{project.id}/budget").json()
+    assert body["remaining"] == pytest.approx(-0.50)
+    assert body["spent"] == pytest.approx(1.50)
+
+
+def test_raise_budget_allows_realert_at_new_figure(client, store,
+                                                   budget_ledger):
+    """Marker keys include generation so a raise can re-fire thresholds."""
+    from foleyflow.projects import EVENT_BUDGET_ALERT
+
+    budget_ledger.invalidate_project_spend_cache()
+    budget_ledger.invalidate_budget_cache()
+
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4", budget_usd=1.0)
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.85)
+    first = [e for e in store.list_events(project.id)
+             if e.type == EVENT_BUDGET_ALERT and e.payload.get("threshold") == 0.8]
+    assert len(first) == 1
+
+    client.put(f"{API_PREFIX}/projects/{project.id}/budget",
+               json={"budget_usd": 2.0})
+    budget_ledger.invalidate_budget_cache(project.id)
+    # Under the new $2 figure, 0.85 is only 42.5% — no 80% yet.
+    # Spend up to 80% of $2.
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.80)
+    second = [e for e in store.list_events(project.id)
+              if e.type == EVENT_BUDGET_ALERT
+              and e.payload.get("threshold") == 0.8
+              and e.payload.get("budget_usd") == 2.0]
+    assert len(second) == 1
 
 
 # -- quota ------------------------------------------------------------------
@@ -1316,10 +1500,10 @@ def test_attributions_reject_a_future_before(client, store, budget_ledger):
     assert r.json()["error"]["code"] == "invalid_request"
 
 
-def test_budget_gate_fails_closed_when_the_ledger_is_unwritable(
-        client, store, budget_ledger, monkeypatch):
-    """A ledger write outage must not turn the cap into a pass-through: spend
-    reads low, so authorizing against it spends real money blind."""
+def test_unwritable_ledger_does_not_block_work(client, store, budget_ledger,
+                                               monkeypatch):
+    """Task 9d: an unwritable ledger means alerts are unreliable, not that
+    work is refused. Repair still needs confirm_cost_usd consent."""
     import foleyflow.ledger as ledger_mod
 
     project = store.create_project(title="B", input_key="k", source_sha256="",
@@ -1331,10 +1515,10 @@ def test_budget_gate_fails_closed_when_the_ledger_is_unwritable(
     r = client.post(
         f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
         json={"confirm_cost_usd": 0.30})
-    assert r.status_code == 422
-    detail = r.json()["error"]["detail"]
-    assert detail["ledger_writable"] is False
-    assert detail["budget_usd"] == 1.0
+    assert r.status_code == 202, r.text
+
+    body = client.get(f"{API_PREFIX}/projects/{project.id}/budget").json()
+    assert body["ledger_writable"] is False
 
 
 def test_budget_read_503s_on_a_ledger_outage(client, store, project,

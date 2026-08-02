@@ -143,12 +143,15 @@ num_inference_steps = 50
 cfg_scale = 4.0
 
 # ---------------------------------------------------------------- budgets --
-# Default per-project dollar cap (docs/api.md §3.11). Applied at project
-# creation when the create body omits budget_usd; the resolved value is then
-# frozen on the immutable project record. Omit `default` for no cap by
-# default (projects opt in per-body instead).
+# Advisory per-project budget (docs/api.md §3.11). `default` seeds a project
+# at creation when the create body omits budget_usd — as the first
+# postproduction.budget.set event, not a frozen cap. The figure is mutable
+# later via PUT /budget. Omit `default` for no budget by default.
+# `thresholds` are fractions of the current budget at which the ledger
+# append emits a lifecycle alert (once per project+budget figure+threshold).
 [budgets]
 default = 5.0
+thresholds = [0.5, 0.8, 1.0, 1.2]
 
 # --------------------------------------------------------------- analysis --
 # Analysis runs through Genblaze (providers.genblaze.AnalysisProvider) so the

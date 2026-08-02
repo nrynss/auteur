@@ -72,6 +72,9 @@ EVENT_RUN_STARTED = "postproduction.run.started"
 EVENT_RUN_COMPLETED = "postproduction.run.completed"
 EVENT_RUN_FAILED = "postproduction.run.failed"
 EVENT_RUN_FAILED_AFTER_COMPLETION = "postproduction.run.failed_after_completion"
+# Advisory budget: latest-wins figure and threshold crossings (task 9).
+EVENT_BUDGET_SET = "postproduction.budget.set"
+EVENT_BUDGET_ALERT = "postproduction.budget.alert"
 
 STATUS_NEW = "new"
 STATUS_AWAITING_UPLOAD = "awaiting_upload"
@@ -181,6 +184,15 @@ class ProjectState:
     stale_run_ids: List[str] = field(default_factory=list)
     latest_mix: Optional[Dict[str, Any]] = None
     export: Optional[Dict[str, Any]] = None
+    # Latest-wins advisory budget from EVENT_BUDGET_SET; falls back to the
+    # creation-time seed on the frozen project record for pre-task-9 projects.
+    budget_usd: Optional[float] = None
+    # Event id of the latest budget.set — alert marker keys include it so a
+    # clear→re-set of the same dollar amount can fire thresholds again.
+    budget_generation: Optional[str] = None
+    # Threshold fractions that have already fired an alert under the current
+    # budget generation (from EVENT_BUDGET_ALERT events).
+    budget_thresholds_crossed: List[float] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         payload = {
@@ -193,12 +205,16 @@ class ProjectState:
             "stale_run_ids": self.stale_run_ids,
             "latest_mix": self.latest_mix,
             "export": self.export,
+            "budget_generation": self.budget_generation,
+            "budget_thresholds_crossed": self.budget_thresholds_crossed,
         }
         # The event log wins over the frozen identity record: sha256 and
         # duration are only known after the upload is confirmed, which happens
-        # long after the project record is written.
+        # long after the project record is written. budget_usd is likewise
+        # latest-wins from the log (task 9) with a legacy fallback.
         payload["source_sha256"] = self.source_sha256 or self.project.source_sha256
         payload["duration_s"] = self.duration_s or self.project.duration_s
+        payload["budget_usd"] = self.budget_usd
         return payload
 
 
@@ -345,10 +361,54 @@ class ProjectStore:
         self._put_json_immutable(self.project_key(project.id), project.to_dict())
         self.append_event(project.id, EVENT_PROJECT_CREATED, actor=actor,
                           payload={"title": title})
+        # Advisory budget is an event, not a frozen field (task 9). The value
+        # on Project is a seed for legacy readers; the log is source of truth.
+        # Always emit so a later clear (budget_usd=None) is distinguishable
+        # from "never set" on projects that only carry the creation seed.
+        self.append_event(project.id, EVENT_BUDGET_SET, actor=actor,
+                          payload={"budget_usd": budget_usd})
         if source_sha256:
             self.record_input(project.id, sha256=source_sha256,
                               duration_s=duration_s, actor=actor)
         return project
+
+    def set_budget(self, project_id: str, budget_usd: Optional[float], *,
+                   actor: str = "user") -> Event:
+        """Set or clear the project's advisory budget (latest-wins event).
+
+        ``None`` clears the budget — no alerts fire and remaining is null.
+        The project record is never rewritten (SPEC.md §10).
+        """
+        if budget_usd is not None and budget_usd <= 0:
+            raise ValueError("budget_usd must be > 0 when set")
+        event = self.append_event(
+            project_id, EVENT_BUDGET_SET, actor=actor,
+            payload={"budget_usd": budget_usd})
+        # Drop the ledger's short-lived budget cache so the next stem sees
+        # the new figure (alert marker keys include the budget amount).
+        try:
+            from foleyflow.ledger import invalidate_budget_cache
+            invalidate_budget_cache(project_id)
+        except Exception:
+            pass
+        return event
+
+    def budget_alert_key(self, project_id: str, budget_usd: float,
+                         threshold: float, *,
+                         generation: str = "none") -> str:
+        """Idempotency key for one (project, generation, threshold) alert.
+
+        ``put_if_absent`` on this key is what makes concurrent stem fan-out
+        emit exactly one alert when several rows cross the same threshold.
+        ``generation`` is the latest budget.set event id, so clear→re-set
+        the same dollar amount (or a raise) can alert again under a new set.
+        """
+        # Sanitize generation for a path segment; cents/bp avoid float noise.
+        gen = "".join(c for c in generation if c.isalnum() or c in ("_", "-"))
+        gen = gen or "none"
+        cents = int(round(float(budget_usd) * 100))
+        bp = int(round(float(threshold) * 1000))
+        return f"{self._root(project_id)}/alerts/{gen}_{cents}_{bp:04d}.json"
 
     def record_input(self, project_id: str, *, sha256: str,
                      duration_s: Optional[float] = None,
@@ -830,6 +890,13 @@ class ProjectStore:
         qa_flagged = False
         latest_mix = None
         export = None
+        # Latest-wins budget; seed from the frozen record for projects created
+        # before budget.set events existed.
+        budget_usd = project.budget_usd
+        seen_budget_set = False
+        budget_generation: Optional[str] = None
+        # Thresholds crossed under the *current* budget generation only.
+        thresholds_crossed: List[float] = []
 
         for event in events:
             if event.run_id:
@@ -861,6 +928,31 @@ class ProjectStore:
             elif event.type == EVENT_EXPORT_APPROVED:
                 has_export = True
                 export = {"run_id": event.run_id, **event.payload}
+            elif event.type == EVENT_BUDGET_SET:
+                seen_budget_set = True
+                raw = event.payload.get("budget_usd")
+                budget_usd = float(raw) if raw is not None else None
+                budget_generation = event.id
+                thresholds_crossed = []
+            elif event.type == EVENT_BUDGET_ALERT:
+                # Only count alerts under the current budget generation.
+                threshold = event.payload.get("threshold")
+                alert_gen = event.payload.get("generation")
+                if threshold is not None and (
+                        alert_gen is None or alert_gen == budget_generation
+                        or (budget_generation is None and alert_gen is None)):
+                    # Also accept alerts that match budget figure when older
+                    # events predate generation stamping.
+                    t = float(threshold)
+                    if t not in thresholds_crossed:
+                        if alert_gen == budget_generation or (
+                                alert_gen is None
+                                and event.payload.get("budget_usd") == budget_usd):
+                            thresholds_crossed.append(t)
+
+        if not seen_budget_set:
+            # Pre-task-9 project: only the frozen seed exists.
+            budget_usd = project.budget_usd
 
         # A run still marked running past its lease had its process die; nothing
         # will ever write its terminal record.
@@ -888,6 +980,9 @@ class ProjectStore:
             stale_run_ids=sorted(stale),
             latest_mix=latest_mix,
             export=export,
+            budget_usd=budget_usd,
+            budget_generation=budget_generation,
+            budget_thresholds_crossed=sorted(thresholds_crossed),
         )
 
     @staticmethod

@@ -16,15 +16,14 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   `docs/api.md` is written ahead of the code and treated as source of truth;
   every endpoint in it is live and covered by tests.
 - Task numbers are the current queue; DONE items keep their titles. Remaining:
-  **9 (budget alerts, in flight)**, **10–16**, then **7 (control-room UI)** last.
-  Task 9 revises task 6: the budget becomes advisory and mutable rather than a
-  cap frozen at creation, so read 6 as history and 9 as the intent.
+  **10–16**, then **7 (control-room UI)** last. Task 9 (budget alerts) is
+  **DONE** — advisory mutable budget; task 6 is history.
 - **10, 11 and 12 are independent and unblock the rest** — CI, build provenance,
   and a post-deploy smoke check. Do those first when running several agents in
   parallel: with no CI, two agents can each be green locally and broken
   together, and a human finds out. 13 depends on 11. 14 and 15 are demo-risk
   work and can run alongside.
-- `uv run pytest -q` → **516 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **522 passed, 1 skipped**. No provider credentials
   required: the billed calls are stubbed at two seams, `stems.generate_many`
   and `sfx_cache.generate_canonical_wav`. Everything else — ffmpeg, the mix, the
   shared cache, storage, the Genblaze pipelines — runs for real.
@@ -160,144 +159,18 @@ they are not the same axis.
 
 ---
 
-## 9. Budget alerts — M
+## 9. Budget alerts — M — **DONE**
 
-Task 6 built a **hard cap**. The intent is a **soft, advisory budget**: the user
-sets a figure whenever they like, and gets told when spend approaches or passes
-it. Nothing is refused. This task converts what exists and fills the gaps.
-
-### Where accurate cost actually lives
-
-Three moments, and each knows something different. The design turns on this.
-
-| Moment | Accuracy | Use |
-|---|---|---|
-| Pre-flight (`plan_requests` + cache probe) | A projection. Wrong when a stem fails, or when a fallback escalation changes the price mid-flight — paid ElevenLabs $0.30 becomes fal $0.05 — so the door cannot know what will serve | The only warning that arrives in time to cancel |
-| **Per call — `ledger.execute_with_ledger`** | **Real.** Takes `result.actual_cost_usd`, else extracts from the raw response, else the estimate, and records which via `cost_source` | The running total that alerts fire from |
-| Post-run | Exact | Too late to act on |
-
-`execute_with_ledger` is the single choke point every billed call funnels
-through, and `log_transaction` already stamps `project_id` from a contextvar. So
-alerting hooks the ledger append: it fires within one provider call of a
-threshold being crossed — latency of one stem, not one run. Nothing else in the
-system has attribution, actual cost and timeliness at once.
-
-### 9a. Make the budget mutable — S
-
-Today `budget_usd` is resolved at creation and frozen on the immutable project
-record (`api/app.py`, `create_project`). "Set it whenever" means it becomes an
-**event** in the append-only log, latest-wins, with state derived — the
-discipline the rest of the system already follows. It also preserves the history
-of someone raising the threshold right after an alert fired, which is exactly
-the audit trail this product is about.
-
-- New lifecycle event carrying the new figure and the actor. `None` clears it.
-- `PUT /projects/{id}/budget` (or `POST`; match the surrounding style), plus a
-  `foleyflow budget --set` on the existing verb.
-- `[budgets] default` still seeds a project at creation; it is now the first
-  event rather than a frozen field.
-- Derived state reads the latest event. Do not add a mutable pointer object —
-  §10 allows exactly one and `exports/latest.json` is it.
-
-### 9b. Fire alerts from the ledger append — M
-
-- Thresholds as fractions of the budget — **50 / 80 / 100 / 120%**. A single
-  alert at 100% of a soft budget reports something the user can no longer act
-  on. Make the set configurable in `providers.toml [budgets]`.
-- After a row is appended, compare the project's running spend against each
-  threshold and emit a lifecycle event for any newly crossed.
-- **Idempotency is the hard part.** Stems fan out concurrently, so several rows
-  can cross one threshold simultaneously. Alert once per `(project, threshold)`,
-  written with `put_if_absent` — the primitive already exists and already backs
-  run records. Two workers must not both announce 80%.
-- **Carry `cost_source` into the alert.** "$4.90 spent, $3.10 of it estimated"
-  is a materially different claim from "$4.90 spent, all actual", and this
-  codebase is careful about that distinction everywhere else.
-- **Failed calls count.** `log_transaction` records failures with the estimate
-  and task 6 already counts them as spend — a paid call that errored still
-  charged. Do not quietly exclude them.
-- Never raise. `log_transaction` is documented as never failing a generation
-  because the cost record failed; an alerting bug must not become a render bug.
-
-### 9c. Pre-flight projection on mix — S
-
-Keep the helper described in the previous version of this task — `plan_requests`
-plus a `cache_object_key` probe for hits versus misses, priced with
-`estimate_cost` — but report it instead of enforcing it. `foleyflow prewarm
---dry-run` already computes exactly this (`8 stems planned: 8 cached, 0 to
-generate`); reuse it rather than writing a second copy.
-
-Surface it on the mix response and in the CLI: *"projected $2.40, taking this
-project to $6.10 against a $5.00 budget."* Label it a projection. Only misses
-cost anything — a fully cached re-mix projects $0.00 and must say so.
-
-Pass each request's duration into `estimate_cost`; a per-second model prices on
-it and `{}` silently under-reports.
-
-### 9d. Decide what happens to the existing refusals — XS, but it is a decision
-
-`_budget_gate` currently raises `422 precondition_failed` on analyze and
-regenerate. Under an advisory budget those refusals contradict the intent.
-
-**Recommendation:** make the budget purely advisory — drop the refusals, keep
-`confirm_cost_usd` on regenerate, which is a better mechanism anyway because it
-is explicit per-action consent rather than a cap. Then an unwritable ledger
-means "alerts are unreliable", surfaced loudly, rather than "work is refused".
-
-If instead some projects should still be capped, that is a separate opt-in flag
-and should be named as one — not the same field doing two jobs.
-
-**This is the user's call. Ask before changing shipped behaviour.**
-
-### Surfacing
-
-The event log already exists and the UI's History view already renders it. Put
-alerts there, and expose current state on `GET /projects/{id}/budget` (spent,
-budget, remaining, thresholds crossed, `estimate`, `ledger_writable`) and on run
-status. Anything push — email, webhook — needs an outbound integration this
-project does not have; leave it out.
-
-### Acceptance
-
-- A budget can be set, changed and cleared at any point in a project's life, and
-  the log shows every change with its actor.
-- Crossing 80% during a fan-out emits exactly one alert, not one per concurrent
-  stem.
-- An alert states how much of the figure is estimated rather than actual.
-- A fully cached mix projects $0.00 and emits nothing.
-- Nothing is refused on budget grounds (subject to 9d).
-- An unwritable ledger is reported as "alerts unreliable" and does not block work.
-- `516 passed` does not regress.
-
-### Docs that currently say otherwise
-
-Grepped — complete list:
-
-- `docs/api.md:505` — "Mix is not gated: its cost depends on cache hits and is
-  …". The contract is source of truth, so this matters most. Its reasoning is
-  also wrong: the cost *is* knowable at the door, as 9c shows.
-- The `create_mix` docstring in `api/app.py`, which argues a gate "would be
-  noise".
-- Task 6 above, which describes a frozen `budget_usd` and route-level gating.
-- SPEC.md does not repeat the claim and needs no change on this point.
-## Addendum to 9b — relay to whoever holds task 9
-
-Not folded into the task body because 9 is in flight. **`project_spend` is a
-full ledger scan**, and hooking alerts on the ledger append makes that scan run
-per billed call:
-
-- `project_spend` (`ledger.py:463`) iterates *every* transaction row and filters
-  by `project_id`. There is no per-project index.
-- In storage mode each scan is a `list_keys` plus one GET per object against B2.
-- `_read_storage_rows` has a process-local TTL cache, but its docstring says
-  **successful writes invalidate it** — and a successful write is exactly what
-  would trigger an alert check. So the cache cannot absorb this pattern.
-
-An N-stem fan-out therefore becomes N full ledger scans over the network, each
-O(total rows), growing for the life of the bucket. Options, cheapest first: keep
-a running per-project total in the alert path rather than re-summing; or let the
-alert check reuse one snapshot for a whole run; or add a per-project ledger
-prefix so a scan is scoped. Do not leave it re-summing the world per stem.
+Soft, advisory budget. Mutable via `postproduction.budget.set` events
+(latest-wins); `PUT /projects/{id}/budget` and `foleyflow budget --set|--clear`.
+Alerts fire from the ledger append at configurable fractions (default
+50/80/100/120%) with `put_if_absent` idempotency per
+`(project, budget figure, threshold)`. **9b addendum:** running per-project
+spend is seeded once (before the triggering write) then incremented O(1) —
+never a full ledger re-scan per stem (the row cache is invalidated on write, so
+it cannot absorb re-summing). Mix 202 carries a cache-miss cost projection
+(shared with `prewarm --dry-run`). Hard refusals removed; `confirm_cost_usd`
+stays. Unwritable ledger → alerts unreliable, work continues.
 
 ## 10. Continuous integration — S
 

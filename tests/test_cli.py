@@ -598,7 +598,7 @@ def test_use_then_budget_without_an_id(client, store, project, capsys,
     assert run(client, "budget") == EXIT_OK
     out = capsys.readouterr().out
     assert project.id in out
-    assert "(no cap)" in out          # fixture project has no budget_usd
+    assert "(none)" in out            # fixture project has no budget_usd
     assert "spent $0.0000" in out
 
 

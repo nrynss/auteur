@@ -93,10 +93,11 @@ def _validate(raw: dict, path: str) -> None:
         )
 
     # --- budgets ---
-    # A negative or zero default would silently create projects whose every
-    # billable call is refused at the budget gate — validate it here, the same
-    # rule the create body applies to budget_usd.
-    default_budget = raw.get("budgets", {}).get("default")
+    # A negative or zero default would seed every new project with a nonsense
+    # advisory figure — validate it here, the same rule the create body
+    # applies to budget_usd. Thresholds must be positive fractions.
+    budgets_cfg = raw.get("budgets", {})
+    default_budget = budgets_cfg.get("default")
     if default_budget is not None:
         try:
             value = float(default_budget)
@@ -107,6 +108,22 @@ def _validate(raw: dict, path: str) -> None:
         if value <= 0:
             raise ConfigError(
                 f"providers.toml: [budgets] default={value} must be > 0")
+    thresholds = budgets_cfg.get("thresholds")
+    if thresholds is not None:
+        if not isinstance(thresholds, (list, tuple)) or not thresholds:
+            raise ConfigError(
+                "providers.toml: [budgets] thresholds must be a non-empty list "
+                "of positive fractions")
+        for i, t in enumerate(thresholds):
+            try:
+                tv = float(t)
+            except (TypeError, ValueError) as e:
+                raise ConfigError(
+                    f"providers.toml: [budgets] thresholds[{i}]={t!r} is not a "
+                    f"number") from e
+            if tv <= 0:
+                raise ConfigError(
+                    f"providers.toml: [budgets] thresholds[{i}]={tv} must be > 0")
 
     # --- sfx tiers ---
     # Validated here rather than at selection time: a tier pointing at an
@@ -207,15 +224,31 @@ def get_defaults(*, _config: Optional[dict] = None) -> dict:
 
 
 def get_budget_default(*, _config: Optional[dict] = None) -> Optional[float]:
-    """The default per-project dollar cap (docs/api.md §3.11).
+    """The default per-project advisory budget (docs/api.md §3.11).
 
     Read from ``[budgets] default`` in providers.toml, applied at project
-    creation when the create body omits ``budget_usd``, and then frozen on the
-    immutable project record — later config edits do not re-price existing
-    projects.
+    creation when the create body omits ``budget_usd`` — as the first
+    ``postproduction.budget.set`` event. Later config edits do not re-seed
+    existing projects; the figure is mutable per-project via PUT /budget.
     """
     raw = (_config or load_config()).get("budgets", {}).get("default")
     return float(raw) if raw is not None else None
+
+
+# Default alert fractions when providers.toml omits [budgets] thresholds.
+_DEFAULT_BUDGET_THRESHOLDS = (0.5, 0.8, 1.0, 1.2)
+
+
+def get_budget_thresholds(*, _config: Optional[dict] = None) -> List[float]:
+    """Fractions of the advisory budget that trigger ledger alerts.
+
+    From ``[budgets] thresholds`` in providers.toml, else 50/80/100/120%.
+    Sorted ascending so callers walk them in order.
+    """
+    raw = (_config or load_config()).get("budgets", {}).get("thresholds")
+    if raw is None:
+        return list(_DEFAULT_BUDGET_THRESHOLDS)
+    return sorted(float(t) for t in raw)
 
 
 def get_all_model_specs(*, _config: Optional[dict] = None) -> Dict[str, ModelSpec]:

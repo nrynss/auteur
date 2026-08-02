@@ -162,9 +162,10 @@ POST /api/v1/projects
 }
 ```
 
-`budget_usd` is optional: the dollar cap this project may spend (see §3.11).
-When omitted, the `providers.toml [budgets]` default applies. It is fixed at
-creation — the project record is immutable.
+`budget_usd` is optional: an advisory dollar figure for this project (see
+§3.11). When omitted, the `providers.toml [budgets]` default applies. It is
+seeded as the first `postproduction.budget.set` event and can be changed later
+via `PUT /projects/{id}/budget` — it is not a hard cap.
 
 The project exists before its bytes do. That is deliberate: the upload can fail,
 be retried, or be abandoned, and the project record plus its event log describe
@@ -220,7 +221,7 @@ POST /api/v1/projects/{id}/analyze
 |---|---|
 | `409 already_running` | Any run is in flight for this project |
 | `429 quota_exhausted` | The model's daily budget is spent |
-| `422 precondition_failed` | The upload has not been confirmed yet, or the project's budget (see §3.11) cannot cover the estimate |
+| `422 precondition_failed` | The upload has not been confirmed yet |
 | `400 invalid_request` | The named model declares no request budget |
 
 `force: true` bypasses the timeline cache.
@@ -349,8 +350,8 @@ requested event index either way.
 
 The `provider` field names a declared SFX tier to regenerate through; the request
 is re-aimed at that tier and the estimate is its cost. `422 precondition_failed`
-when there is no plan yet, a billable regeneration is not confirmed, or the
-project's budget (see §3.11) cannot cover the estimate;
+when there is no plan yet or a billable regeneration is not confirmed
+(`confirm_cost_usd`); the project's advisory budget never refuses work.
 `400 invalid_request` for an out-of-range index or an unknown provider.
 
 ```
@@ -358,15 +359,31 @@ POST /api/v1/projects/{id}/mixes
 { "timeline_version": 2, "tier": "full" }
 ```
 
-`202` — `{"run_id": "run_01K…", "kind": "mix"}`
+`202` — pre-flight projection of cache-miss cost only:
+
+```json
+{
+  "run_id": "run_01K…",
+  "kind": "mix",
+  "estimated_cost_usd": 2.40,
+  "projected_cost_usd": 2.40,
+  "spent_usd": 3.70,
+  "budget_usd": 5.00,
+  "projected_total_usd": 6.10,
+  "cache_hits": 4,
+  "cache_misses": 8
+}
+```
 
 Renders every stem the timeline needs, mixes, muxes against the source, uploads
 `mix.wav` and `foley.mp4` under `runs/{run_id}/`, and re-measures QA against the
 WAV that was actually written. `timeline_version` defaults to the latest;
 `tier` is `ambience` | `discrete` | `full` and is the §9 degradation ladder.
 
-No quota gate, unlike `/analyze`: stems come from the shared content-addressed
-cache, so a re-mix of an unchanged timeline generates nothing and costs nothing.
+The projection prices only cache misses via `plan_requests` + a cache probe
+(same rule as `foleyflow prewarm --dry-run`). A fully cached re-mix projects
+`$0.00`. Label it a projection: a mid-flight fallback can change the bill. The
+advisory budget never refuses the mix.
 What a run did spend is in its `metadata.ledger_delta_usd`.
 
 `422 precondition_failed` before a timeline exists. `404 timeline_not_found`
@@ -467,12 +484,18 @@ balance.
 
 ### 3.11 Budget
 
+The project budget is **advisory**: set a figure whenever you like, get told
+when spend approaches or passes it. Nothing is refused on budget grounds.
+Billable repair still requires `confirm_cost_usd` (explicit per-action consent).
+
 ```
 GET /api/v1/projects/{id}/budget
+PUT /api/v1/projects/{id}/budget
+{ "budget_usd": 5.00 }   // or null to clear
 ```
 
-`200` — what this project has spent against its cap, counted from the cost
-ledger (not a provider balance):
+`200` — spend against the advisory figure, counted from the cost ledger (not a
+provider balance):
 
 ```json
 {
@@ -480,8 +503,16 @@ ledger (not a provider balance):
   "budget_usd": 2.0,
   "spent": 0.87,
   "remaining": 1.13,
+  "spent_estimated": 0.30,
+  "spent_actual": 0.57,
   "estimate": true,
   "ledger_writable": true,
+  "thresholds": [
+    { "threshold": 0.5, "crossed": true },
+    { "threshold": 0.8, "crossed": false },
+    { "threshold": 1.0, "crossed": false },
+    { "threshold": 1.2, "crossed": false }
+  ],
   "by_model": [
     { "endpoint": "gemini-2.5-flash", "spent": 0.42 },
     { "endpoint": "openmoss/moss-soundeffect-v2", "spent": 0.0 }
@@ -489,30 +520,20 @@ ledger (not a provider balance):
 }
 ```
 
-`budget_usd` is the cap fixed at creation (§3.2); `None` when the project has
-no configured budget, in which case nothing is refused but the payload still
-reports spend. `spent` sums the `cost_estimate` of every ledger row attributed
-to this project (failed calls included, the same rule as §3.10). `remaining`
-is `max(budget_usd - spent, 0)`. The figures are `estimate: true` — a real
-provider bill can drift from the ledger, exactly like `/quota` — and
-`ledger_writable: false` means they are fiction and the UI must stop
-presenting them.
+`budget_usd` is latest-wins from `postproduction.budget.set` events (seeded at
+creation from the body or `providers.toml [budgets] default`); `None` when
+cleared or never set. `PUT` appends a new set event with the actor — the
+project record is never rewritten. `spent` sums every attributed ledger row
+(failed calls included). `remaining` is `budget_usd - spent` and may be
+negative when overspent. `spent_estimated` / `spent_actual` split by
+`cost_source`. Threshold fractions default to 50/80/100/120%
+(`providers.toml [budgets] thresholds`); each newly crossed threshold emits
+exactly one `postproduction.budget.alert` lifecycle event (idempotent under
+concurrent fan-out via `put_if_absent`). Alerts carry the estimated-vs-actual
+split. `ledger_writable: false` means figures are fiction and alerts are
+unreliable — work is not blocked.
 
-**The gate.** `POST /analyze` and `POST …/regenerate` refuse a call whose
-estimate exceeds `remaining` — `422 precondition_failed` with
-`detail.budget_usd`, `detail.remaining` and `detail.estimated_cost_usd` — so a
-project cannot silently exceed its cap on a known cost. Calls priced at $0.00
-are never refused. Mix is not gated: its cost depends on cache hits and is
-only knowable after the run, so an overage there is reported, not prevented.
-There is no reservation: two concurrent calls can both pass the check and
-overspend; the window is accepted for a single-instance deployment. The gate
-fails closed when the ledger is unwritable: spend is counted from ledger rows,
-so a write outage makes the count read low, and authorizing against it would
-let the cap become a pass-through — such calls are refused with
-`detail.ledger_writable: false`. Re-analysis is budget-bound even when the
-timeline cache would serve it for $0, because cache state is not known until
-the worker runs; a project at its cap should use the dossier/CLI to see where
-it stands first.
+CLI: `foleyflow budget`, `foleyflow budget --set 5`, `foleyflow budget --clear`.
 
 **Adopting project-less work.** A direct `foleyflow render` writes ledger rows
 with no project (`project_id: null`), and rows written before attribution

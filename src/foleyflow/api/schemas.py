@@ -32,12 +32,24 @@ class RunAccepted(BaseModel):
     Deliberately carries no `cached` field. Whether a request hits the timeline
     cache is not knowable until the worker runs, so a value here could only
     ever be a guess — the client learns it from the completed run's metadata.
+
+    Mix responses also carry a pre-flight *projection* (task 9c): estimated
+    cost of cache misses only, plus the project's current spend and advisory
+    budget so the client can say "projected $2.40, taking this project to
+    $6.10 against a $5.00 budget." Label it a projection — not a bill.
     """
 
     run_id: str
     kind: str
     status: str = "running"
     estimated_cost_usd: Optional[float] = None
+    # Mix pre-flight projection (optional; absent on analyze/repair/export).
+    projected_cost_usd: Optional[float] = None
+    spent_usd: Optional[float] = None
+    budget_usd: Optional[float] = None
+    projected_total_usd: Optional[float] = None  # spent + projected
+    cache_hits: Optional[int] = None
+    cache_misses: Optional[int] = None
 
 
 # -- projects ---------------------------------------------------------------
@@ -46,8 +58,8 @@ class CreateProjectRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     filename: str = Field(min_length=1, max_length=255)
     content_type: str = "video/mp4"
-    # Optional dollar cap (docs/api.md §3.11). Fixed at creation; None means
-    # the [budgets] default applies, and the resolved value is recorded.
+    # Optional advisory budget (docs/api.md §3.11). Seeds the first
+    # budget.set event; None means the [budgets] default applies.
     budget_usd: Optional[float] = None
 
     @field_validator("budget_usd")
@@ -72,6 +84,22 @@ class CreateProjectRequest(BaseModel):
         allowed = {"video/mp4", "video/quicktime", "video/x-matroska", "video/webm"}
         if v not in allowed:
             raise ValueError(f"content_type must be one of {sorted(allowed)}")
+        return v
+
+
+class SetBudgetRequest(BaseModel):
+    """Set or clear the project's advisory budget (docs/api.md §3.11).
+
+    ``budget_usd: null`` clears it. Positive values set/raise/lower it.
+    """
+
+    budget_usd: Optional[float] = None
+
+    @field_validator("budget_usd")
+    @classmethod
+    def _positive_budget(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and v <= 0:
+            raise ValueError("budget_usd must be > 0 when set")
         return v
 
 
@@ -340,17 +368,28 @@ class BudgetModelOut(BaseModel):
     spent: float
 
 
+class BudgetThresholdOut(BaseModel):
+    """One advisory threshold fraction and whether it has been crossed."""
+
+    threshold: float          # e.g. 0.8
+    crossed: bool
+
+
 class BudgetResponse(BaseModel):
-    """Per-project spend against its cap, counted from the cost ledger
+    """Per-project spend against its advisory budget, from the cost ledger
     (docs/api.md §3.11). Estimates, like /quota; `ledger_writable: false`
-    means the figures are fiction."""
+    means the figures are fiction and alerts are unreliable."""
 
     project_id: str
-    budget_usd: Optional[float] = None   # None = no configured cap
+    budget_usd: Optional[float] = None   # None = no advisory budget
     spent: float
-    remaining: Optional[float] = None
+    remaining: Optional[float] = None    # may be negative when overspent
     estimate: bool = True
     ledger_writable: bool = True
+    # Portion of spent whose cost_source is estimate vs actual.
+    spent_estimated: float = 0.0
+    spent_actual: float = 0.0
+    thresholds: List[BudgetThresholdOut] = Field(default_factory=list)
     by_model: List[BudgetModelOut] = Field(default_factory=list)
 
 

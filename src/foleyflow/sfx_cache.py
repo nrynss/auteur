@@ -68,6 +68,57 @@ def cache_object_key(endpoint: str, prompt: str, duration_s: float, variant: str
     return f"{CACHE_PREFIX}/{cache_key(endpoint, prompt, duration_s, variant)}.wav"
 
 
+def is_cached(backend: Backend, work_dir: str, request: SfxRequest,
+              variant: str = "") -> bool:
+    """Whether prewarm / mix would treat this request as a cache hit.
+
+    A non-empty local work-dir copy counts even when B2 was never written
+    (stale work dir from an interrupted render) — same rule as prewarm's
+    dry-run probe, so the projection and the bill cannot disagree.
+    """
+    key = cache_object_key(request.endpoint, request.prompt,
+                           request.duration_s, variant)
+    local = os.path.join(work_dir, os.path.basename(key))
+    if os.path.exists(local) and os.path.getsize(local) > 0:
+        return True
+    return backend.exists(key)
+
+
+def project_generation_cost(requests) -> float:
+    """Sum ``estimate_cost`` for each request, with full duration args.
+
+    Per-second models price on duration; passing ``{}`` would under-report.
+    Only misses should be passed in — cache hits cost nothing.
+    """
+    from foleyflow.ledger import estimate_cost
+    from foleyflow.sfx import build_arguments
+
+    return sum(
+        estimate_cost(r.endpoint, build_arguments(r)) for r in requests
+    )
+
+
+def project_mix_cost(backend: Backend, work_dir: str, requests,
+                     variant: str = "") -> dict:
+    """Pre-flight mix projection: hits vs misses and miss cost only.
+
+    Reused by ``foleyflow prewarm --dry-run`` and the mix route so both say
+    the same thing. Label the figure a projection: a fallback escalation
+    mid-flight can change the price.
+    """
+    hits, misses = [], []
+    for request in requests:
+        (hits if is_cached(backend, work_dir, request, variant)
+         else misses).append(request)
+    projected = project_generation_cost(misses)
+    return {
+        "stem_count": len(requests),
+        "hits": len(hits),
+        "misses": len(misses),
+        "projected_cost_usd": round(projected, 4),
+    }
+
+
 def last_generation():
     """The `StemResult` from this thread's most recent `generate_canonical_wav`.
 

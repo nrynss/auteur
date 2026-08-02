@@ -228,8 +228,9 @@ def test_old_rows_without_project_id_never_attribute(storage_ledger):
                       json.dumps(row).encode())
     ledger._invalidate_row_cache()
 
-    assert ledger.project_spend("proj_A") == {"total": 0.0, "by_endpoint": {}}
-    assert ledger.project_spend("proj_B") == {"total": 0.0, "by_endpoint": {}}
+    empty = {"total": 0.0, "by_endpoint": {}, "estimated": 0.0, "actual": 0.0}
+    assert ledger.project_spend("proj_A") == empty
+    assert ledger.project_spend("proj_B") == empty
 
 
 # -- rescue (attribution overrides) ------------------------------------------

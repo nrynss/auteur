@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 import hashlib
 from contextlib import contextmanager
@@ -102,6 +103,26 @@ def set_project_context(project_id: Optional[str]):
 _ROW_CACHE_TTL_S = 2.0
 _row_cache: Optional[List[dict]] = None
 _row_cache_at: float = 0.0
+
+# Running per-project spend for the alert path (task 9b addendum).
+# project_spend is a full ledger scan; the row cache is invalidated on every
+# successful write — exactly when an alert check would run — so N concurrent
+# stems would each re-list the whole bucket. Instead: one seed scan per
+# project per process, then O(1) increments. Per-project locks serialize
+# seed+increment so concurrent stems neither double-count nor skip. GET
+# /budget still uses the full project_spend for the accurate panel.
+_spend_lock = threading.Lock()
+# project_id -> Lock serialising seed/increment/alert claim for that project
+_project_locks: Dict[str, threading.Lock] = {}
+# project_id -> {"total", "estimated", "actual"}
+_running_spend: Dict[str, Dict[str, float]] = {}
+# project_id -> (budget_usd, generation_event_id, monotonic_time_loaded)
+_budget_cache: Dict[str, tuple] = {}
+_BUDGET_CACHE_TTL_S = 2.0
+# In-process claim set so B2's non-atomic put_if_absent cannot double-fire
+# alerts under same-process fan-out. Key: (project_id, generation, threshold).
+_alert_claims: set = set()
+_alert_claim_lock = threading.Lock()
 
 
 def _file_ledger_path(path: Optional[str] = None) -> Optional[str]:
@@ -236,7 +257,12 @@ def log_transaction(endpoint: str, params_hash: str, cost: float, success: bool,
     Never raises: a successful generation must not be retried solely because
     the cost record failed. A failed storage write is not silent either — the
     process is marked unwritable so quota figures stop being presented as real.
+
+    After a successful append attributed to a project, advisory budget
+    thresholds are checked (task 9). That path also never raises — an
+    alerting bug must not become a render bug.
     """
+    project_id = _current_project.get()
     record = {
         "endpoint": endpoint,
         "params_hash": params_hash,
@@ -247,8 +273,19 @@ def log_transaction(endpoint: str, params_hash: str, cost: float, success: bool,
         "timestamp": time.time(),
         # Present-but-None when unattributed (a direct render): project_spend
         # filters on this key, and old rows without it read as None too.
-        "project_id": _current_project.get(),
+        "project_id": project_id,
     }
+    # Seed *before* the write (scan excludes this row); always increment after.
+    # Per-project lock keeps concurrent stems from double-counting (task 9b).
+    plock = _project_lock(project_id) if project_id else None
+    if plock is not None:
+        try:
+            with plock:
+                _ensure_running_spend_seeded(project_id)
+        except Exception as exc:
+            print(f"[ledger] WARNING: budget spend seed failed for "
+                  f"{project_id}: {type(exc).__name__}: {exc}",
+                  file=sys.stderr, flush=True)
     try:
         path = _file_ledger_path()
         if path is not None:
@@ -263,6 +300,17 @@ def log_transaction(endpoint: str, params_hash: str, cost: float, success: bool,
         print(f"[ledger] WARNING: failed to record transaction for "
               f"{endpoint}: {type(e).__name__}: {e}",
               file=sys.stderr, flush=True)
+        return
+
+    if plock is not None and project_id:
+        try:
+            with plock:
+                spend = _running_spend_after(project_id, cost, cost_source)
+                _maybe_emit_budget_alerts(project_id, spend=spend)
+        except Exception as exc:
+            print(f"[ledger] WARNING: budget alert check failed for "
+                  f"{project_id}: {type(exc).__name__}: {exc}",
+                  file=sys.stderr, flush=True)
 
 
 def get_actual_cost(result: Any) -> Optional[float]:
@@ -460,8 +508,8 @@ def summarize_ledger(path: Optional[str] = None) -> Dict[str, Any]:
     return {"total": total, "by_endpoint": by_endpoint}
 
 
-def project_spend(project_id: str) -> Dict[str, float]:
-    """Estimated spend attributed to one project: total + per-endpoint totals.
+def project_spend(project_id: str) -> Dict[str, Any]:
+    """Spend attributed to one project: total + per-endpoint + cost_source split.
 
     Failed calls are counted, the same rule quota uses — a request that failed
     may still have consumed provider quota. Rows written before attribution
@@ -469,8 +517,14 @@ def project_spend(project_id: str) -> Dict[str, float]:
     `project_id`; those are claimed by a rescue override (see
     :func:`record_attribution`) when one covers their timestamp, else they
     belong to no project.
+
+    ``estimated`` / ``actual`` sum the portions whose ``cost_source`` is
+    estimate vs actual — budget alerts carry both so "$4.90 spent, $3.10 of
+    it estimated" is a different claim from all-actual.
     """
     total = 0.0
+    estimated = 0.0
+    actual = 0.0
     by_endpoint: Dict[str, float] = {}
     attributions = iter_attributions()
     for row in iter_transactions():
@@ -483,7 +537,209 @@ def project_spend(project_id: str) -> Dict[str, float]:
         endpoint = row.get("endpoint", "unknown")
         total += cost
         by_endpoint[endpoint] = by_endpoint.get(endpoint, 0.0) + cost
-    return {"total": total, "by_endpoint": by_endpoint}
+        # Old rows without cost_source read as estimate — the historical default.
+        if row.get("cost_source") == "actual":
+            actual += cost
+        else:
+            estimated += cost
+    return {"total": total, "by_endpoint": by_endpoint,
+            "estimated": estimated, "actual": actual}
+
+
+def _project_lock(project_id: str) -> threading.Lock:
+    """Per-project lock for seed + increment + in-process alert claim."""
+    with _spend_lock:
+        lock = _project_locks.get(project_id)
+        if lock is None:
+            lock = threading.Lock()
+            _project_locks[project_id] = lock
+        return lock
+
+
+def invalidate_project_spend_cache(project_id: Optional[str] = None) -> None:
+    """Drop running-spend cache (one project, or all).
+
+    Call after an attribution rescue adopts rows the running total never
+    saw, or from tests that rewire the ledger backend.
+    """
+    with _spend_lock:
+        if project_id is None:
+            _running_spend.clear()
+            _alert_claims.clear()
+        else:
+            _running_spend.pop(project_id, None)
+            _alert_claims.difference_update(
+                {c for c in _alert_claims if c[0] == project_id})
+
+
+def invalidate_budget_cache(project_id: Optional[str] = None) -> None:
+    """Drop the short-lived advisory-budget cache after PUT /budget."""
+    with _spend_lock:
+        if project_id is None:
+            _budget_cache.clear()
+        else:
+            _budget_cache.pop(project_id, None)
+
+
+def _ensure_running_spend_seeded(project_id: str) -> None:
+    """One full project_spend per project per process, before the triggering write.
+
+    Caller holds the per-project lock. The scan must run *before* the new row
+    is written so it is not double-counted when we add ``cost``.
+    """
+    if project_id in _running_spend:
+        return
+    spend = project_spend(project_id)
+    if project_id not in _running_spend:
+        _running_spend[project_id] = {
+            "total": float(spend["total"]),
+            "estimated": float(spend["estimated"]),
+            "actual": float(spend["actual"]),
+        }
+
+
+def _running_spend_after(project_id: str, cost: float,
+                         cost_source: str) -> Dict[str, float]:
+    """Add this row's cost to the running total. Caller holds the project lock.
+
+    Always increments when a seed exists. If seed never landed (earlier
+    failure), re-seeds from a post-write full scan — that scan already
+    includes this row, so we must not add ``cost`` again. Never installs a
+    zero baseline that would permanently undercount.
+    """
+    entry = _running_spend.get(project_id)
+    if entry is not None:
+        entry["total"] += cost
+        if cost_source == "actual":
+            entry["actual"] += cost
+        else:
+            entry["estimated"] += cost
+        return dict(entry)
+
+    # Seed failed before the write. Scan now includes this row — install
+    # without adding cost. A failed scan leaves the cache empty so the next
+    # call can retry rather than poisoning the process with $0.
+    spend = project_spend(project_id)
+    entry = {
+        "total": float(spend["total"]),
+        "estimated": float(spend["estimated"]),
+        "actual": float(spend["actual"]),
+    }
+    _running_spend[project_id] = entry
+    return dict(entry)
+
+
+def _cached_budget(project_id: str) -> tuple:
+    """``(budget_usd, generation_event_id)``, process-cached briefly.
+
+    Generation is the latest ``budget.set`` event id; alert marker keys
+    include it so clear→re-set the same dollar amount can alert again.
+    """
+    now = time.monotonic()
+    with _spend_lock:
+        cached = _budget_cache.get(project_id)
+        if cached is not None and (now - cached[2]) < _BUDGET_CACHE_TTL_S:
+            return cached[0], cached[1]
+    try:
+        from foleyflow.projects import ProjectStore
+        from foleyflow.storage import get_backend
+        state = ProjectStore(get_backend()).get_state(project_id)
+        budget = state.budget_usd
+        generation = state.budget_generation or "none"
+    except Exception:
+        return None, "none"
+    with _spend_lock:
+        _budget_cache[project_id] = (budget, generation, now)
+    return budget, generation
+
+
+def _maybe_emit_budget_alerts(project_id: str, *, spend: Dict[str, float]) -> None:
+    """Emit lifecycle alerts for newly crossed thresholds.
+
+    Caller holds the per-project lock and has already updated running spend.
+    Increment always runs (even with no budget) so clear→set does not lose
+    history. Idempotent under concurrent fan-out: in-process claim set plus
+    ``put_if_absent`` marker keyed by (project, generation, threshold).
+    Never raises — see ``log_transaction``.
+    """
+    # File-mode ledger has no project event log on the same backend; skip.
+    if _file_ledger_path() is not None:
+        return
+
+    from foleyflow.projects import (
+        EVENT_BUDGET_ALERT,
+        ProjectStore,
+    )
+    from foleyflow.providers.config import get_budget_thresholds
+    from foleyflow.storage import PreconditionFailed, get_backend
+
+    budget, generation = _cached_budget(project_id)
+    if budget is None or budget <= 0:
+        return
+
+    total = float(spend["total"])
+    thresholds = get_budget_thresholds()
+    # Fast path: nothing crossed yet — no storage round-trips.
+    if all(total < budget * t for t in thresholds):
+        return
+
+    backend = get_backend()
+    store = ProjectStore(backend)
+    for threshold in thresholds:
+        if total < budget * threshold:
+            continue
+        claim = (project_id, generation, float(threshold))
+        with _alert_claim_lock:
+            if claim in _alert_claims:
+                continue
+            # Claim in-process first so same-process fan-out cannot double-fire
+            # even when B2 put_if_absent is exists-then-put.
+            _alert_claims.add(claim)
+        key = store.budget_alert_key(
+            project_id, budget, threshold, generation=generation)
+        marker = {
+            "project_id": project_id,
+            "budget_usd": budget,
+            "threshold": threshold,
+            "generation": generation,
+            "spent": round(total, 4),
+            "spent_estimated": round(float(spend["estimated"]), 4),
+            "spent_actual": round(float(spend["actual"]), 4),
+            "created_at": time.time(),
+        }
+        body = json.dumps(marker, separators=(",", ":")).encode("utf-8")
+        try:
+            backend.put_if_absent(key, body, content_type="application/json")
+        except PreconditionFailed:
+            # Another process already announced this threshold.
+            continue
+        except Exception as exc:
+            # Release in-process claim so a later stem can retry.
+            with _alert_claim_lock:
+                _alert_claims.discard(claim)
+            print(f"[ledger] WARNING: budget alert marker failed for "
+                  f"{project_id} @{threshold}: {type(exc).__name__}: {exc}",
+                  file=sys.stderr, flush=True)
+            continue
+        # Marker landed — emit the user-visible lifecycle event. If this
+        # fails the marker still blocks re-fire (split-brain); log loudly.
+        try:
+            store.append_event(
+                project_id, EVENT_BUDGET_ALERT, actor="system",
+                payload={
+                    "threshold": threshold,
+                    "budget_usd": budget,
+                    "generation": generation,
+                    "spent": round(total, 4),
+                    "spent_estimated": round(float(spend["estimated"]), 4),
+                    "spent_actual": round(float(spend["actual"]), 4),
+                    "fraction": round(total / budget, 4) if budget else None,
+                })
+        except Exception as exc:
+            print(f"[ledger] WARNING: budget alert event failed for "
+                  f"{project_id} @{threshold} (marker kept): "
+                  f"{type(exc).__name__}: {exc}",
+                  file=sys.stderr, flush=True)
 
 
 def iter_attributions() -> List[dict]:
@@ -580,6 +836,9 @@ def record_attribution(project_id: str,
         key = f"{ATTR_PREFIX}{new_ulid()}.json"
         try:
             get_backend().put_if_absent(key, body, content_type="application/json")
+            # Adopted rows were never seen by the running total; drop it so
+            # the next alert check re-seeds from the full scan.
+            invalidate_project_spend_cache(project_id)
             return claimed
         except PreconditionFailed as exc:
             last_err = exc

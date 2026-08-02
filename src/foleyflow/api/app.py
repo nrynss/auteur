@@ -27,6 +27,7 @@ from foleyflow.api.schemas import (
     AttributionRequest,
     BudgetModelOut,
     BudgetResponse,
+    BudgetThresholdOut,
     CreateProjectRequest,
     CreateProjectResponse,
     DossierResponse,
@@ -48,6 +49,7 @@ from foleyflow.api.schemas import (
     RunOut,
     SceneListResponse,
     SceneOut,
+    SetBudgetRequest,
     TimelineEventOut,
     TimelineResponse,
     TimelineVersionsResponse,
@@ -164,9 +166,9 @@ def create_app(store: Optional[ProjectStore] = None,
 
         project_id = new_project_id()
         key = source_key(project_id, body.filename)
-        # Budget is fixed at creation: explicit body value, else the [budgets]
-        # config default, else no cap. The resolved value is recorded on the
-        # immutable project record, so later config edits don't re-price it.
+        # Advisory budget seed: explicit body value, else the [budgets]
+        # config default, else none. Written as the first budget.set event
+        # (mutable later via PUT /budget); the project record only seeds it.
         budget_usd = (body.budget_usd
                       if body.budget_usd is not None else get_budget_default())
 
@@ -185,7 +187,7 @@ def create_app(store: Optional[ProjectStore] = None,
             project_id=project_id, actor="user")
 
         return CreateProjectResponse(
-            project=_summary(project, "awaiting_upload"),
+            project=_summary(project, "awaiting_upload", budget_usd=budget_usd),
             upload=UploadTarget(url=url, expires_at=expires_at, headers=headers),
         )
 
@@ -211,7 +213,7 @@ def create_app(store: Optional[ProjectStore] = None,
         page = projects[:limit]
         next_cursor = page[-1].id if len(projects) > limit else None
         return ProjectListResponse(
-            projects=[_summary(p, _status_of(store, p.id)) for p in page],
+            projects=[_project_summary(store, p) for p in page],
             next_cursor=next_cursor,
         )
 
@@ -223,7 +225,8 @@ def create_app(store: Optional[ProjectStore] = None,
         scenes = store.load_scenes(project_id)
         readiness = _readiness(state, scenes, store.load_qa_report(project_id))
         return ProjectDetail(
-            **_summary(state.project, state.status).model_dump(),
+            **_summary(state.project, state.status,
+                       budget_usd=state.budget_usd).model_dump(),
             source_sha256=state.source_sha256 or state.project.source_sha256 or None,
             latest_run_id=state.latest_run_id,
             timeline_version=state.timeline_version,
@@ -275,7 +278,8 @@ def create_app(store: Optional[ProjectStore] = None,
                                      limit=quota.per_day.limit)
 
         estimated = _estimate(model)
-        _budget_gate(store, project_id, estimated)
+        # Budget is advisory only (task 9d): never refuse work on budget
+        # grounds. confirm_cost_usd remains the explicit-consent gate on repair.
 
         # The slot is claimed inside submit, under its lock. Checking here and
         # submitting afterwards would let two simultaneous requests through.
@@ -327,11 +331,16 @@ def create_app(store: Optional[ProjectStore] = None,
                    body: RemixRequest = Body(default=RemixRequest())) -> RunAccepted:
         """Render stems, mix, mux, and measure. Returns a run id to poll.
 
-        Not billed per call the way analysis is: every stem the shared cache
-        already holds is free, so a re-mix of an unchanged timeline costs
-        nothing and the quota gate that guards `/analyze` would be noise here.
+        Pre-flight projection (task 9c): plan_requests + cache probe prices
+        only the misses, so a fully cached re-mix projects $0.00. The figure
+        is a projection — a fallback escalation mid-flight can change it —
+        and is never a gate: the budget is advisory.
         """
         from foleyflow.api.jobs import SlotTaken
+        from foleyflow.assemble import plan_requests
+        from foleyflow.ledger import project_spend
+        from foleyflow.sfx_cache import project_mix_cost
+        from foleyflow.workflow import work_dir
 
         _check_project_id(project_id)
         state = _load_state(store, project_id)
@@ -345,16 +354,58 @@ def create_app(store: Optional[ProjectStore] = None,
         if version not in store.list_timeline_versions(project_id):
             raise err.TimelineNotFound(project_id, version)
 
+        timeline = store.load_timeline(project_id, version)
+        duration = (state.duration_s or state.project.duration_s
+                    or timeline.duration)
+        # Null fields mean "unknown" — never lie with $0.00 on a probe miss.
+        projection: dict = {"projected_cost_usd": None, "hits": None,
+                            "misses": None, "stem_count": None}
+        if duration:
+            try:
+                planned = plan_requests(timeline, duration, tier=body.tier)
+                projection = project_mix_cost(
+                    store.backend, work_dir(), planned)
+            except (OSError, StorageError, ValueError, KeyError) as exc:
+                # Projection is advisory; a probe failure must not refuse the mix.
+                print(f"[api] mix projection unavailable: "
+                      f"{type(exc).__name__}: {exc}")
+                projection = {"projected_cost_usd": None, "hits": None,
+                              "misses": None, "stem_count": None}
+
+        spent: Optional[float] = None
         try:
-            run = runner.submit(project_id, "mix",
-                                _mix_work(store, project_id, body.tier, version),
-                                metadata={"tier": body.tier,
-                                          "timeline_version": version},
-                                actor="user")
+            spent = float(project_spend(project_id)["total"])
+        except (StorageError, OSError, TypeError, ValueError) as exc:
+            print(f"[api] mix spend unreadable: {type(exc).__name__}: {exc}")
+            spent = None
+        projected = projection.get("projected_cost_usd")
+        projected_total = (
+            None if projected is None or spent is None
+            else round(spent + projected, 4))
+
+        try:
+            run = runner.submit(
+                project_id, "mix",
+                _mix_work(store, project_id, body.tier, version),
+                metadata={"tier": body.tier,
+                          "timeline_version": version,
+                          "projected_cost_usd": projected,
+                          "cache_hits": projection.get("hits"),
+                          "cache_misses": projection.get("misses")},
+                actor="user")
         except SlotTaken as e:
             raise err.AlreadyRunning(project_id, e.existing.run_id,
                                      e.existing.kind) from e
-        return RunAccepted(run_id=run.id, kind="mix")
+        return RunAccepted(
+            run_id=run.id, kind="mix",
+            estimated_cost_usd=projected,
+            projected_cost_usd=projected,
+            spent_usd=None if spent is None else round(spent, 4),
+            budget_usd=state.budget_usd,
+            projected_total_usd=projected_total,
+            cache_hits=projection.get("hits"),
+            cache_misses=projection.get("misses"),
+        )
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/exports",
               response_model=RunAccepted, status_code=202, tags=["export"])
@@ -482,7 +533,8 @@ def create_app(store: Optional[ProjectStore] = None,
                 detail={"estimated_cost_usd": estimated,
                         "confirm_cost_usd": body.confirm_cost_usd})
 
-        _budget_gate(store, project_id, estimated)
+        # Budget is advisory only (task 9d): confirm_cost_usd is the consent
+        # gate for billable repair; the soft budget never refuses work.
 
         try:
             run = runner.submit(
@@ -692,14 +744,30 @@ def create_app(store: Optional[ProjectStore] = None,
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/budget",
              response_model=BudgetResponse, tags=["projects"])
     def get_budget(project_id: str) -> BudgetResponse:
-        """What this project has spent against its cap (docs/api.md §3.11).
+        """What this project has spent against its advisory budget (§3.11).
 
         Counted from the cost ledger — never a provider balance. Estimates,
-        like `/quota`; `ledger_writable: false` means fiction and the UI must
-        stop presenting the numbers.
+        like `/quota`; `ledger_writable: false` means fiction, alerts are
+        unreliable, and the UI must stop presenting the numbers.
         """
         _check_project_id(project_id)
         _load_state(store, project_id)   # 404 before doing any work
+        return _budget_response(store, project_id)
+
+    @app.put(f"{API_PREFIX}/projects/{{project_id}}/budget",
+             response_model=BudgetResponse, tags=["projects"])
+    def put_budget(project_id: str, body: SetBudgetRequest) -> BudgetResponse:
+        """Set or clear the project's advisory budget (docs/api.md §3.11).
+
+        Appends a ``postproduction.budget.set`` event — latest-wins, never
+        rewrites the project record. ``budget_usd: null`` clears the figure.
+        """
+        _check_project_id(project_id)
+        _load_state(store, project_id)   # 404 before doing any work
+        try:
+            store.set_budget(project_id, body.budget_usd, actor="user")
+        except ValueError as exc:
+            raise err.InvalidRequest(str(exc)) from exc
         return _budget_response(store, project_id)
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/attributions",
@@ -821,12 +889,29 @@ def _status_of(store: ProjectStore, project_id: str) -> str:
         return "unknown"
 
 
-def _summary(project, status: str) -> ProjectSummary:
+def _summary(project, status: str, *,
+             budget_usd: Optional[float] = ...) -> ProjectSummary:
+    """Project row for list/create.
+
+    Pass ``budget_usd`` for the derived latest-wins figure. Omit it to fall
+    back to the creation-time seed on the frozen project record. Pass
+    ``None`` explicitly to mean "no advisory budget".
+    """
+    resolved = project.budget_usd if budget_usd is ... else budget_usd
     return ProjectSummary(
         id=project.id, title=project.title, status=status,
         created_at=project.created_at, source_filename=project.source_filename,
-        duration_s=project.duration_s, budget_usd=project.budget_usd,
+        duration_s=project.duration_s, budget_usd=resolved,
     )
+
+
+def _project_summary(store: ProjectStore, project) -> ProjectSummary:
+    """List-row summary with derived status and latest-wins budget."""
+    try:
+        state = store.get_state(project.id)
+        return _summary(state.project, state.status, budget_usd=state.budget_usd)
+    except StorageError:
+        return _summary(project, "unknown")
 
 
 def _load_state(store: ProjectStore, project_id: str):
@@ -969,16 +1054,28 @@ def _estimate(model: str) -> float:
 
 
 def _budget_response(store: ProjectStore, project_id: str) -> BudgetResponse:
-    """The §3.11 budget payload for one project, shared by GET /budget and the
-    dossier's compact block."""
+    """The §3.11 budget payload for one project, shared by GET/PUT /budget and
+    the dossier's compact block."""
     from foleyflow.ledger import ledger_writable, project_spend
+    from foleyflow.providers.config import get_budget_thresholds
 
     try:
         state = store.get_state(project_id)
         spend = project_spend(project_id)
-        budget = state.project.budget_usd
-        remaining = None if budget is None else max(budget - spend["total"], 0.0)
+        budget = state.budget_usd
+        # Remaining may be negative when spend has passed the advisory figure —
+        # a soft budget reports overage rather than clamping at zero.
+        remaining = None if budget is None else budget - spend["total"]
         writable = ledger_writable()
+        # Live spend vs thresholds — not only "alert event fired" — so a
+        # budget edit with no new ledger row still reports risk honestly.
+        thresholds = []
+        if budget is not None and budget > 0:
+            for t in get_budget_thresholds():
+                thresholds.append(BudgetThresholdOut(
+                    threshold=t,
+                    crossed=spend["total"] >= budget * t,
+                ))
     except StorageError as e:
         # Same classification as every other read that cannot proceed: a
         # ledger outage must not read as a $0 balance or a 500.
@@ -989,44 +1086,12 @@ def _budget_response(store: ProjectStore, project_id: str) -> BudgetResponse:
         spent=round(spend["total"], 4),
         remaining=None if remaining is None else round(remaining, 4),
         ledger_writable=writable,
+        spent_estimated=round(float(spend.get("estimated", 0.0)), 4),
+        spent_actual=round(float(spend.get("actual", 0.0)), 4),
+        thresholds=thresholds,
         by_model=[BudgetModelOut(endpoint=endpoint, spent=round(value, 4))
                   for endpoint, value in sorted(spend["by_endpoint"].items())],
     )
-
-
-def _budget_gate(store: ProjectStore, project_id: str, estimate: float) -> None:
-    """Refuse a billable call that would take the project past its cap (§3.11).
-
-    Called only by routes with a known estimate (analyze, regenerate). Free
-    calls (estimate $0.00) are never refused, and a project with no configured
-    budget is never gated. No reservation: two concurrent calls can both pass
-    and overspend; the window is accepted for a single-instance deployment.
-
-    Fail-closed on an unwritable ledger: spend is counted from ledger rows,
-    and a write outage means the count reads low — authorizing against it
-    would let the cap become a pass-through. So a billable, capped call is
-    refused while `ledger_writable()` is False, with the reason in the detail.
-    """
-    from foleyflow.ledger import ledger_writable, project_spend
-
-    if estimate <= 0:
-        return
-    budget = store.get_project(project_id).budget_usd
-    if budget is None:
-        return
-    if not ledger_writable():
-        raise err.PreconditionFailed(
-            "Cannot enforce the project budget while the ledger is unwritable",
-            detail={"project_id": project_id, "ledger_writable": False,
-                    "budget_usd": budget,
-                    "estimated_cost_usd": estimate})
-    remaining = budget - project_spend(project_id)["total"]
-    if remaining < estimate:
-        raise err.PreconditionFailed(
-            "This call would take the project past its budget",
-            detail={"project_id": project_id, "budget_usd": budget,
-                    "remaining": round(remaining, 4),
-                    "estimated_cost_usd": estimate})
 
 
 def _readiness(state, scenes, qa_report=None) -> List[ReadinessItem]:

@@ -96,6 +96,9 @@ class Client:
     def post(self, path: str, **kw):
         return self.request("POST", path, **kw)
 
+    def put(self, path: str, **kw):
+        return self.request("PUT", path, **kw)
+
 
 # -- output -----------------------------------------------------------------
 
@@ -237,18 +240,35 @@ def cmd_use(args) -> int:
 
 
 def cmd_budget(client: Client, args) -> int:
-    data = client.get(f"/projects/{args.project_id}/budget")
+    """Show or set the project's advisory budget (docs/api.md §3.11)."""
+    if getattr(args, "clear", False):
+        data = client.put(f"/projects/{args.project_id}/budget",
+                          json={"budget_usd": None})
+    elif getattr(args, "set", None) is not None:
+        data = client.put(f"/projects/{args.project_id}/budget",
+                          json={"budget_usd": args.set})
+    else:
+        data = client.get(f"/projects/{args.project_id}/budget")
 
     def render(d):
         budget = d.get("budget_usd")
-        cap = f"${budget:.2f}" if budget is not None else "(no cap)"
+        cap = f"${budget:.2f}" if budget is not None else "(none)"
         line = f"{d['project_id']}  budget {cap}  spent ${d['spent']:.4f}"
         if d.get("remaining") is not None:
             line += f"  remaining ${d['remaining']:.4f}"
         print(line)
+        est = d.get("spent_estimated")
+        act = d.get("spent_actual")
+        if est is not None or act is not None:
+            print(f"  of which  actual ${float(act or 0):.4f}  "
+                  f"estimated ${float(est or 0):.4f}")
+        crossed = [t for t in d.get("thresholds") or [] if t.get("crossed")]
+        if crossed:
+            fracs = ", ".join(f"{int(t['threshold'] * 100)}%" for t in crossed)
+            print(f"  thresholds crossed: {fracs}")
         if not d.get("ledger_writable", True):
             print("WARNING: the ledger is not writable — these figures are "
-                  "fiction.", file=sys.stderr)
+                  "fiction and budget alerts are unreliable.", file=sys.stderr)
         print("\nby model:")
         for m in d.get("by_model", []):
             print(f"  {m['endpoint']:<32} ${m['spent']:.4f}")
@@ -438,6 +458,26 @@ def cmd_mix(client: Client, args) -> int:
         return EXIT_OK
 
     print(f"mix run {accepted['run_id']}  (tier {args.tier})")
+    projected = accepted.get("projected_cost_usd")
+    if projected is not None:
+        spent = accepted.get("spent_usd") or 0.0
+        total = accepted.get("projected_total_usd")
+        budget = accepted.get("budget_usd")
+        hits = accepted.get("cache_hits")
+        misses = accepted.get("cache_misses")
+        cache = ""
+        if hits is not None and misses is not None:
+            cache = f"  ({hits} cached, {misses} to generate)"
+        # Label it a projection — fallback mid-flight can change the bill.
+        line = f"  projection ${projected:.2f}{cache}"
+        if total is not None and budget is not None:
+            line += (f", taking this project to ${total:.2f} "
+                     f"against a ${budget:.2f} budget")
+        elif total is not None:
+            line += f", taking this project to ${total:.2f}"
+        elif spent:
+            line += f" (already spent ${spent:.2f})"
+        print(line)
     if not args.wait:
         print(f"poll: foleyflow run {args.project_id} {accepted['run_id']}")
         return EXIT_OK
@@ -682,7 +722,12 @@ def cmd_prewarm(args) -> int:
     import os
 
     from foleyflow.assemble import plan_requests
-    from foleyflow.sfx_cache import cache_object_key, prewarm
+    from foleyflow.sfx_cache import (
+        cache_object_key,
+        is_cached,
+        prewarm,
+        project_mix_cost,
+    )
     from foleyflow.storage import StorageError, get_backend
     from foleyflow.tiers import ENV_TIER, TierError, active_tier_name
     from foleyflow.timeline_io import load_timeline
@@ -727,42 +772,40 @@ def cmd_prewarm(args) -> int:
         except StorageError as exc:
             return _fail(f"storage unavailable: {exc}")
 
-        # Match sfx_cache.prewarm's hit rule: a non-empty local work-dir copy
-        # counts as cached even when B2 was never written (stale work dir from
-        # an interrupted render). Without this the count line can overstate
-        # "to generate" relative to what prewarm actually bills.
+        # Shared probe with the mix route (task 9c) so dry-run and the 202
+        # projection cannot disagree about hits vs misses or miss cost.
         work = work_dir()
-        hits, misses = [], []
         try:
-            for request in requests:
-                key = cache_object_key(request.endpoint, request.prompt,
-                                       request.duration_s, "")
-                local = os.path.join(work, os.path.basename(key))
-                cached = (
-                    (os.path.exists(local) and os.path.getsize(local) > 0)
-                    or backend.exists(key)
-                )
-                (hits if cached else misses).append((request, key))
+            projection = project_mix_cost(backend, work, requests)
         except StorageError as exc:
             return _fail(f"cannot probe SFX cache: {exc}")
 
         print(f"tier {active}  ->  "
               f"{requests[0].endpoint if requests else '(no requests)'}")
-        print(f"{len(requests)} stems planned: {len(hits)} cached, "
-              f"{len(misses)} to generate")
+        print(f"{projection['stem_count']} stems planned: "
+              f"{projection['hits']} cached, "
+              f"{projection['misses']} to generate")
+        if projection["projected_cost_usd"] or projection["misses"]:
+            print(f"projected ${projection['projected_cost_usd']:.4f} "
+                  f"(cache misses only)")
 
         if args.verbose:
-            for request, key in misses:
+            for request in requests:
+                if is_cached(backend, work, request):
+                    continue
+                key = cache_object_key(request.endpoint, request.prompt,
+                                       request.duration_s, "")
                 print(f"  MISS {key.split('/')[-1]:<24} "
                       f"{request.duration_s:>5.1f}s  {request.prompt[:60]}")
 
-        if not misses:
+        if projection["misses"] == 0:
             return EXIT_OK
         if args.dry_run:
             print("\n--dry-run: nothing generated.")
             return EXIT_OK
 
-        results = prewarm(backend, work, [r for r, _ in misses],
+        misses = [r for r in requests if not is_cached(backend, work, r)]
+        results = prewarm(backend, work, misses,
                           max_concurrency=args.concurrency)
         failed = [r for r in results if not r.ok]
         print(f"generated {len(results) - len(failed)} of {len(results)}")
@@ -960,7 +1003,12 @@ def build_parser() -> argparse.ArgumentParser:
     project_arg(sub.add_parser("runs", help="completed runs")).set_defaults(
         func=cmd_runs)
 
-    p = project_arg(sub.add_parser("budget", help="project spend vs its cap"))
+    p = project_arg(sub.add_parser(
+        "budget", help="project spend vs its advisory budget"))
+    p.add_argument("--set", type=float, metavar="USD",
+                   help="set the advisory budget to this dollar amount")
+    p.add_argument("--clear", action="store_true",
+                   help="clear the advisory budget")
     p.set_defaults(func=cmd_budget)
 
     p = project_arg(sub.add_parser(

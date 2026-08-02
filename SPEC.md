@@ -523,15 +523,17 @@ Generation budget: $0.07 estimated / $0.05 spent
 
 Every generated asset records the provider, model, requested duration, pricing estimate shown at approval, incurred cost when available, and the routing rationale. These fields are included in the B2-backed provenance manifest so costs and quality decisions remain auditable.
 
-Each project carries a dollar cap set at creation (`budget_usd`, default from
-config), every billed row is attributed to the project that triggered it via a
-run-scoped context, and `GET /projects/{id}/budget` reports spent/remaining
-with the same estimate-and-`ledger_writable` honesty as `/quota`. Analyze and
-regenerate are refused at the route when the estimate exceeds the remaining
-cap. Work that ran outside any project (a direct `foleyflow render`) stays
-unattributed and can be adopted later through an attribution override
-(`POST /projects/{id}/attributions`); rows are immutable, so adoption is a
-record, never a rewrite.
+Each project carries an advisory dollar budget (`budget_usd`, default from
+config, mutable via `PUT /budget` as latest-wins events), every billed row is
+attributed to the project that triggered it via a run-scoped context, and
+`GET /projects/{id}/budget` reports spent/remaining/thresholds with the same
+estimate-and-`ledger_writable` honesty as `/quota`. The budget never refuses
+work; ledger alerts fire at configurable fractions (default 50/80/100/120%),
+and mix responses carry a cache-miss cost projection. Billable repair still
+requires `confirm_cost_usd`. Work that ran outside any project (a direct
+`foleyflow render`) stays unattributed and can be adopted later through an
+attribution override (`POST /projects/{id}/attributions`); rows are immutable,
+so adoption is a record, never a rewrite.
 
 ---
 
