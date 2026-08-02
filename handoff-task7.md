@@ -59,7 +59,12 @@ Settled; not open unless a unit proves one impossible.
    in git pretending to be current.
 9. **Director-mode model is `gemini-3.5-flash-lite`** (500 requests/day;
    `gemini-2.5-flash` allows 20 and would be exhausted in one session).
-10. **A commit submits the whole timeline document**, not a patch list. A
+10. **The visual direction is locked** in `docs/design/control-room.md`, with a
+    reference mockup beside it (`control-room-mockup.html`) built on the real
+    `standoff_kling` project. Palette, type, layout, and the structural honesty
+    rules are settled — 7.7 implements them, 7.8 onward consume them. Read it
+    before writing any component.
+11. **A commit submits the whole timeline document**, not a patch list. A
     version *is* a document, so submitting one makes the endpoint idempotent by
     construction, and director mode proposes a document diff rather than a
     patch language someone has to invent. Units 7.3 and 7.12 share this shape —
@@ -271,6 +276,10 @@ net. This unit adds the coverage that does not exist today.
 ## 7.7 Component layer and design tokens — M
 
 **Depends on:** 7.6. **Files:** `ui/src/lib/`.
+**Read first:** `docs/design/control-room.md` — the locked direction — and open
+`docs/design/control-room-mockup.html` in a browser. Do not re-derive the
+palette, type scale or layout; they are settled. Where the doc and the mockup
+disagree, the doc wins.
 
 The screen's vocabulary repeats hard — state chips in four states
 (`ok`/`warn`/`blocked`/`pending`), "measured number + its source" evidence
@@ -448,3 +457,8 @@ blanket component tests.
 - Peaks endpoint shape: resolution, storage, response format (7.5).
 - Trim semantics per event kind: discrete needs a genuine new renderer path,
   rhythmic and continuous are span changes (7.2).
+- The states the mockup does not cover — loading, empty, error, the in-flight
+  run lock, draft-versus-committed, and the director-mode diff drawn on the
+  timeline itself. Listed in `docs/design/control-room.md` §9. These are design
+  work, not improvisation from the mockup, and they belong to the units that
+  need them (7.8, 7.10, 7.11, 7.12).
