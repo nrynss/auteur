@@ -183,23 +183,23 @@ To stamp a deploy so `GET /api/v1/health` reports the commit it is running,
 set `FOLEYFLOW_GIT_SHA` and `FOLEYFLOW_BUILD_TIME`. How you set them depends
 on the deploy path:
 
-**A) Preferred for this repo's `gcloud run deploy --source` flow** — Cloud
-Build builds the Dockerfile without custom build-args, so stamp at runtime
-instead:
+**A) This repo's `gcloud run deploy --source` flow** — Cloud Build builds the
+Dockerfile without custom build-args, so stamp at runtime by putting both keys
+in `env.yaml` and regenerating it each deploy:
 
 ```bash
-gcloud run deploy foleyflow --source . \
-  --region us-east4 --allow-unauthenticated \
-  --no-cpu-throttling --min-instances 1 --max-instances 1 \
-  --memory 4Gi --cpu 2 --timeout 300 \
-  --env-vars-file env.yaml \
-  --update-env-vars "FOLEYFLOW_GIT_SHA=$(git rev-parse HEAD),FOLEYFLOW_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf 'FOLEYFLOW_GIT_SHA: "%s"\nFOLEYFLOW_BUILD_TIME: "%s"\n' "$(git rev-parse HEAD)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> env.yaml
 ```
 
-If you keep identity in `env.yaml` instead of `--update-env-vars`, add the two
-keys there (values must be refreshed each deploy). Do not combine conflicting
-values for the same key across both mechanisms without knowing which wins on
-your `gcloud` version — pick one place per deploy.
+Then deploy with `--env-vars-file env.yaml` as above. Verified end to end:
+`GET /api/v1/health` on the deployed service returns the same sha as
+`git rev-parse HEAD`.
+
+> **Not `--update-env-vars`.** It looks like the natural way to add two keys
+> without touching the file, but gcloud rejects it: *"At most one of
+> --clear-env-vars | --env-vars-file | --set-env-vars | --remove-env-vars
+> --update-env-vars can be specified."* The two flags are mutually exclusive,
+> so identity has to live in the same place as every other variable.
 
 **B) Image-based deploys** (`docker build` / registry push) can bake the
 stamps into the image via Dockerfile `ARG`/`ENV`:
