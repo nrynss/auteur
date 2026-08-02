@@ -113,6 +113,7 @@ class Project:
     source_sha256: str
     source_filename: str
     duration_s: Optional[float] = None
+    budget_usd: Optional[float] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -329,6 +330,7 @@ class ProjectStore:
 
     def create_project(self, *, title: str, input_key: str, source_sha256: str,
                        source_filename: str, duration_s: Optional[float] = None,
+                       budget_usd: Optional[float] = None,
                        project_id: Optional[str] = None, actor: str = "system") -> Project:
         project = Project(
             id=project_id or new_project_id(),
@@ -338,6 +340,7 @@ class ProjectStore:
             source_sha256=source_sha256,
             source_filename=source_filename,
             duration_s=duration_s,
+            budget_usd=budget_usd,
         )
         self._put_json_immutable(self.project_key(project.id), project.to_dict())
         self.append_event(project.id, EVENT_PROJECT_CREATED, actor=actor,

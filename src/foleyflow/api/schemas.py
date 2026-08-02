@@ -46,6 +46,16 @@ class CreateProjectRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     filename: str = Field(min_length=1, max_length=255)
     content_type: str = "video/mp4"
+    # Optional dollar cap (docs/api.md §3.11). Fixed at creation; None means
+    # the [budgets] default applies, and the resolved value is recorded.
+    budget_usd: Optional[float] = None
+
+    @field_validator("budget_usd")
+    @classmethod
+    def _positive_budget(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and v <= 0:
+            raise ValueError("budget_usd must be > 0 when set")
+        return v
 
     @field_validator("filename")
     @classmethod
@@ -79,6 +89,7 @@ class ProjectSummary(BaseModel):
     created_at: str
     source_filename: str
     duration_s: Optional[float] = None
+    budget_usd: Optional[float] = None
 
 
 class ReadinessItem(BaseModel):
@@ -305,9 +316,30 @@ class DossierResponse(BaseModel):
     artifact_count: int
     total_bytes: int
     artifacts: List[ArtifactOut]
+    # Compact §3.11 budget block: configured, spent, remaining, estimate flag.
+    budget: Optional[BudgetResponse] = None
 
 
 # -- quota ------------------------------------------------------------------
+
+class BudgetModelOut(BaseModel):
+    endpoint: str
+    spent: float
+
+
+class BudgetResponse(BaseModel):
+    """Per-project spend against its cap, counted from the cost ledger
+    (docs/api.md §3.11). Estimates, like /quota; `ledger_writable: false`
+    means the figures are fiction."""
+
+    project_id: str
+    budget_usd: Optional[float] = None   # None = no configured cap
+    spent: float
+    remaining: Optional[float] = None
+    estimate: bool = True
+    ledger_writable: bool = True
+    by_model: List[BudgetModelOut] = Field(default_factory=list)
+
 
 class QuotaWindowOut(BaseModel):
     used: int

@@ -23,6 +23,8 @@ from foleyflow.api.jobs import JobRunner
 from foleyflow.api.schemas import (
     AnalyzeRequest,
     ArtifactOut,
+    BudgetModelOut,
+    BudgetResponse,
     CreateProjectRequest,
     CreateProjectResponse,
     DossierResponse,
@@ -156,9 +158,15 @@ def create_app(store: Optional[ProjectStore] = None,
         nothing.
         """
         from foleyflow.ids import new_project_id
+        from foleyflow.providers.config import get_budget_default
 
         project_id = new_project_id()
         key = source_key(project_id, body.filename)
+        # Budget is fixed at creation: explicit body value, else the [budgets]
+        # config default, else no cap. The resolved value is recorded on the
+        # immutable project record, so later config edits don't re-price it.
+        budget_usd = (body.budget_usd
+                      if body.budget_usd is not None else get_budget_default())
 
         try:
             url, expires_at, headers = create_upload_target(
@@ -171,7 +179,8 @@ def create_app(store: Optional[ProjectStore] = None,
 
         project = store.create_project(
             title=body.title, input_key=key, source_sha256="",
-            source_filename=body.filename, project_id=project_id, actor="user")
+            source_filename=body.filename, budget_usd=budget_usd,
+            project_id=project_id, actor="user")
 
         return CreateProjectResponse(
             project=_summary(project, "awaiting_upload"),
@@ -263,6 +272,9 @@ def create_app(store: Optional[ProjectStore] = None,
                                      used=quota.per_day.used,
                                      limit=quota.per_day.limit)
 
+        estimated = _estimate(model)
+        _budget_gate(store, project_id, estimated)
+
         # The slot is claimed inside submit, under its lock. Checking here and
         # submitting afterwards would let two simultaneous requests through.
         try:
@@ -275,8 +287,7 @@ def create_app(store: Optional[ProjectStore] = None,
                                      e.existing.kind) from e
 
         return RunAccepted(run_id=run.id, kind="analyze",
-                           estimated_cost_usd=_estimate(model))
-
+                           estimated_cost_usd=estimated)
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/uploaded",
               response_model=RunAccepted, status_code=202, tags=["projects"])
     def confirm_upload(project_id: str) -> RunAccepted:
@@ -469,6 +480,8 @@ def create_app(store: Optional[ProjectStore] = None,
                 detail={"estimated_cost_usd": estimated,
                         "confirm_cost_usd": body.confirm_cost_usd})
 
+        _budget_gate(store, project_id, estimated)
+
         try:
             run = runner.submit(
                 project_id, "repair",
@@ -514,6 +527,7 @@ def create_app(store: Optional[ProjectStore] = None,
             artifact_count=len(artifacts),
             total_bytes=sum(a.size_bytes or 0 for a in artifacts),
             artifacts=artifacts,
+            budget=_budget_response(store, project_id),
         )
 
     # -- timeline ---------------------------------------------------------
@@ -673,6 +687,19 @@ def create_app(store: Optional[ProjectStore] = None,
             ledger_writable=ledger_writable(),
             models=[ModelQuotaOut(**q.to_dict()) for q in get_all_quotas()])
 
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/budget",
+             response_model=BudgetResponse, tags=["projects"])
+    def get_budget(project_id: str) -> BudgetResponse:
+        """What this project has spent against its cap (docs/api.md §3.11).
+
+        Counted from the cost ledger — never a provider balance. Estimates,
+        like `/quota`; `ledger_writable: false` means fiction and the UI must
+        stop presenting the numbers.
+        """
+        _check_project_id(project_id)
+        _load_state(store, project_id)   # 404 before doing any work
+        return _budget_response(store, project_id)
+
     return app
 
 
@@ -768,7 +795,7 @@ def _summary(project, status: str) -> ProjectSummary:
     return ProjectSummary(
         id=project.id, title=project.title, status=status,
         created_at=project.created_at, source_filename=project.source_filename,
-        duration_s=project.duration_s,
+        duration_s=project.duration_s, budget_usd=project.budget_usd,
     )
 
 
@@ -909,6 +936,50 @@ def _scene_ids_for(store: ProjectStore, project_id: str, timeline) -> List[Optio
 def _estimate(model: str) -> float:
     from foleyflow.ledger import estimate_cost
     return estimate_cost(model, {})
+
+
+def _budget_response(store: ProjectStore, project_id: str) -> BudgetResponse:
+    """The §3.11 budget payload for one project, shared by GET /budget and the
+    dossier's compact block."""
+    from foleyflow.ledger import ledger_writable, project_spend
+
+    state = store.get_state(project_id)
+    spend = project_spend(project_id)
+    budget = state.project.budget_usd
+    remaining = None if budget is None else max(budget - spend["total"], 0.0)
+    return BudgetResponse(
+        project_id=project_id,
+        budget_usd=budget,
+        spent=round(spend["total"], 4),
+        remaining=None if remaining is None else round(remaining, 4),
+        ledger_writable=ledger_writable(),
+        by_model=[BudgetModelOut(endpoint=endpoint, spent=round(value, 4))
+                  for endpoint, value in sorted(spend["by_endpoint"].items())],
+    )
+
+
+def _budget_gate(store: ProjectStore, project_id: str, estimate: float) -> None:
+    """Refuse a billable call that would take the project past its cap (§3.11).
+
+    Called only by routes with a known estimate (analyze, regenerate). Free
+    calls (estimate $0.00) are never refused, and a project with no configured
+    budget is never gated. No reservation: two concurrent calls can both pass
+    and overspend; the window is accepted for a single-instance deployment.
+    """
+    from foleyflow.ledger import project_spend
+
+    if estimate <= 0:
+        return
+    budget = store.get_project(project_id).budget_usd
+    if budget is None:
+        return
+    remaining = budget - project_spend(project_id)["total"]
+    if remaining < estimate:
+        raise err.PreconditionFailed(
+            "This call would take the project past its budget",
+            detail={"project_id": project_id, "budget_usd": budget,
+                    "remaining": round(remaining, 4),
+                    "estimated_cost_usd": estimate})
 
 
 def _readiness(state, scenes, qa_report=None) -> List[ReadinessItem]:

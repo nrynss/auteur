@@ -190,6 +190,18 @@ def get_defaults(*, _config: Optional[dict] = None) -> dict:
     return config.get("defaults", {})
 
 
+def get_budget_default(*, _config: Optional[dict] = None) -> Optional[float]:
+    """The default per-project dollar cap (docs/api.md §3.11).
+
+    Read from ``[budgets] default`` in providers.toml, applied at project
+    creation when the create body omits ``budget_usd``, and then frozen on the
+    immutable project record — later config edits do not re-price existing
+    projects.
+    """
+    raw = (_config or load_config()).get("budgets", {}).get("default")
+    return float(raw) if raw is not None else None
+
+
 def get_all_model_specs(*, _config: Optional[dict] = None) -> Dict[str, ModelSpec]:
     """Return a dict of model_id -> ModelSpec for every declared model."""
     config = _config or load_config()

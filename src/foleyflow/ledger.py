@@ -42,6 +42,8 @@ import os
 import sys
 import time
 import hashlib
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 
 from foleyflow.providers.config import get_defaults, get_model_spec
@@ -63,6 +65,30 @@ LEDGER_PATH: Optional[str] = os.environ.get("FOLEYFLOW_LEDGER_PATH") or None
 # successful write flips it back. In storage mode that pin is fail-closed and
 # self-healing; file mode always re-probes the path (see ledger_writable).
 _write_ok: bool = True
+
+# The project a row belongs to. Set by the job runner around each run's work
+# (see set_project_context); execute_with_ledger and log_transaction never see
+# a project — the context does the attribution. None means unattributed: a
+# direct `foleyflow render` writes global rows, and the CLI footer still sums
+# them.
+_current_project: ContextVar[Optional[str]] = ContextVar(
+    "foleyflow_current_project", default=None)
+
+
+@contextmanager
+def set_project_context(project_id: Optional[str]):
+    """Tag every ledger row written inside the block with `project_id`.
+
+    The job runner wraps each run's work in this, so analysis, mix and repair
+    rows are attributed to the project that triggered them without the deep
+    provider seam knowing anything about projects. Nested contexts restore the
+    outer value.
+    """
+    token = _current_project.set(project_id)
+    try:
+        yield
+    finally:
+        _current_project.reset(token)
 
 # Short-lived snapshot of storage-backed rows. The ledger is append-only, so a
 # cached listing is safe for a few seconds; without it every get_quota call
@@ -214,6 +240,9 @@ def log_transaction(endpoint: str, params_hash: str, cost: float, success: bool,
         "success": success,
         "error": error,
         "timestamp": time.time(),
+        # Present-but-None when unattributed (a direct render): project_spend
+        # filters on this key, and old rows without it read as None too.
+        "project_id": _current_project.get(),
     }
     try:
         path = _file_ledger_path()
@@ -416,6 +445,26 @@ def summarize_ledger(path: Optional[str] = None) -> Dict[str, Any]:
     by_endpoint: Dict[str, float] = {}
     for row in iter_transactions(path):
         if not row.get("success"):
+            continue
+        cost = float(row.get("cost_estimate") or 0.0)
+        endpoint = row.get("endpoint", "unknown")
+        total += cost
+        by_endpoint[endpoint] = by_endpoint.get(endpoint, 0.0) + cost
+    return {"total": total, "by_endpoint": by_endpoint}
+
+
+def project_spend(project_id: str) -> Dict[str, float]:
+    """Estimated spend attributed to one project: total + per-endpoint totals.
+
+    Failed calls are counted, the same rule quota uses — a request that failed
+    may still have consumed provider quota. Rows written before attribution
+    existed, and rows from a direct (project-less) render, carry no
+    `project_id` and are never attributed to any project.
+    """
+    total = 0.0
+    by_endpoint: Dict[str, float] = {}
+    for row in iter_transactions():
+        if row.get("project_id") != project_id:
             continue
         cost = float(row.get("cost_estimate") or 0.0)
         endpoint = row.get("endpoint", "unknown")

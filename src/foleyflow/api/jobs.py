@@ -161,7 +161,12 @@ class JobRunner:
         state.
         """
         try:
-            work(run)
+            # Every ledger row this run writes is attributed to its project.
+            # The provider seam never sees the project — the context does it.
+            from foleyflow.ledger import set_project_context
+
+            with set_project_context(run.project_id):
+                work(run)
         except Exception as exc:
             logger.exception("run %s (%s) failed", run.id, run.kind)
             try:

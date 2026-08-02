@@ -145,14 +145,14 @@ fails every generation, so it is called out rather than folded into `ok`.
 
 ```
 POST /api/v1/projects
-{ "title": "Western standoff", "filename": "standoff.mp4", "content_type": "video/mp4" }
+{ "title": "Western standoff", "filename": "standoff.mp4", "content_type": "video/mp4", "budget_usd": 2.00 }
 ```
 
 `201`
 
 ```json
 {
-  "project": { "id": "proj_01K…", "title": "Western standoff", "status": "awaiting_upload", … },
+  "project": { "id": "proj_01K…", "title": "Western standoff", "status": "awaiting_upload", "budget_usd": 2.0, … },
   "upload": {
     "url": "https://s3.us-east-005.backblazeb2.com/…?X-Amz-Signature=…",
     "method": "PUT",
@@ -161,6 +161,10 @@ POST /api/v1/projects
   }
 }
 ```
+
+`budget_usd` is optional: the dollar cap this project may spend (see §3.11).
+When omitted, the `providers.toml [budgets]` default applies. It is fixed at
+creation — the project record is immutable.
 
 The project exists before its bytes do. That is deliberate: the upload can fail,
 be retried, or be abandoned, and the project record plus its event log describe
@@ -216,7 +220,7 @@ POST /api/v1/projects/{id}/analyze
 |---|---|
 | `409 already_running` | Any run is in flight for this project |
 | `429 quota_exhausted` | The model's daily budget is spent |
-| `422 precondition_failed` | The upload has not been confirmed yet |
+| `422 precondition_failed` | The upload has not been confirmed yet, or the project's budget (see §3.11) cannot cover the estimate |
 | `400 invalid_request` | The named model declares no request budget |
 
 `force: true` bypasses the timeline cache.
@@ -345,7 +349,8 @@ requested event index either way.
 
 The `provider` field names a declared SFX tier to regenerate through; the request
 is re-aimed at that tier and the estimate is its cost. `422 precondition_failed`
-when there is no plan yet or a billable regeneration is not confirmed;
+when there is no plan yet, a billable regeneration is not confirmed, or the
+project's budget (see §3.11) cannot cover the estimate;
 `400 invalid_request` for an out-of-range index or an unknown provider.
 
 ```
@@ -420,8 +425,11 @@ GET /api/v1/projects/{id}/dossier
 stem inventories and the stem clips themselves, mixes, the QA report, run
 records, the event log, manifests, and the export pointer — each with its
 storage key (provenance only), `size_bytes`, `sha256` where the system records
-one, and a signed URL. This is the §15 demo's closing beat, so it is a single
-call that returns everything rather than something the UI assembles.
+one, and a signed URL. The response also carries a compact `budget` block
+(configured, spent, remaining, `estimate: true`, `ledger_writable` — §3.11)
+so the closing beat shows the money as well as the media. This is the §15
+demo's closing beat, so it is a single call that returns everything rather
+than something the UI assembles.
 
 Composition only: nothing here writes, and nothing is downloaded to build the
 listing. Size comes from one backend HEAD per object; sha256 comes from
@@ -454,6 +462,50 @@ Google exposes no remaining-balance field, so they are counted from our own
 ledger and can drift — a shared key, or a request that failed after the server
 counted it. The UI must present them as a guide, never as an authoritative
 balance.
+
+---
+
+### 3.11 Budget
+
+```
+GET /api/v1/projects/{id}/budget
+```
+
+`200` — what this project has spent against its cap, counted from the cost
+ledger (not a provider balance):
+
+```json
+{
+  "project_id": "proj_01K…",
+  "budget_usd": 2.0,
+  "spent": 0.87,
+  "remaining": 1.13,
+  "estimate": true,
+  "ledger_writable": true,
+  "by_model": [
+    { "endpoint": "gemini-2.5-flash", "spent": 0.42 },
+    { "endpoint": "openmoss/moss-soundeffect-v2", "spent": 0.0 }
+  ]
+}
+```
+
+`budget_usd` is the cap fixed at creation (§3.2); `None` when the project has
+no configured budget, in which case nothing is refused but the payload still
+reports spend. `spent` sums the `cost_estimate` of every ledger row attributed
+to this project (failed calls included, the same rule as §3.10). `remaining`
+is `max(budget_usd - spent, 0)`. The figures are `estimate: true` — a real
+provider bill can drift from the ledger, exactly like `/quota` — and
+`ledger_writable: false` means they are fiction and the UI must stop
+presenting them.
+
+**The gate.** `POST /analyze` and `POST …/regenerate` refuse a call whose
+estimate exceeds `remaining` — `422 precondition_failed` with
+`detail.budget_usd`, `detail.remaining` and `detail.estimated_cost_usd` — so a
+project cannot silently exceed its cap on a known cost. Calls priced at $0.00
+are never refused. Mix is not gated: its cost depends on cache hits and is
+only knowable after the run, so an overage there is reported, not prevented.
+There is no reservation: two concurrent calls can both pass the check and
+overspend; the window is accepted for a single-instance deployment.
 
 ---
 

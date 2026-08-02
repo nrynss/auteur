@@ -976,6 +976,178 @@ def test_regenerate_provider_reroutes_to_an_approved_tier(
     assert captured["request"].endpoint == "openmoss/moss-soundeffect-v2"
 
 
+# -- budget -----------------------------------------------------------------
+
+@pytest.fixture
+def budget_ledger(store, monkeypatch):
+    """Point the cost ledger at the store's own backend so budget tests can
+    attribute rows and read them back without touching any global ledger."""
+    import foleyflow.ledger as ledger_mod
+    import foleyflow.storage as storage_mod
+
+    monkeypatch.setattr(storage_mod, "get_backend", lambda *a, **k: store.backend)
+    monkeypatch.setattr(ledger_mod, "_write_ok", True)
+    ledger_mod._invalidate_row_cache()
+    return ledger_mod
+
+
+def _spend(budget_ledger, project_id, endpoint, cost, success=True):
+    with budget_ledger.set_project_context(project_id):
+        budget_ledger.log_transaction(endpoint, "h", cost, success=success)
+
+
+def test_budget_reports_spend_against_the_cap(client, store, budget_ledger):
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4", budget_usd=1.0)
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.30)
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.05, success=False)
+
+    body = client.get(f"{API_PREFIX}/projects/{project.id}/budget").json()
+    assert body["project_id"] == project.id
+    assert body["budget_usd"] == 1.0
+    # Failed calls are counted, the same rule as /quota.
+    assert body["spent"] == pytest.approx(0.35)
+    assert body["remaining"] == pytest.approx(0.65)
+    assert body["estimate"] is True
+    assert body["ledger_writable"] is True
+    assert body["by_model"] == [{"endpoint": "gemini-2.5-flash",
+                                  "spent": pytest.approx(0.35)}]
+
+
+def test_budget_isolates_projects(client, store, budget_ledger):
+    a = store.create_project(title="A", input_key="ka", source_sha256="",
+                             source_filename="a.mp4", budget_usd=1.0)
+    b = store.create_project(title="B", input_key="kb", source_sha256="",
+                             source_filename="b.mp4", budget_usd=1.0)
+    _spend(budget_ledger, a.id, "gemini-2.5-flash", 0.30)
+    _spend(budget_ledger, b.id, "gemini-2.5-flash", 0.60)
+
+    a_body = client.get(f"{API_PREFIX}/projects/{a.id}/budget").json()
+    b_body = client.get(f"{API_PREFIX}/projects/{b.id}/budget").json()
+    assert a_body["spent"] == pytest.approx(0.30)
+    assert a_body["remaining"] == pytest.approx(0.70)
+    assert b_body["spent"] == pytest.approx(0.60)
+    assert b_body["remaining"] == pytest.approx(0.40)
+
+
+def test_budget_gate_refuses_a_call_past_the_cap(client, store, budget_ledger,
+                                                 monkeypatch):
+    """§3.11: a $0.50 budget that has spent $0.30 refuses a second $0.30 call,
+    with the numbers."""
+    project = store.create_project(title="B", input_key="k", source_sha256="",
+                                   source_filename="s.mp4", budget_usd=0.50)
+    store.save_timeline(project.id, _timeline())
+    _spend(budget_ledger, project.id, "eleven_text_to_sound_v2", 0.30)
+    monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
+
+    r = client.post(
+        f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+        json={"confirm_cost_usd": 0.30})
+    assert r.status_code == 422
+    detail = r.json()["error"]["detail"]
+    assert detail["budget_usd"] == 0.50
+    assert detail["remaining"] == pytest.approx(0.20)
+    assert detail["estimated_cost_usd"] == pytest.approx(0.30)
+
+
+def test_budget_gate_allows_a_call_within_the_cap(client, store, budget_ledger,
+                                                  monkeypatch):
+    project = store.create_project(title="B", input_key="k", source_sha256="",
+                                   source_filename="s.mp4", budget_usd=1.0)
+    store.save_timeline(project.id, _timeline())
+    monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
+
+    r = client.post(
+        f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+        json={"confirm_cost_usd": 0.30})
+    assert r.status_code == 202, r.text
+
+
+def test_budget_gate_never_refuses_free_calls(client, store, budget_ledger):
+    """A $0.00 estimate is never gated, even with nothing left in the cap."""
+    project = store.create_project(title="B", input_key="k", source_sha256="",
+                                   source_filename="s.mp4", budget_usd=0.01)
+    store.save_timeline(project.id, _timeline())
+    _spend(budget_ledger, project.id, "openmoss/moss-soundeffect-v2", 0.01)
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/0/regenerate",
+                    json={})
+    assert r.status_code == 202, r.text
+
+
+def test_budget_gate_skips_projects_without_a_cap(client, store, budget_ledger,
+                                                  monkeypatch):
+    project = store.create_project(title="B", input_key="k", source_sha256="",
+                                   source_filename="s.mp4", budget_usd=None)
+    store.save_timeline(project.id, _timeline())
+    _spend(budget_ledger, project.id, "eleven_text_to_sound_v2", 100.0)
+    monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
+
+    r = client.post(
+        f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+        json={"confirm_cost_usd": 0.30})
+    assert r.status_code == 202, r.text
+
+
+def test_budget_still_returns_when_the_ledger_is_unwritable(
+        client, project, monkeypatch):
+    import foleyflow.ledger as ledger_mod
+
+    monkeypatch.setattr(ledger_mod, "ledger_writable", lambda *a, **k: False)
+    body = client.get(f"{API_PREFIX}/projects/{project.id}/budget").json()
+    assert body["ledger_writable"] is False
+    assert body["estimate"] is True
+    assert "spent" in body
+
+
+def test_create_project_applies_the_budget_default(client, monkeypatch):
+    """Omitted budget_usd resolves to the providers.toml [budgets] default and
+    is frozen on the project record."""
+    import foleyflow.api.app as app_mod
+
+    # LocalBackend cannot sign upload URLs (B2-only), so stub the target.
+    monkeypatch.setattr(app_mod, "create_upload_target",
+                        lambda *a, **k: ("https://upload.example/x",
+                                         "2026-01-01T00:00:00Z", {}))
+    r = client.post(f"{API_PREFIX}/projects",
+                    json={"title": "x", "filename": "a.mp4"})
+    assert r.status_code == 201, r.text
+    assert r.json()["project"]["budget_usd"] == 5.0   # providers.toml [budgets]
+
+
+def test_create_project_records_an_explicit_budget(client, monkeypatch):
+    import foleyflow.api.app as app_mod
+
+    monkeypatch.setattr(app_mod, "create_upload_target",
+                        lambda *a, **k: ("https://upload.example/x",
+                                         "2026-01-01T00:00:00Z", {}))
+    r = client.post(f"{API_PREFIX}/projects",
+                    json={"title": "x", "filename": "a.mp4",
+                          "budget_usd": 2.5})
+    assert r.status_code == 201, r.text
+    assert r.json()["project"]["budget_usd"] == 2.5
+
+
+def test_create_project_rejects_a_non_positive_budget(client):
+    for value in (0, -1):
+        r = client.post(f"{API_PREFIX}/projects",
+                        json={"title": "x", "filename": "a.mp4",
+                              "budget_usd": value})
+        assert r.status_code == 400, r.text
+
+
+def test_dossier_carries_the_budget_block(client, store, budget_ledger):
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4", budget_usd=2.0)
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.87)
+    body = client.get(f"{API_PREFIX}/projects/{project.id}/dossier").json()
+    budget = body["budget"]
+    assert budget["budget_usd"] == 2.0
+    assert budget["spent"] == pytest.approx(0.87)
+    assert budget["remaining"] == pytest.approx(1.13)
+    assert budget["estimate"] is True
+
+
 # -- quota ------------------------------------------------------------------
 
 def test_quota_is_flagged_as_an_estimate(client):

@@ -178,3 +178,55 @@ def test_get_all_quotas_scans_the_ledger_once(storage_ledger, monkeypatch):
 
     get_all_quotas()
     assert lists["n"] == 1, "one listing for every model, not one per model"
+
+
+# -- project attribution ----------------------------------------------------
+
+def test_rows_are_attributed_inside_a_project_context(storage_ledger):
+    """set_project_context tags rows; outside it, rows stay unattributed."""
+    with ledger.set_project_context("proj_A"):
+        ledger.log_transaction("gemini-2.5-flash", "a1", 0.30, success=True)
+        ledger.log_transaction("openmoss/moss-soundeffect-v2", "a2", 0.0,
+                               success=True)
+    ledger.log_transaction("gemini-2.5-flash", "g1", 0.20, success=True)
+
+    rows = ledger.iter_transactions()
+    by_hash = {r["params_hash"]: r for r in rows}
+    assert by_hash["a1"]["project_id"] == "proj_A"
+    assert by_hash["a2"]["project_id"] == "proj_A"
+    assert by_hash["g1"]["project_id"] is None
+
+
+def test_project_spend_isolates_projects_and_counts_failures(storage_ledger):
+    with ledger.set_project_context("proj_A"):
+        ledger.log_transaction("gemini-2.5-flash", "a1", 0.30, success=True)
+        ledger.log_transaction("gemini-2.5-flash", "a2", 0.05, success=False,
+                               error="429")
+    with ledger.set_project_context("proj_B"):
+        ledger.log_transaction("gemini-2.5-flash", "b1", 0.40, success=True)
+    ledger.log_transaction("gemini-2.5-flash", "g1", 0.99, success=True)
+
+    a = ledger.project_spend("proj_A")
+    b = ledger.project_spend("proj_B")
+    assert a["total"] == pytest.approx(0.35)      # failures counted, like quota
+    assert a["by_endpoint"] == {"gemini-2.5-flash": pytest.approx(0.35)}
+    assert b["total"] == pytest.approx(0.40)
+    # The unattributed row belongs to no project.
+    assert a["by_endpoint"].get("gemini-2.5-flash") == pytest.approx(0.35)
+    assert b["by_endpoint"] == {"gemini-2.5-flash": pytest.approx(0.40)}
+
+
+def test_old_rows_without_project_id_never_attribute(storage_ledger):
+    """Rows written before attribution existed (no project_id key) must not be
+    counted for any project."""
+    from foleyflow import storage as storage_mod
+
+    backend = storage_ledger
+    row = {"endpoint": "gemini-2.5-flash", "params_hash": "old",
+           "cost_estimate": 0.50, "success": True, "timestamp": 1.0}
+    backend.put_bytes(f"{ledger.LEDGER_PREFIX}old.json",
+                      json.dumps(row).encode())
+    ledger._invalidate_row_cache()
+
+    assert ledger.project_spend("proj_A") == {"total": 0.0, "by_endpoint": {}}
+    assert ledger.project_spend("proj_B") == {"total": 0.0, "by_endpoint": {}}

@@ -142,6 +142,14 @@ duration_type = "float"
 num_inference_steps = 50
 cfg_scale = 4.0
 
+# ---------------------------------------------------------------- budgets --
+# Default per-project dollar cap (docs/api.md §3.11). Applied at project
+# creation when the create body omits budget_usd; the resolved value is then
+# frozen on the immutable project record. Omit `default` for no cap by
+# default (projects opt in per-body instead).
+[budgets]
+default = 5.0
+
 # --------------------------------------------------------------- analysis --
 # Analysis runs through Genblaze (providers.genblaze.AnalysisProvider) so the
 # VLM call is timed, retried and recorded like every other provider step.
