@@ -56,6 +56,8 @@ from foleyflow.api.schemas import (
     TimelineEventOut,
     TimelineResponse,
     TimelineVersionsResponse,
+    StemPeaksBatchResponse,
+    StemPeaksEntry,
     UploadTarget,
     WorkerHealth,
 )
@@ -64,7 +66,6 @@ from foleyflow.ids import is_valid
 from foleyflow.projects import ProjectStore
 from foleyflow.qa import build_report
 from foleyflow.stages import StageRecord
-from foleyflow.storage import get_backend
 from foleyflow.storage.base import ObjectNotFound, StorageError
 
 API_PREFIX = "/api/v1"
@@ -120,7 +121,14 @@ def create_app(store: Optional[ProjectStore] = None,
     reaches for credentials.
     """
     if store is None:
-        store = ProjectStore(get_backend())
+        # Late lookup, not a module-level `from ... import get_backend`: binding
+        # the name at import time freezes whichever backend the environment
+        # named when this module was first imported, which is before
+        # tests/conftest.py can patch it — so a `create_app()` with no store
+        # escaped the suite's offline isolation and could reach real B2.
+        from foleyflow import storage
+
+        store = ProjectStore(storage.get_backend())
     if runner is None:
         runner = JobRunner(store)
 
@@ -646,8 +654,12 @@ def create_app(store: Optional[ProjectStore] = None,
         §3.4).
         """
         _check_project_id(project_id)
-        _load_state(store, project_id)  # 404 unknown project
-        _assert_no_in_flight_run(store, runner, project_id)
+        # One read of the event log for the whole commit: the 404 check, the
+        # run lock and the live-run fold all fold this same list.
+        events = _load_events(store, project_id)
+        state = _load_state(store, project_id, events=events)  # 404 unknown project
+        _assert_no_in_flight_run(store, runner, project_id, state=state,
+                                 events=events)
 
         versions = store.list_timeline_versions(project_id)
         if not versions:
@@ -661,6 +673,7 @@ def create_app(store: Optional[ProjectStore] = None,
         # without a second check (still best-effort; immutability is put_if_absent).
         prev = store.load_timeline(project_id, versions[-1])
         timeline = _commit_request_to_timeline(body, previous=prev)
+        _assert_not_wholesale_wipe(prev, timeline)
         _assert_source_duration_freezes(prev, timeline)
 
         latest = store.latest_timeline_version(project_id)
@@ -739,6 +752,62 @@ def create_app(store: Optional[ProjectStore] = None,
                 detail={"key": key, "project_id": project_id},
             )
         return _peaks_response(store, key)
+
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/peaks/stems",
+             response_model=StemPeaksBatchResponse, tags=["peaks"])
+    def get_run_stem_peaks(project_id: str,
+                           run_id: Optional[str] = Query(None)
+                           ) -> StemPeaksBatchResponse:
+        """Every stem envelope for one run in one response (docs/api.md §3.12).
+
+        First paint needs a waveform per event, and the per-key route pays for
+        an inventory download on every call — a 40-event timeline downloaded
+        the same inventory object 40 times. This reads the inventory once and
+        answers with a `b2_key` → envelope map. The per-key route stays for the
+        client's incremental needs (a stem that arrives after first paint).
+
+        ``run_id`` selects the run; omit it for the latest completed mix. A
+        stem that is absent or undecodable is reported as an entry carrying an
+        ``error`` code, not skipped — the client must be able to tell a hole
+        from a stem we never looked at.
+        """
+        from foleyflow.peaks import run_stem_keys
+
+        _check_project_id(project_id)
+        _load_state(store, project_id)
+
+        if run_id is not None:
+            if not is_valid(run_id, "run"):
+                raise err.InvalidId(f"Not a valid run id: {run_id}",
+                                    detail={"run_id": run_id})
+            if store.get_mix(project_id, run_id) is None:
+                if not _run_exists(store, project_id, run_id):
+                    raise err.RunNotFound(run_id)
+                raise err.MixNotFound(project_id, run_id)
+            resolved = run_id
+        else:
+            mix = store.get_latest_mix(project_id)
+            if mix is None:
+                raise err.MixNotFound(project_id)
+            resolved = mix["run_id"]
+
+        try:
+            keys = run_stem_keys(store, project_id, resolved)
+        except StorageError as e:
+            raise err.StorageUnavailable("Project storage is unreachable") from e
+
+        stems: dict = {}
+        for key in keys:
+            try:
+                stems[key] = StemPeaksEntry(
+                    b2_key=key, peaks=_peaks_response(store, key))
+            except (err.AudioNotFound, err.InvalidRequest) as e:
+                # Per-object faults are payload data. A StorageUnavailable is
+                # not: it is the whole bucket, not this stem, so it propagates
+                # and the route 503s exactly like every other read.
+                stems[key] = StemPeaksEntry(b2_key=key, error=e.code,
+                                            message=e.message)
+        return StemPeaksBatchResponse(run_id=resolved, stems=stems)
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/peaks/mix",
              response_model=PeaksResponse, tags=["peaks"])
@@ -1036,15 +1105,33 @@ def _project_summary(store: ProjectStore, project) -> ProjectSummary:
         return _summary(project, "unknown")
 
 
-def _load_state(store: ProjectStore, project_id: str):
+def _load_state(store: ProjectStore, project_id: str, *, events=None):
     """Absent and unreachable are different failures.
 
     Mapping every StorageError to 404 turned a B2 outage into a confident
     "this project does not exist" — the client stops retrying and the user is
     told their work is gone. Only ObjectNotFound means absent.
+
+    ``events`` is an already-read event log to fold instead of reading it
+    again; see ``ProjectStore.get_state``.
     """
     try:
-        return store.get_state(project_id)
+        return store.get_state(project_id, events=events)
+    except ObjectNotFound as e:
+        raise err.ProjectNotFound(project_id) from e
+    except StorageError as e:
+        raise err.StorageUnavailable("Project storage is unreachable") from e
+
+
+def _load_events(store: ProjectStore, project_id: str):
+    """The project's event log, with the same failure mapping as ``_load_state``.
+
+    Read separately so a caller can fold it more than once (state + run lock)
+    without paying for the log twice; an outage must still surface as 503 and
+    not as an unhandled StorageError.
+    """
+    try:
+        return store.list_events(project_id)
     except ObjectNotFound as e:
         raise err.ProjectNotFound(project_id) from e
     except StorageError as e:
@@ -1264,7 +1351,8 @@ def _timeline_response(store: ProjectStore, project_id: str, timeline,
 
 
 def _assert_no_in_flight_run(store: ProjectStore, runner: JobRunner,
-                             project_id: str) -> None:
+                             project_id: str, *, state=None,
+                             events=None) -> None:
     """Refuse timeline commits while work is in flight for this project.
 
     Checks both the in-process JobRunner table *and* event-log runs that are
@@ -1273,6 +1361,14 @@ def _assert_no_in_flight_run(store: ProjectStore, runner: JobRunner,
     is the wrong source — fold the log the same way ``get_state`` does.
     Stale (lease-expired) runs do not block — they surface as stuck-run errors
     elsewhere rather than locking the editor forever.
+
+    ``state`` and ``events`` let a caller that already read the log hand both
+    down. ``list_events`` is one object GET per event, so a commit that let the
+    route, this check and ``_live_storage_run`` each read it independently cost
+    three full log reads — hundreds of B2 round trips on a busy project, on the
+    write path unit 7.10 hits constantly. The order of the checks is unchanged:
+    the in-process runner is still consulted first, and stale runs still do not
+    block.
     """
     active = runner.active_for_project(project_id)
     if active is not None:
@@ -1280,18 +1376,23 @@ def _assert_no_in_flight_run(store: ProjectStore, runner: JobRunner,
 
     # get_state folds RUN_STARTED without a terminal event as running, then
     # demotes lease-expired ones into stale_run_ids.
-    state = store.get_state(project_id)
-    live = _live_storage_run(store, project_id, state)
+    if state is None:
+        state = store.get_state(project_id, events=events)
+    live = _live_storage_run(store, project_id, state, events=events)
     if live is not None:
         raise err.AlreadyRunning(project_id, live[0], live[1])
 
 
-def _live_storage_run(store: ProjectStore, project_id: str, state) -> Optional[tuple]:
+def _live_storage_run(store: ProjectStore, project_id: str, state, *,
+                      events=None) -> Optional[tuple]:
     """Return ``(run_id, kind)`` for a non-stale running run, or None.
 
     Reconstructs from the event log: a started run with no terminal event is
     live unless ``get_state`` classified it as stale. ``list_runs`` only sees
     terminal ``run.json`` records, so it cannot be used here.
+
+    ``events`` is the same already-read log ``state`` was folded from; without
+    it the log is read a second time for the same answer.
     """
     from foleyflow.projects import (
         EVENT_RUN_COMPLETED, EVENT_RUN_FAILED, EVENT_RUN_FAILED_AFTER_COMPLETION,
@@ -1300,7 +1401,7 @@ def _live_storage_run(store: ProjectStore, project_id: str, state) -> Optional[t
 
     stale = set(state.stale_run_ids or [])
     runs: dict = {}
-    for event in store.list_events(project_id):
+    for event in (store.list_events(project_id) if events is None else events):
         if not event.run_id:
             continue
         entry = runs.setdefault(event.run_id, {
@@ -1322,9 +1423,17 @@ def _live_storage_run(store: ProjectStore, project_id: str, state) -> Optional[t
 def _commit_request_to_timeline(body: TimelineCommitRequest, *, previous=None):
     """Body → domain Timeline via dict_to_timeline (shared coercers for freezes).
 
-    Carries forward ``history`` and ``extra_fields`` from the previous version
-    when present — the commit body is the editor document, not a wipe of
-    server-side annotations.
+    Carries forward ``history``, ``extra_fields`` **and ``duration``** from the
+    previous version when present — the commit body is the editor document, not
+    a wipe of server-side values.
+
+    ``duration`` is in that list because ``models.Timeline`` makes the ffprobe
+    measurement its sole source of truth and the analyze paths overwrite the
+    model's claim with it after parse. Taking it from the body would let a
+    commit silently diverge the document from the probed clip length, while
+    every render keeps sizing its buffer from the probe — so the field would be
+    a number in the document that nothing honours. The schema still accepts it
+    (the client round-trips the whole document); it just does not write.
     """
     from foleyflow.timeline_io import dict_to_timeline
 
@@ -1350,6 +1459,7 @@ def _commit_request_to_timeline(body: TimelineCommitRequest, *, previous=None):
         raise err.InvalidRequest(f"Malformed timeline: {exc}") from exc
 
     if previous is not None:
+        timeline.duration = previous.duration
         if getattr(previous, "history", None):
             timeline.history = list(previous.history)
         if getattr(previous, "extra_fields", None):
@@ -1357,26 +1467,94 @@ def _commit_request_to_timeline(body: TimelineCommitRequest, *, previous=None):
     return timeline
 
 
+def _freeze_content(ev) -> tuple:
+    """The content a cost freeze is bound to.
+
+    ``kind`` is deliberately **not** here. Once ``source_duration_s`` is set,
+    ``route_event`` takes the request duration from the freeze regardless of
+    kind, and the other three parts of the SFX cache key are unaffected too:
+    the endpoint is keyword-matched from ``name``, the prompt is name +
+    intensity qualifier, and the variant is a per-regeneration salt. So a kind
+    change on a frozen event moves no cache address and bills nothing — it only
+    changes how the *existing* clip is rendered (a one-shot windowed to the
+    placement span versus a tiled loop versus a ducked bed), which is exactly
+    the class of edit decision A.2.2 makes free. Keeping kind in the identity
+    made a free edit fail conservation for no cost reason.
+
+    ``name`` and ``intensity`` stay: both feed the prompt, so changing either is
+    a genuinely different generation (7.10 shows renaming as billable).
+    """
+    return (ev.name, ev.intensity)
+
+
 def _freeze_identity(ev) -> tuple:
     """Identity of a cost freeze: content + frozen generation duration."""
-    return (ev.name, ev.intensity, ev.kind, ev.source_duration_s)
+    return _freeze_content(ev) + (ev.source_duration_s,)
+
+
+def _legitimate_first_freeze(ev) -> Optional[float]:
+    """The only ``source_duration_s`` an unfrozen event may be frozen at.
+
+    Namely the duration ``route_event`` would have requested for that event as
+    it stands in the *previous* version — i.e. the address the next render was
+    going to generate anyway. Recording it costs nothing and moves nothing; any
+    other value would point at a clip nobody has paid for.
+
+    Returns None when the event cannot be routed at all (broken providers
+    config); the caller then refuses the freeze rather than guessing.
+    """
+    from foleyflow.routing import route_event
+
+    try:
+        return route_event(ev).duration_s
+    except Exception:
+        return None
+
+
+def _assert_not_wholesale_wipe(prev, new) -> None:
+    """Refuse an events-empty commit while the previous version has freezes.
+
+    This is **not** a conservation rule — deleting generated content is legal
+    (see ``_assert_source_duration_freezes``). It is a client-bug guard: an
+    empty ``events`` array is the classic shape of a serialization failure, and
+    the cost of refusing it is one extra step for a genuinely rare wholesale
+    wipe, against silently destroying a whole plan on a malformed request.
+    """
+    if new.events or not any(e.source_duration_s is not None
+                             for e in prev.events):
+        return
+    raise err.InvalidRequest(
+        "Refusing an empty timeline document while the current version has "
+        "generated (frozen) events — delete events explicitly instead",
+        detail={"previous_event_count": len(prev.events)},
+    )
 
 
 def _assert_source_duration_freezes(prev, new) -> None:
     """Refuse commit bodies that invent, rebind, or strip cost freezes.
 
-    Freezes are bound to event *content* ``(name, intensity, kind)``, not to
-    list index — reordering while keeping freezes on the same sounds is legal;
-    swapping freezes between different sounds is not.
+    Freezes are bound to event *content* ``(name, intensity)`` (see
+    ``_freeze_content``), not to list index — reordering while keeping freezes
+    on the same sounds is legal; swapping freezes between different sounds is
+    not.
 
-    The multiset of freeze identities must be **exactly conserved** between the
-    previous and submitted documents. That blocks:
+    The multiset of freeze identities ``(name, intensity, source_duration_s)``
+    is conserved between the previous and submitted documents, with two
+    deliberate asymmetries:
 
-    - inventing freezes
-    - rebinding freezes to other content
-    - in-place unfreeze
-    - empty-document → re-add without freezes (first step drops freezes)
-    - deleting a frozen event on a free-edit commit
+    - **A first freeze is allowed** when its value is the one the previous
+      version's unfrozen event would itself have produced (see
+      ``_legitimate_first_freeze``). That records an address that already
+      exists rather than inventing one, and it is what makes the whole 7.2
+      mechanism reachable through the API. Any other value is refused.
+    - **Losing a freeze is allowed only by deleting the content.** If
+      ``(name, intensity)`` is entirely absent from the submitted document the
+      sound is gone, and deleting a generated sound costs nothing — the money
+      is already spent, so conservation has no claim on it. If the content is
+      still present and its ``source_duration_s`` went to null, that is an
+      in-place unfreeze and stays refused: the next render would re-bill it.
+      (Delete-and-re-add-unfrozen inside *one* commit is therefore refused too,
+      because the content is present in the submitted document.)
 
     Unfrozen events may be added, removed, or edited freely. Placement and
     ``seed`` on frozen events remain free.
@@ -1393,30 +1571,44 @@ def _assert_source_duration_freezes(prev, new) -> None:
     if prev_frozen == new_frozen:
         return
 
+    # Values a previously-*unfrozen* event may legitimately be frozen at, as a
+    # multiset so freezing two identical unfrozen events needs two of them.
+    allowed_new: "Counter" = Counter()
+    for e in prev.events:
+        if e.source_duration_s is not None:
+            continue
+        legit = _legitimate_first_freeze(e)
+        if legit is not None:
+            allowed_new[_freeze_content(e) + (legit,)] += 1
+
+    new_content = {_freeze_content(e) for e in new.events}
+
     violations: List[str] = []
     for identity, count in new_frozen.items():
-        if count > prev_frozen[identity]:
-            name, intensity, kind, sd = identity
+        if count - prev_frozen[identity] > allowed_new[identity]:
+            name, intensity, sd = identity
             violations.append(
-                f"invented or rebound freeze name={name!r} intensity={intensity!r} "
-                f"kind={kind!r} source_duration_s={sd!r}"
+                f"invented or rebound freeze name={name!r} "
+                f"intensity={intensity!r} source_duration_s={sd!r}"
             )
     for identity, count in prev_frozen.items():
-        if count > new_frozen[identity]:
-            name, intensity, kind, sd = identity
+        if count <= new_frozen[identity]:
+            continue
+        name, intensity, sd = identity
+        if (name, intensity) in new_content:
+            # Content survived the edit but its freeze did not — an in-place
+            # unfreeze wearing a deletion's clothes.
             violations.append(
                 f"stripped freeze name={name!r} intensity={intensity!r} "
-                f"kind={kind!r} source_duration_s={sd!r}"
+                f"source_duration_s={sd!r}"
             )
     if not violations:
-        violations.append(
-            f"freeze multiset changed (had {dict(prev_frozen)}, "
-            f"got {dict(new_frozen)})"
-        )
+        return
     raise err.InvalidRequest(
-        "source_duration_s freezes must be conserved on commit "
-        "(cannot invent, rebind, strip, or drop frozen content); "
-        "Regenerate re-rolls variant only — generation duration stays frozen",
+        "source_duration_s freezes must be conserved on commit (cannot invent, "
+        "rebind, or strip a freeze from content that is still in the "
+        "document); a first freeze may only record the duration the event "
+        "already routes to, and Regenerate re-rolls variant only",
         detail={"violations": violations},
     )
 

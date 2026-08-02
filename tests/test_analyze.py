@@ -189,3 +189,33 @@ def test_parse_timeline_json_with_markdown_fences():
     assert timeline.duration == 5.5
     assert timeline.ambience == "room tone"
     assert len(timeline.events) == 0
+
+
+def test_parse_timeline_json_rejects_a_string_seed_instead_of_coercing_it():
+    """Both round-trip doors share `_coerce_seed`; only the posture differs.
+
+    `analyze` used to call `int(ev["seed"])`, which accepted `"12"` and
+    truncated `3.7` to `3` — a silently different seed is a silently different
+    mix, and §A.4's whole point is that the two doors agree on what a field is.
+    Here the door warns and continues unfrozen (it is parsing untrusted model
+    output); `timeline_io` raises on the same input.
+    """
+    from foleyflow.timeline_io import _coerce_seed
+
+    raw = json.dumps({"duration": 5.0, "ambience": "wind", "events": [
+        {"name": "rain on tin", "start_time": 0.0, "duration": 2.0,
+         "intensity": "med", "kind": "rhythmic", "seed": "12"},
+        {"name": "drip", "start_time": 1.0, "duration": 0.2,
+         "intensity": "low", "kind": "discrete", "seed": 3.7},
+    ]})
+    timeline = parse_timeline_json(raw, clip_duration=5.0)
+
+    # Warned and dropped — not accepted as 12 / truncated to 3. The event
+    # itself survives: an unusable seed is not a reason to lose the sound.
+    assert [e.seed for e in timeline.events] == [None, None]
+    assert [e.name for e in timeline.events] == ["rain on tin", "drip"]
+
+    # The other door refuses the identical values.
+    for bad in ("12", 3.7, True):
+        with pytest.raises(TypeError):
+            _coerce_seed(bad)

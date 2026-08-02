@@ -15,3 +15,11 @@ env.yaml
 work/
 sfx_cache/
 ledger.jsonl
+
+# Built SPA output and codegen inputs (decision 8: never committed). The UI
+# build writes into the package's static dir; the schema and generated types
+# are build intermediates of ui/.
+src/foleyflow/api/static/
+ui/openapi.json
+ui/src/lib/api/schema.d.ts
+ui/node_modules/

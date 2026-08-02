@@ -19,7 +19,7 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   **7 (control-room UI)** last. Tasks **9–17** are **DONE**.
 - CI (10), build identity (11), post-deploy smoke (12), doctor (13), live paid
   + fallback SFX (14), demo evidence (15), and Secret Manager (16) are in place.
-- `uv run pytest -q` → **652 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **678 passed, 1 skipped**. No provider credentials
   required for tests: the billed calls are stubbed at two seams,
   `stems.generate_many` and `sfx_cache.generate_canonical_wav`. Everything else
   — ffmpeg, the mix, the shared cache, storage, the Genblaze pipelines — runs
@@ -134,8 +134,12 @@ editable timeline, an AI addressed in text that proposes edits rather than
 applying them, and a browser-side preview so the edit loop costs nothing.
 
 **Backend progress:** units **7.1–7.5** are done (frozen seed, free resize,
-timeline write, signed project URLs, waveform peaks). Remaining: frontend
-chain from 7.6.
+timeline write, signed project URLs, waveform peaks). **7.6 landed**: Svelte 5
++ Vite 8 toolchain in `ui/`, TS types generated from the emitted OpenAPI
+schema, `api/dashboard.py` serves the built SPA with a deep-link catch-all and
+an explicit "UI not built" page, Dockerfile gains a Node stage (no Node ships
+in the runtime image), CI gains a UI build job, the throwaway `index.html` is
+deleted. Remaining: frontend chain from 7.7.
 
 The throwaway static dashboard (`api/static/index.html`) is deleted outright
 when 7.6 lands.

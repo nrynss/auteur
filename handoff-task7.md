@@ -271,7 +271,7 @@ summarised.
 
 # C. Frontend foundation
 
-## 7.6 UI toolchain and SPA serving — M
+## 7.6 UI toolchain and SPA serving — M — **DONE**
 
 **Depends on:** nothing. **Files:** new `ui/`, `api/dashboard.py`, `Dockerfile`,
 `.github/workflows/ci.yml`, delete `api/static/index.html`.
@@ -293,6 +293,29 @@ bundle explains itself rather than 404ing.
 Note the test suite currently covers the dashboard route **not at all** —
 deleting `index.html` breaks nothing, which also means there is no regression
 net. This unit adds the coverage that does not exist today.
+
+**Landed:** `ui/` is Svelte 5.56 + Vite 8 (rolldown) + TypeScript 5.9 — TS 7 is
+not supported by svelte-check/openapi-typescript yet, and both pin `^5`, so the
+pinned TS is deliberate, not stale. `scripts/emit_openapi.py` writes the schema
+from `create_app().openapi()` offline (local backend pinned; no credentials, no
+server); `npm run typegen` (openapi-typescript) turns it into
+`ui/src/lib/api/schema.d.ts`; `npm run check` (svelte-check) is the contract-
+drift tripwire and runs in CI. `api/dashboard.py` serves the built SPA at `/`
+with a catch-all that (a) refuses `api/` paths so unknown API routes keep the
+API's JSON 404, (b) serves real files (hashed `/assets/*`) only, with a
+resolve/relative_to traversal guard, (c) returns an explanatory "UI not built"
+page when the bundle is absent. `FOLEYFLOW_STATIC_DIR` overrides the static dir
+for tests. Dockerfile: `node:22-slim` stage runs `npm ci` + `npm run build`
+(bundle → `/app/src/foleyflow/api/static`), runtime image copies only that
+output. CI `ui-build` job: sync → emit schema → `npm ci` → `check` → `build`,
+plus a `git ls-files src/foleyflow/api/static/` assertion that no built asset
+got tracked. Old `index.html` deleted; `tests/test_dashboard.py` adds the
+regression net that did not exist (10 tests: unbuilt explanation, SPA at root,
+deep links, hashed assets, API 404s not swallowed, traversal refused).
+
+**Not in this unit:** design tokens/components (7.7), any screen (7.8+). The
+`App.svelte` shell is deliberately minimal — a health + project-list readout
+that proves the schema-driven client round trip.
 
 ## 7.7 Component layer and design tokens — M
 

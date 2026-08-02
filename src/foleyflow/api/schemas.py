@@ -520,6 +520,30 @@ class PeaksResponse(BaseModel):
     max: List[float]
 
 
+class StemPeaksEntry(BaseModel):
+    """One stem's envelope in the batch response, or why it has none.
+
+    Exactly one of ``peaks`` / ``error`` is set. A stem that cannot be
+    summarised is reported rather than dropped: silently omitting it would
+    leave the client unable to tell "no such stem" from "we did not look",
+    which is the synthesised-verdict failure §A.3 exists to prevent. The
+    ``error`` codes are the same ones the per-key route raises
+    (``audio_not_found``, ``invalid_request``).
+    """
+
+    b2_key: str
+    peaks: Optional[PeaksResponse] = None
+    error: Optional[str] = None
+    message: Optional[str] = None
+
+
+class StemPeaksBatchResponse(BaseModel):
+    """Every stem envelope for one mix run, keyed by ``b2_key``."""
+
+    run_id: str
+    stems: Dict[str, StemPeaksEntry]
+
+
 # -- health -----------------------------------------------------------------
 
 class WorkerHealth(BaseModel):

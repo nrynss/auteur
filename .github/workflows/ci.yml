@@ -44,3 +44,57 @@ jobs:
       # passed + skipped exactly (so a silent ffmpeg skip increase fails CI).
       - name: Docs count + suite
         run: uv run --frozen python scripts/check_test_count.py
+
+  ui-build:
+    # Unit 7.6: the Svelte SPA must type-check against the API contract and
+    # build. Contract drift surfaces here as a svelte-check failure, and a
+    # tracked built asset fails the last step (decision 8).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      # The TS types are generated from the FastAPI schema, which comes from
+      # the app itself — no server, no network.
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Emit OpenAPI schema
+        run: uv run --frozen python scripts/emit_openapi.py --out ui/openapi.json
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Generate types from the schema
+        working-directory: ui
+        run: npm run typegen
+
+      - name: Type-check the UI
+        working-directory: ui
+        run: npm run check
+
+      - name: Build the UI
+        working-directory: ui
+        run: npm run build
+
+      - name: Confirm no built assets are tracked
+        run: |
+          tracked=$(git ls-files src/foleyflow/api/static/)
+          if [ -n "$tracked" ]; then
+            echo "error: built SPA assets are tracked in git: $tracked" >&2
+            exit 1
+          fi

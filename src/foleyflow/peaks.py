@@ -259,18 +259,22 @@ def get_or_compute_peaks(
             os.unlink(tmp_path)
 
 
-def collect_project_stem_keys(store, project_id: str) -> set:
-    """Every ``b2_key`` recorded in any stem inventory for the project.
+def run_stem_keys(store, project_id: str, run_id: str) -> List[str]:
+    """The ``b2_key`` of every stem one run recorded, in inventory order.
 
-    Used for bulk inventory inspection. Prefer ``is_project_stem_key`` for
-    single-key auth — that path short-circuits on the first hit.
+    Ordered and deduped rather than a set: the batch peaks route answers with
+    one entry per stem and a stable order makes the response diffable. One
+    inventory download serves the whole response — the per-key route pays for
+    that download once per key, which is what made a 40-event first paint cost
+    40 identical inventory fetches.
     """
-    keys: set = set()
-    for run in store.list_runs(project_id):
-        for stem in store.load_stem_inventory(project_id, run.id):
-            b2_key = stem.get("b2_key")
-            if isinstance(b2_key, str) and b2_key:
-                keys.add(b2_key)
+    keys: List[str] = []
+    seen: set = set()
+    for stem in store.load_stem_inventory(project_id, run_id):
+        b2_key = stem.get("b2_key")
+        if isinstance(b2_key, str) and b2_key and b2_key not in seen:
+            seen.add(b2_key)
+            keys.append(b2_key)
     return keys
 
 

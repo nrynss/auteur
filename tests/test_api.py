@@ -798,8 +798,17 @@ def test_timeline_commit_rejects_rebound_freezes(client, store, project):
     assert store.list_timeline_versions(project.id) == [1]
 
 
-def test_timeline_commit_rejects_delete_of_frozen_event(client, store, project):
-    """Dropping frozen content strips freezes — refused on free-edit commit."""
+def test_timeline_commit_allows_delete_of_frozen_event(client, store, project):
+    """Inverted deliberately: deleting a generated sound is legal.
+
+    This used to be refused, because the freeze multiset had to be exactly
+    conserved. But conservation exists to stop an edit *re-billing* on the next
+    render, and a deleted event is never rendered again — the money it cost is
+    already spent either way. Refusing it meant that once anything was frozen a
+    director could never remove that sound, which is a hard editor limitation
+    for unit 7.10. Losing a freeze is now legal only when the content is gone
+    from the document; in-place unfreeze (below) is still refused.
+    """
     from foleyflow.models import Event, Timeline
 
     t = Timeline(duration=15.04, ambience="wind", events=[
@@ -813,7 +822,32 @@ def test_timeline_commit_rejects_delete_of_frozen_event(client, store, project):
     body["events"] = [body["events"][0]]  # drop frozen gunshot
 
     r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
-    assert r.status_code == 400
+    assert r.status_code == 200, r.text
+    assert [e["name"] for e in r.json()["events"]] == ["holster creak"]
+    assert store.list_timeline_versions(project.id) == [1, 2]
+
+
+def test_timeline_commit_rejects_delete_and_readd_unfrozen_in_one_commit(
+        client, store, project):
+    """Deletion is legal; laundering an unfreeze through it is not.
+
+    The content is still in the submitted document, just without its freeze —
+    so this is an in-place unfreeze however the client got there, and the next
+    render would re-bill it.
+    """
+    from foleyflow.models import Event, Timeline
+
+    t = Timeline(duration=15.04, ambience="wind", events=[
+        Event(name="gunshot", start_time=11.0, duration=1.5,
+              intensity="high", kind="discrete", source_duration_s=2.0),
+    ])
+    store.save_timeline(project.id, t)
+    body = _timeline_commit_body(t)
+    body["events"][0]["source_duration_s"] = None
+    body["events"][0]["start_time"] = 4.0        # "a different event", same content
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 400, r.text
     assert store.list_timeline_versions(project.id) == [1]
 
 
@@ -2455,3 +2489,267 @@ def test_stem_peaks_400_invalid_wav(client, store, project):
                    params={"key": stem_key})
     assert r.status_code == 400
     assert r.json()["error"]["code"] == "invalid_request"
+
+
+def test_batch_stem_peaks_returns_every_stem_for_the_run(client, store, project):
+    """One request, one inventory read, one entry per stem (docs/api.md §3.12)."""
+    good = _put_canonical_wav(store.backend, "cache/one.wav",
+                              duration_s=0.05, amp=0.4)
+    other = _put_canonical_wav(store.backend, "cache/two.wav",
+                               duration_s=0.03, amp=0.2)
+    version = store.save_timeline(project.id, _timeline())
+    run = store.start_run(project.id, "mix")
+    store.save_stem_inventory(project.id, run.id, [
+        {"b2_key": good, "prompt": "gunshot"},
+        {"b2_key": other, "prompt": "holster creak"},
+        # Repeated address: several events share one stem, and the response is
+        # keyed by address, so it must appear once.
+        {"b2_key": good, "prompt": "gunshot"},
+    ])
+    store.backend.put_bytes(store.mix_video_key(project.id, run.id), b"MP4",
+                            content_type="video/mp4")
+    store.record_mix(project.id, run_id=run.id,
+                     mix_key=store.mix_key(project.id, run.id),
+                     video_key=store.mix_video_key(project.id, run.id),
+                     tier="full", timeline_version=version,
+                     stem_count=2, generated_count=0)
+    store.complete_run(run, timeline_version=version)
+
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/stems")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["run_id"] == run.id
+    assert set(body["stems"]) == {good, other}
+    entry = body["stems"][good]
+    assert entry["error"] is None
+    assert entry["peaks"]["peaks_per_second"] == 100
+    assert entry["peaks"]["channels"] == 2
+    assert max(entry["peaks"]["max"]) == pytest.approx(0.4, abs=0.05)
+    # Same envelope the per-key route serves — one cache, two doors.
+    single = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/stem",
+                        params={"key": good})
+    assert single.json() == entry["peaks"]
+
+    # Explicit run_id selects the same run.
+    r2 = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/stems",
+                    params={"run_id": run.id})
+    assert r2.status_code == 200
+    assert r2.json() == body
+
+
+def test_batch_stem_peaks_reports_a_missing_stem_rather_than_skipping_it(
+        client, store, project):
+    """A hole in the bucket is evidence, not an omission (§A.3)."""
+    good = _put_canonical_wav(store.backend, "cache/present.wav",
+                              duration_s=0.04, amp=0.3)
+    version = store.save_timeline(project.id, _timeline())
+    run = store.start_run(project.id, "mix")
+    store.save_stem_inventory(project.id, run.id, [
+        {"b2_key": good},
+        {"b2_key": "cache/vanished.wav"},
+        {"b2_key": "cache/corrupt.wav"},
+    ])
+    store.backend.put_bytes("cache/corrupt.wav", b"not a wav at all",
+                            content_type="audio/wav")
+    store.backend.put_bytes(store.mix_video_key(project.id, run.id), b"MP4",
+                            content_type="video/mp4")
+    store.record_mix(project.id, run_id=run.id,
+                     mix_key=store.mix_key(project.id, run.id),
+                     video_key=store.mix_video_key(project.id, run.id),
+                     tier="full", timeline_version=version,
+                     stem_count=3, generated_count=0)
+    store.complete_run(run, timeline_version=version)
+
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/stems")
+    assert r.status_code == 200, r.text
+    stems = r.json()["stems"]
+    assert set(stems) == {good, "cache/vanished.wav", "cache/corrupt.wav"}
+    assert stems[good]["peaks"] is not None
+    assert stems["cache/vanished.wav"]["peaks"] is None
+    assert stems["cache/vanished.wav"]["error"] == "audio_not_found"
+    assert stems["cache/corrupt.wav"]["error"] == "invalid_request"
+    assert stems["cache/corrupt.wav"]["message"]
+
+
+def test_batch_stem_peaks_404s_like_the_mix_route(client, store, project):
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/stems")
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "mix_not_found"
+
+    r2 = client.get(f"{API_PREFIX}/projects/{VALID_ID}/peaks/stems")
+    assert r2.status_code == 404
+    assert r2.json()["error"]["code"] == "project_not_found"
+
+    r3 = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/stems",
+                    params={"run_id": "nope"})
+    assert r3.status_code == 400
+    assert r3.json()["error"]["code"] == "invalid_id"
+
+
+# -- commit rules the freeze mechanism depends on (findings 1b, 2, 5) --------
+
+def test_timeline_commit_allows_a_first_freeze_at_the_routed_duration(
+        client, store, project):
+    """The editor may record an address that already exists.
+
+    Without this the whole 7.2 mechanism is unreachable from the API: nothing a
+    client can send ever produces a freeze, so resize-is-free never engages.
+    The only legal value is the one the event already routes to.
+    """
+    from foleyflow.models import Event, Timeline
+    from foleyflow.routing import route_event
+
+    event = Event(name="gunshot", start_time=1.0, duration=1.0,
+                  intensity="high", kind="discrete")
+    store.save_timeline(project.id, Timeline(duration=15.04, ambience="wind",
+                                             events=[event]))
+    legit = route_event(event).duration_s
+
+    body = _timeline_commit_body(Timeline(duration=15.04, ambience="wind",
+                                          events=[event]))
+    body["events"][0]["source_duration_s"] = legit
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["events"][0]["source_duration_s"] == pytest.approx(legit)
+
+    # And any other value is still an invented address.
+    body["events"][0]["source_duration_s"] = legit + 1.0
+    r2 = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r2.status_code == 400
+    assert r2.json()["error"]["code"] == "invalid_request"
+
+
+def test_timeline_commit_allows_kind_change_on_a_frozen_event(
+        client, store, project):
+    """kind is not in the freeze identity: changing it moves no cache address.
+
+    With source_duration_s set, route_event takes the duration from the freeze
+    regardless of kind, and endpoint/prompt/variant do not depend on kind — so
+    a kind change bills nothing and must not fail conservation.
+    """
+    from foleyflow.models import Event, Timeline
+    from foleyflow.routing import route_event
+
+    t = Timeline(duration=15.04, ambience="wind", events=[
+        Event(name="gunshot", start_time=1.0, duration=1.0,
+              intensity="high", kind="discrete", source_duration_s=1.5),
+    ])
+    store.save_timeline(project.id, t)
+    body = _timeline_commit_body(t)
+    body["events"][0]["kind"] = "continuous"
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["events"][0]["kind"] == "continuous"
+
+    # The claim the rule rests on: same request either way.
+    before = route_event(t.events[0])
+    after = route_event(Event(name="gunshot", start_time=1.0, duration=1.0,
+                              intensity="high", kind="continuous",
+                              source_duration_s=1.5))
+    assert (before.endpoint, before.prompt, before.duration_s) == \
+        (after.endpoint, after.prompt, after.duration_s)
+
+
+def test_timeline_commit_still_rejects_rename_of_a_frozen_event(
+        client, store, project):
+    """name feeds the prompt, so renaming is a different generation."""
+    from foleyflow.models import Event, Timeline
+
+    t = Timeline(duration=15.04, ambience="wind", events=[
+        Event(name="gunshot", start_time=1.0, duration=1.0,
+              intensity="high", kind="discrete", source_duration_s=1.5),
+    ])
+    store.save_timeline(project.id, t)
+    body = _timeline_commit_body(t)
+    body["events"][0]["name"] = "shotgun blast"
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 400
+    assert store.list_timeline_versions(project.id) == [1]
+
+
+def test_timeline_commit_ignores_the_bodys_duration(client, store, project):
+    """duration is display-only with ffprobe as sole source of truth."""
+    from foleyflow.models import Timeline
+
+    store.save_timeline(project.id, _timeline())
+    body = _timeline_commit_body()
+    body["duration"] = 999.0
+
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline", json=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["duration"] == pytest.approx(15.04)
+    assert store.load_timeline(project.id, 2).duration == pytest.approx(15.04)
+
+
+def test_timeline_commit_reads_the_event_log_once(client, store, project,
+                                                  monkeypatch):
+    """Finding 3: one log read per commit, not three.
+
+    `list_events` is one object GET per event, so folding the log for the 404
+    check, the run lock and the live-run scan separately cost hundreds of B2
+    round trips on a busy project.
+    """
+    store.save_timeline(project.id, _timeline())
+    real = ProjectStore.list_events
+    calls = []
+
+    def _counted(self, project_id):
+        calls.append(project_id)
+        return real(self, project_id)
+
+    monkeypatch.setattr(ProjectStore, "list_events", _counted)
+    r = client.put(f"{API_PREFIX}/projects/{project.id}/timeline",
+                   json=_timeline_commit_body())
+    assert r.status_code == 200, r.text
+    assert calls.count(project.id) == 1, calls
+
+
+def test_create_app_without_a_store_does_not_reach_a_real_backend(monkeypatch):
+    """The last hole in the suite's offline isolation.
+
+    `create_app()` used to build its store from a `get_backend` bound at import
+    time, before conftest could patch it — so the default path could reach live
+    B2. The lookup is late now, and this asserts it by patching the module the
+    call goes through.
+    """
+    import foleyflow.storage as storage_pkg
+
+    seen = []
+    sentinel = object()
+
+    def _spy(kind=None):
+        seen.append(kind)
+        return sentinel
+
+    monkeypatch.setattr(storage_pkg, "get_backend", _spy)
+    app = create_app()
+    assert seen == [None]
+    assert app is not None
+
+
+def test_budget_reports_an_unwritable_ledger(client, store, project):
+    """Unit 7.8's warning chip needs the false branch to actually flow through.
+
+    conftest pins `ledger._write_ok = True` suite-wide, so without this the
+    false branch is never exercised end to end: a budget payload that always
+    claims the ledger is writable would hide exactly the condition the chip
+    exists to surface.
+    """
+    import foleyflow.ledger as ledger
+
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/budget")
+    assert r.status_code == 200, r.text
+    assert r.json()["ledger_writable"] is True
+
+    ledger._write_ok = False
+    try:
+        r2 = client.get(f"{API_PREFIX}/projects/{project.id}/budget")
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["ledger_writable"] is False
+        # The rest of the payload still answers — an unwritable ledger degrades
+        # the spend figure's authority, it does not fail the request.
+        assert r2.json()["spent"] == 0.0
+    finally:
+        ledger._write_ok = True

@@ -17,3 +17,10 @@ tests/
 docs/
 samples/
 SPEC.md
+
+# UI build products — the Dockerfile's Node stage builds them fresh from ui/,
+# and the Python stage's src/ must stay source-only.
+ui/node_modules/
+ui/openapi.json
+ui/src/lib/api/schema.d.ts
+src/foleyflow/api/static/

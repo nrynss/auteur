@@ -40,7 +40,17 @@ def timeline_to_dict(t: Timeline) -> dict:
 
 def _coerce_seed(raw) -> int | None:
     """Optional mix seed: int as-is, reject non-integers rather than crash later
-    inside numpy's RNG. JSON null / missing → None."""
+    inside numpy's RNG. JSON null / missing → None.
+
+    Shared with `analyze._validate_event` so the two round-trip doors (§A.4)
+    cannot drift on what a seed *is*. They deliberately differ only in what
+    they do with a rejection: this door raises (the document came from our own
+    storage, so a bad seed is corruption), analyze warns and drops the seed
+    (it is parsing untrusted model output, and a hallucinated `"12"` must not
+    fail the whole analysis). Truncating `3.7` to `3` — which analyze used to
+    do via `int()` — is the failure mode this sharing removes: a silently
+    different seed is a silently different mix.
+    """
     if raw is None:
         return None
     if isinstance(raw, bool) or not isinstance(raw, int):
@@ -52,8 +62,15 @@ def _coerce_seed(raw) -> int | None:
 def _coerce_source_duration_s(raw) -> float | None:
     """Optional frozen SFX request duration. JSON null / missing → None.
     Accept int or float (JSON numbers); reject bool/str, negatives, non-finite.
-    0.0 is valid and means a frozen zero-length request (not the same as
-    absent/legacy). Shared with analyze so freeze validation is one rule."""
+    Shared with analyze so freeze validation is one rule.
+
+    `0.0` is accepted and is *present*, not absent — nulling it is an unfreeze.
+    It does **not** mean a zero-length request: `route_event` clamps every
+    requested duration to the endpoint's declared minimum (0.3–1.0 s depending
+    on the model), so a frozen `0.0` addresses the endpoint-minimum clip. That
+    is still a stable, already-paid-for cache address, which is all a freeze
+    has to be, so it stays legal rather than being rejected.
+    """
     if raw is None:
         return None
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):

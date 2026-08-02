@@ -290,9 +290,15 @@ round-trips:
 }
 ```
 
-`seed` is the frozen mix-variation seed (writable on commit). `source_duration_s`
-is the frozen SFX request duration (a cache-key / cost field) — readable here,
-writable only when it does not change an existing freeze (see commit rules).
+`seed` is the frozen mix-variation seed (writable on commit).
+`source_duration_s` is the frozen SFX request duration (a cache-key / cost
+field). It is **stamped by the server when a mix run completes**, from the
+durations that run actually requested and paid for, onto a new timeline version
+written with `actor: "system"` and `payload.source: "mix_freeze"`. A commit may
+set it on a previously-unfrozen event **only at the value that event already
+routes to** — recording an address that exists, never inventing one — and may
+never change or clear an existing freeze on content that is still in the
+document. Full rules under Commit below.
 
 ```
 GET /api/v1/projects/{id}/timeline/versions
@@ -340,24 +346,58 @@ version *is* a document. The write does **not** claim a job slot.
 | 409 | `already_running` | Any run is in flight for this project (same lock as analyze/mix/export) |
 | 422 | `precondition_failed` | No timeline yet — nothing to edit; analyze first |
 
+**`duration` is not writable.** The timeline's `duration` is display-only with
+the ffprobe measurement as its sole source of truth (`models.Timeline`). The
+field is accepted in the body — the client round-trips the whole document — but
+the server carries the previous version's value forward, along with `history`
+and any other server-side annotations. A commit cannot diverge the document
+from the probed clip length.
+
 **Cost freezes (`source_duration_s`).** Bound to event *content*
-`(name, intensity, kind)`, not list index — reordering while keeping freezes on
-the same sounds is legal; swapping freezes between different sounds is not.
+`(name, intensity)`, not list index — reordering while keeping freezes on the
+same sounds is legal; swapping freezes between different sounds is not.
 
-Load the latest existing timeline and require the multiset of freeze identities
-`(name, intensity, kind, source_duration_s)` to be **exactly conserved**:
+`kind` is deliberately **not** part of freeze identity. Once a freeze is set,
+`route_event` takes the request duration from it regardless of kind, and the
+rest of the SFX cache key does not depend on kind either (endpoint is
+keyword-matched from `name`, prompt is name + intensity qualifier, variant is a
+per-regeneration salt). A kind change therefore moves no cache address and
+bills nothing — it only changes how the existing clip is rendered — so it is a
+free edit.
 
-- cannot invent freezes
-- cannot rebind freezes to other content
-- cannot strip freezes in place
-- cannot drop frozen content (empty document / delete frozen event) — that would
-  enable empty→re-add unfreeze on the next commit
-- unfrozen events may be added, removed, or edited freely
+Against the latest existing timeline, the multiset of freeze identities
+`(name, intensity, source_duration_s)` is conserved, with two exceptions:
 
-A violation is `400 invalid_request` with `detail.violations`. Placement
-(`start_time`, placement `duration`) and `seed` remain free. Renaming or
-changing intensity/kind on a frozen event changes content identity and fails
-conservation unless an identical freeze already exists under the new identity.
+| Edit | Result | Why |
+|---|---|---|
+| First freeze at the event's own routed duration | **allowed** | Records the address the next render would have generated anyway — no address moves, nothing re-bills |
+| First freeze at any other value | `400` | Names a clip nobody has paid for |
+| Change an existing freeze's value | `400` | Rebinds to a different cache address |
+| Move a freeze to different content | `400` | Same |
+| Clear a freeze while the content stays in the document | `400` | In-place unfreeze; the next render re-bills it |
+| Delete the frozen event (content absent from the document) | **allowed** | The money is already spent and the sound is never rendered again, so conservation has no claim on it |
+| Empty `events` while freezes exist | `400` | Not a conservation rule — a client-bug guard against a serialization failure wiping a plan. Delete events explicitly instead |
+| Rename or change intensity on a frozen event | `400` | Both feed the prompt: a different generation |
+| Reorder, nudge, resize, edit `seed` | **allowed** | Free |
+| Add or remove unfrozen events | **allowed** | Free |
+
+The "first freeze" value is exactly `route_event(previous_event).duration_s` —
+i.e. `source_duration_s` if already set, else `RHYTHMIC_LOOP_S` for rhythmic
+events or placement `duration + HEADROOM_S` otherwise, clamped to the
+endpoint's declared bounds.
+
+Deleting frozen content and re-adding it unfrozen in **one** commit is refused
+(the content is present in the submitted document, so it reads as an in-place
+unfreeze). Doing it across two commits is not detectable per-commit and is
+accepted: the deletion was legal, and what is re-added is new content that
+bills whatever it bills.
+
+`source_duration_s: 0.0` is a real freeze, not an absent one — clearing it to
+`null` is an unfreeze. It does not mean a zero-length request: `route_event`
+clamps to the endpoint minimum, so a frozen `0.0` addresses the
+endpoint-minimum clip.
+
+A violation is `400 invalid_request` with `detail.violations`.
 
 **Regenerate** re-rolls the SFX *variant* for one event; it does **not** rewrite
 `source_duration_s`. Generation duration stays frozen for that content until a
@@ -370,7 +410,18 @@ expired). Stale runs do not lock the editor forever.
 
 **Audit.** `plan.proposed` for a commit carries `actor: "user"` and
 `payload.source: "commit"` so History can tell editor commits from analysis
-and repair.
+(no `source`), repair (no `source`), and the server's post-mix freeze stamp
+(`actor: "system"`, `source: "mix_freeze"`).
+
+**Post-mix freeze stamp.** When a mix run completes, the server writes a new
+timeline version carrying `source_duration_s` for every event whose stem the
+run actually recorded, and the mix is recorded against *that* version. The
+stamped document routes to identical `SfxRequest`s and renders byte-identically
+— it only writes down which cache addresses the mix used. Events whose stem is
+absent stay unfrozen. Discrete events also have their placement `duration`
+widened to the frozen source length, because a freeze switches on windowing:
+without it the stamp would silently cut the one-shot's headroom. Shortening it
+afterwards is then a free resize.
 
 ---
 
@@ -698,6 +749,7 @@ from the canonical 48 kHz stereo float WAV (typically in `[-1, 1]`).
 
 ```
 GET /api/v1/projects/{id}/peaks/stem?key=<b2_key>
+GET /api/v1/projects/{id}/peaks/stems?run_id=<run_id>
 GET /api/v1/projects/{id}/peaks/mix?run_id=<run_id>
 ```
 
@@ -717,7 +769,53 @@ GET /api/v1/projects/{id}/peaks/mix?run_id=<run_id>
 | Route | Selects audio | Auth |
 |---|---|---|
 | `/peaks/stem?key=` | Content-addressed stem at `key` | `key` must appear as a `b2_key` in some stem inventory for this project |
+| `/peaks/stems?run_id=` | Every stem in that run's inventory (omit `run_id` → latest mix) | The run's own inventory *is* the authorisation — no client-supplied keys |
 | `/peaks/mix?run_id=` | `mix.wav` for that run (omit `run_id` → latest mix) | Run must belong to the project |
+
+#### Batch stems (first paint)
+
+`/peaks/stem` is per-key, and each call re-reads the project's stem inventory
+to authorise the key — a 40-event timeline painted with 40 downloads of the
+same inventory object. `/peaks/stems` reads that inventory once and answers
+with every envelope for the run, keyed by `b2_key`. The per-key route stays for
+incremental needs (a stem that arrives after first paint).
+
+`200`
+
+```json
+{
+  "run_id": "run_01J…",
+  "stems": {
+    "cache/03f8c512074fd16b.wav": {
+      "b2_key": "cache/03f8c512074fd16b.wav",
+      "peaks": { "peaks_per_second": 100, "channels": 2, "…": "…" },
+      "error": null,
+      "message": null
+    },
+    "cache/9ab1e0c4d5f60071.wav": {
+      "b2_key": "cache/9ab1e0c4d5f60071.wav",
+      "peaks": null,
+      "error": "audio_not_found",
+      "message": "No audio object at cache/9ab1e0c4d5f60071.wav"
+    }
+  }
+}
+```
+
+**Partial failure is reported, never skipped.** A stem that is absent
+(`audio_not_found`) or not a decodable WAV (`invalid_request`) becomes an entry
+with `peaks: null` and that `error` code — the same codes the per-key route
+raises. Omitting it would leave the client unable to tell a hole in the bucket
+from a stem the server never looked at, which is the synthesised-verdict
+failure evidence-first exists to prevent. Storage being *unreachable* is not a
+per-stem fact: it fails the whole route with `503 storage_unavailable`, like
+every other read. An address repeated in the inventory (several events sharing
+one stem) appears once.
+
+The route-level `404`s match the mix route: `mix_not_found` when the project
+(or the named run) has no completed mix, `run_not_found` for an unknown run,
+`project_not_found` for an unknown project, `400 invalid_id` for a malformed
+`run_id`.
 
 | Status | When |
 |---|---|

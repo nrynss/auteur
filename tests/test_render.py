@@ -167,7 +167,12 @@ def test_mix_stores_artifacts_under_the_run(store, project, fake_generation,
     assert result.video_key == f"projects/{project.id}/runs/{run.id}/foley.mp4"
     assert store.backend.exists(result.mix_key)
     assert store.backend.exists(result.video_key)
-    assert result.timeline_version == 1
+    # v2, not v1: a completed mix stamps the durations it actually generated
+    # onto a new version and records itself against that one. v2 is the
+    # document that names this mix's cache addresses, and it renders
+    # byte-identically (see test_mix_freeze_stamp_renders_identically).
+    assert result.timeline_version == 2
+    assert store.list_timeline_versions(project.id) == [1, 2]
 
 
 def test_mix_uses_the_ffprobe_duration_not_the_timelines(store, project,
@@ -399,11 +404,15 @@ def test_repair_route_changes_only_the_target_stem(store, project, stub_ffmpeg,
                                      "b2_key": gunshot["b2_key"],
                                      "variant": ""}
     assert payload["variant"] == repaired_gunshot["variant"]
-    assert payload["timeline_version"] == 2
+    # v3, not v2: the baseline mix stamped its generated durations onto v2, so
+    # the repair branches from there. The repair's own mix adds no further
+    # version — every event is already frozen, and a stamp that changes nothing
+    # allocates nothing.
+    assert payload["timeline_version"] == 3
     assert payload["note"] == "thin take"
 
     # The new version is a real generation of the project, not an overwrite.
-    assert store.list_timeline_versions(project.id) == [1, 2]
+    assert store.list_timeline_versions(project.id) == [1, 2, 3]
 
 
 # -- the export gate ---------------------------------------------------------
@@ -645,3 +654,117 @@ def test_a_stem_served_by_its_own_tier_records_no_fallback(
     for event in store.list_events(project.id):
         if event.type == EVENT_STEM_GENERATED:
             assert "served_endpoint" not in event.payload
+
+
+# -- generated-duration freezes (unit 7.2's mechanism, made reachable) --------
+
+def test_mix_stamps_generated_durations_and_renders_identically(
+        store, project, fake_generation, stub_ffmpeg, tmp_path):
+    """A completed mix writes down the durations it actually generated.
+
+    This is the only honest source for `source_duration_s`: analysis is told
+    not to invent one, and the commit endpoint may only record an address that
+    already exists. Without it the resize-is-free mechanism is unreachable in
+    production.
+
+    The stamp must be free of consequences: the stamped version has to route to
+    exactly the same SfxRequest and render to exactly the same bytes, or the
+    bookkeeping would have changed the film.
+    """
+    from foleyflow.routing import route_event
+
+    video = str(tmp_path / "source.mp4")
+    _placeholder_video(video)
+
+    first = render.render_mix(store, project.id, run=_run(store, project.id),
+                              video_path=video)
+    assert first.timeline_version == 2
+
+    v1 = store.load_timeline(project.id, 1)
+    v2 = store.load_timeline(project.id, 2)
+    assert all(e.source_duration_s is None for e in v1.events)
+    assert all(e.source_duration_s is not None for e in v2.events)
+
+    # Every frozen value is an address this run really recorded, and routing
+    # the stamped event reproduces the original request field for field —
+    # clamping is idempotent, so the post-clamp value the inventory stores
+    # round-trips through `source_duration_s` unchanged.
+    inventory = store.load_stem_inventory(project.id, first.run_id)
+    frozen_durations = {round(s["duration_s"], 6) for s in inventory}
+    for before, after in zip(v1.events, v2.events):
+        assert route_event(after) == route_event(before)
+        assert round(after.source_duration_s, 6) in frozen_durations
+        # Discrete one-shots also get their placement span widened to the
+        # source length: with a freeze present the renderer windows them to
+        # `duration`, so leaving the old span would silently cut the headroom.
+        assert after.duration == pytest.approx(after.source_duration_s)
+
+    # Same document, same audio — byte for byte.
+    second = render.render_mix(store, project.id, run=_run(store, project.id),
+                               video_path=video)
+    assert second.timeline_version == 2      # nothing left to stamp
+    assert store.list_timeline_versions(project.id) == [1, 2]
+    assert (store.backend.get_bytes(store.mix_key(project.id, first.run_id))
+            == store.backend.get_bytes(store.mix_key(project.id, second.run_id)))
+
+
+def test_mix_freeze_is_recorded_as_a_system_write(store, project,
+                                                  fake_generation, stub_ffmpeg,
+                                                  tmp_path):
+    """History stays real (decision A.2.1): the stamp is not a director's edit."""
+    from foleyflow.projects import EVENT_PLAN_PROPOSED
+
+    video = str(tmp_path / "source.mp4")
+    _placeholder_video(video)
+    render.render_mix(store, project.id, run=_run(store, project.id),
+                      video_path=video)
+
+    proposals = [e for e in store.list_events(project.id)
+                 if e.type == EVENT_PLAN_PROPOSED]
+    stamp = proposals[-1]
+    assert stamp.payload["timeline_version"] == 2
+    assert stamp.payload["source"] == "mix_freeze"
+    assert stamp.actor == "system"
+
+
+def test_stamp_leaves_events_without_a_recorded_stem_unfrozen():
+    """A freeze with no provenance would be a fabricated number (§A.3)."""
+    timeline = Timeline(duration=4.0, ambience="wind", events=[
+        Event(name="gunshot", start_time=1.0, duration=0.8,
+              intensity="high", kind="discrete"),
+        Event(name="boot scuff", start_time=2.0, duration=0.3,
+              intensity="med", kind="discrete"),
+    ])
+    from foleyflow.routing import route_event
+    from foleyflow.sfx_cache import cache_object_key
+
+    request = route_event(timeline.events[0])
+    inventory = [{"b2_key": cache_object_key(request.endpoint, request.prompt,
+                                             request.duration_s, ""),
+                  "duration_s": request.duration_s}]
+
+    stamped, changed = render.stamp_source_durations(timeline, inventory)
+    assert changed is True
+    assert stamped.events[0].source_duration_s == pytest.approx(request.duration_s)
+    assert stamped.events[1].source_duration_s is None   # no stem, no freeze
+
+    # Nothing to stamp → no version churn.
+    assert render.stamp_source_durations(timeline, []) == (timeline, False)
+
+
+def test_stamped_timeline_survives_the_round_trip(store, project,
+                                                  fake_generation, stub_ffmpeg,
+                                                  tmp_path):
+    """§A.4: an Event field that is not enumerated by hand vanishes on save."""
+    from foleyflow.timeline_io import dict_to_timeline, timeline_to_dict
+
+    video = str(tmp_path / "source.mp4")
+    _placeholder_video(video)
+    render.render_mix(store, project.id, run=_run(store, project.id),
+                      video_path=video)
+
+    stamped = store.load_timeline(project.id, 2)     # already one round trip
+    again = dict_to_timeline(timeline_to_dict(stamped))
+    assert [e.source_duration_s for e in again.events] == \
+        [e.source_duration_s for e in stamped.events]
+    assert all(e.source_duration_s is not None for e in again.events)

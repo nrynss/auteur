@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 from typing import Any, Callable, Dict, List, Optional
 
 from foleyflow.assemble import assemble_timeline, plan_requests, write_mix
@@ -34,7 +34,7 @@ from foleyflow.ledger import summarize_ledger
 from foleyflow.mux import extract_audio, mux as mux_video
 from foleyflow.projects import ProjectStore, Run, utcnow
 from foleyflow.qa import build_report
-from foleyflow.routing import SfxRequest
+from foleyflow.routing import SfxRequest, route_event
 from foleyflow.sfx_cache import (
     backed_sfx_fn,
     cache_key as cache_digest,
@@ -280,6 +280,15 @@ def render_mix(store: ProjectStore, project_id: str, *, run: Run,
     report = store.save_qa_report(
         project_id, (stage_results.get("qa") or {}).get("report"), run_id=run.id)
 
+    # Post-mix the document must tell the truth about its own cache addresses.
+    # Until this runs, `source_duration_s` is unreachable in production: nothing
+    # else can honestly set it (analysis is told not to invent one, and the
+    # commit endpoint may only record an address that already exists), so
+    # resize-is-free stayed theoretical. See `stamp_source_durations`.
+    version = _freeze_generated_durations(
+        store, project_id, timeline, inventory, variant_fn=variant_fn,
+        run=run, version=version)
+
     store.record_mix(project_id, run_id=run.id, mix_key=mix_key,
                      video_key=video_key, tier=tier, timeline_version=version,
                      stem_count=len(stems),
@@ -374,6 +383,94 @@ def build_manifest(store: ProjectStore, project_id: str, *, run: Run,
         "qa_override": overridden,
         "final_export_key": mix["video_key"],
     }
+
+
+def stamp_source_durations(timeline, inventory: List[Dict[str, Any]], *,
+                           variant_fn: Optional[Callable[[SfxRequest], str]] = None):
+    """The timeline with `source_duration_s` recorded from real stems.
+
+    Returns ``(timeline, changed)``; ``changed`` is False when there was
+    nothing honest to stamp, and the caller then allocates no version.
+
+    **Provenance, not arithmetic.** An event is only frozen when the address it
+    routes to is actually present in this run's stem inventory — i.e. a clip
+    was generated (or served from cache) and paid for at that address. Events
+    whose stem is absent stay unfrozen: a freeze with no recorded provenance
+    would be a fabricated number, which §A.3 forbids.
+
+    **Why the inventory's `duration_s` round-trips exactly.** `route_event`
+    applies `clamp_duration` *after* choosing the duration, and the inventory
+    records the request as sent — i.e. post-clamp, which is also what the cache
+    address is computed from. Feeding that value back in as `source_duration_s`
+    clamps it a second time, but clamping is idempotent (the value is already
+    inside the endpoint's bounds, and the endpoint is unchanged because it is
+    keyword-matched from the event name), so the resulting `SfxRequest` is
+    identical field for field. Stamping the *pre*-clamp value would be the bug:
+    it is recorded nowhere, and for a clamped request it names an address that
+    was never generated.
+
+    **Why discrete events also get their placement span widened.** With a
+    freeze present, `assemble` windows a one-shot to the placement `duration`
+    (that is what makes resize free); without one it plays the clip out in full
+    and `duration` is decorative. So stamping alone would silently shorten every
+    discrete event by its headroom. Setting the span to the frozen source length
+    is the one value that leaves the mix byte-identical, and it is also the
+    truthful statement of how long that one-shot occupies the timeline.
+    Shortening it afterwards is then a free edit, which is the whole point.
+    """
+    by_key = {s.get("b2_key"): s for s in inventory if s.get("b2_key")}
+    events = []
+    changed = False
+    for event in timeline.events:
+        stem = None
+        if event.source_duration_s is None:
+            request = route_event(event)
+            variant = (variant_fn(request) if variant_fn else "") or ""
+            stem = by_key.get(cache_object_key(
+                request.endpoint, request.prompt, request.duration_s, variant))
+        frozen = (stem or {}).get("duration_s")
+        if stem is None or frozen is None:
+            events.append(event)
+            continue
+        frozen = float(frozen)
+        events.append(dataclass_replace(
+            event, source_duration_s=frozen,
+            duration=frozen if event.kind == "discrete" else event.duration))
+        changed = True
+
+    if not changed:
+        return timeline, False
+    return dataclass_replace(timeline, events=events), True
+
+
+def _freeze_generated_durations(store: ProjectStore, project_id: str, timeline,
+                                inventory: List[Dict[str, Any]], *,
+                                variant_fn, run: Run, version: int) -> int:
+    """Persist the stamped timeline as a new version; return the mix's version.
+
+    The mix is recorded against the *stamped* version rather than the one it was
+    handed. The two render byte-identically by construction (see
+    `stamp_source_durations`), and the stamped one is the document that actually
+    names the addresses this mix used — so pointing the mix at the pre-stamp
+    version would make `_mix_readiness` report every freshly rendered project as
+    "mixed from v1; timeline is now v2", a staleness claim that is not true.
+
+    `actor="system"` / `source="mix_freeze"` because this is not a director's
+    edit; decision A.2.1 keeps history real by naming who wrote each version.
+    Never fatal: a mix that produced audio must not be lost to a bookkeeping
+    write, so a storage failure here leaves the project on the pre-stamp version
+    (unfrozen — exactly today's behaviour) rather than failing the run.
+    """
+    stamped, changed = stamp_source_durations(timeline, inventory,
+                                              variant_fn=variant_fn)
+    if not changed:
+        return version
+    try:
+        return store.save_timeline(project_id, stamped, run_id=run.id,
+                                   actor="system", source="mix_freeze")
+    except Exception as e:
+        print(f"[render] WARNING: could not record generated durations: {e}")
+        return version
 
 
 # -- internals ---------------------------------------------------------------

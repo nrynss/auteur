@@ -13,7 +13,7 @@ load_dotenv()
 
 from foleyflow.models import Event, Timeline
 from foleyflow.providers.config import get_analysis_config
-from foleyflow.timeline_io import _coerce_source_duration_s
+from foleyflow.timeline_io import _coerce_seed, _coerce_source_duration_s
 
 # Default VLM model — read from providers.toml [analysis] section.
 # Default is Gemini Flash; OpenAI gpt-5.6-luna is optional via --model.
@@ -226,13 +226,18 @@ def _validate_event(ev: dict, clip_duration: float | None) -> Event | None:
     # Optional frozen mix seed (unit 7.1). Absent/null → None (legacy hash).
     # Must be passed through here: Event has no extra_fields catch-all, so any
     # key not listed is silently dropped — the same A.4 trap as timeline_io.
-    seed = None
-    if "seed" in ev and ev["seed"] is not None:
-        try:
-            seed = int(ev["seed"])
-        except (TypeError, ValueError):
-            print(f"Warning: ignoring non-int seed {ev['seed']!r} for '{name}'.")
-            seed = None
+    #
+    # `_coerce_seed` is the *same* coercer timeline_io uses, so the two doors
+    # agree on what a seed is: `"12"` and `3.7` are rejected here rather than
+    # accepted-and-truncated, which would have produced a different mix from
+    # the one the document names. The failure *posture* differs deliberately —
+    # this door is parsing untrusted model output, so it warns and continues
+    # unfrozen (the legacy name+start_time hash), where timeline_io raises.
+    try:
+        seed = _coerce_seed(ev.get("seed"))
+    except (TypeError, ValueError):
+        print(f"Warning: ignoring non-int seed {ev.get('seed')!r} for '{name}'.")
+        seed = None
 
     # Optional frozen SFX request duration (unit 7.2). Same A.4 trap: must
     # pass through or editor freezes are dropped on re-parse. Invalid values

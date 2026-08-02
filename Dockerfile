@@ -1,9 +1,11 @@
 # FoleyFlow on Cloud Run.
 #
-# Two stages so the ~200 MB of build tooling does not ride along into the image
-# that Cloud Run cold-starts. ffmpeg is a runtime dependency, not a build one:
-# scene detection, mix, mux and the ebur128 QA measurements all shell out to it,
-# and `analyze.get_video_duration` treats ffprobe as the sole duration authority.
+# Three stages: a Node stage builds the Svelte control-room SPA, the uv stage
+# installs the Python app, and the runtime image copies both — so the ~200 MB
+# of build tooling and every byte of Node stay out of the image that Cloud Run
+# cold-starts. ffmpeg is a runtime dependency, not a build one: scene
+# detection, mix, mux and the ebur128 QA measurements all shell out to it, and
+# `analyze.get_video_duration` treats ffprobe as the sole duration authority.
 
 FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim AS build
 
@@ -26,7 +28,29 @@ RUN uv sync --frozen --no-install-project --no-dev
 # build rather than merely shipping a docless image.
 COPY src/ ./src/
 COPY providers.toml README.md ./
+COPY scripts/emit_openapi.py ./scripts/emit_openapi.py
 RUN uv sync --frozen --no-dev
+
+# Emit the OpenAPI contract for the UI build. FastAPI builds the schema from
+# the app object, so no server and no network are needed. emit_openapi.py
+# pins the local backend so no credentials are required either.
+RUN .venv/bin/python scripts/emit_openapi.py --out /schema/openapi.json
+
+
+FROM node:22-slim AS ui
+
+# ui/ is built here and only its output is copied onward — no Node ships to
+# Cloud Run. Node 22 is the floor for Vite 8 (^20.19 || >=22.12).
+WORKDIR /app
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci
+
+COPY ui/ ./ui/
+COPY --from=build /schema/openapi.json ./ui/openapi.json
+# vite.config.ts writes the bundle to ../src/foleyflow/api/static — i.e.
+# /app/src/foleyflow/api/static in this stage — so the runtime image can copy
+# the built assets straight into the installed package.
+RUN cd ui && npm run build
 
 
 FROM python:3.14-slim-bookworm
@@ -44,6 +68,9 @@ USER foley
 WORKDIR /app
 
 COPY --from=build --chown=foley:foley /app /app
+# Built SPA assets: the uv stage copied src/ (with an empty static dir); the
+# Node stage's output now overwrites it with the real bundle.
+COPY --from=ui --chown=foley:foley /app/src/foleyflow/api/static /app/src/foleyflow/api/static/
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 

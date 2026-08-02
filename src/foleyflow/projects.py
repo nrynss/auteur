@@ -903,7 +903,8 @@ class ProjectStore:
     # -- derived state ----------------------------------------------------
 
     def get_state(self, project_id: str, *,
-                  now: Optional[datetime] = None) -> ProjectState:
+                  now: Optional[datetime] = None,
+                  events: Optional[List[Event]] = None) -> ProjectState:
         """Fold the event log into the project's current state.
 
         Folded per run, then reduced — not by letting whichever event happened
@@ -911,9 +912,16 @@ class ProjectStore:
         is not the last outcome, and treating every `run.started` as
         "analyzing" made a published export regress to `analyzing` the moment a
         user clicked Regenerate, with no path back to `ready`.
+
+        `events` lets a caller that has already read the log pass it in rather
+        than have it read again. `list_events` is one object GET per event, so
+        on a busy project a path that folds the log twice costs hundreds of
+        round trips against B2 — see the timeline commit, which needs both the
+        state and the raw log and now reads it exactly once.
         """
         project = self.get_project(project_id)
-        events = self.list_events(project_id)
+        if events is None:
+            events = self.list_events(project_id)
         now = now or datetime.now(timezone.utc)
 
         runs: Dict[str, Dict[str, Any]] = {}
