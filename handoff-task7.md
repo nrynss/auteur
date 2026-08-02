@@ -197,6 +197,20 @@ the stem to placement `duration` (empty placement → silence). Round-trip via
 `timeline_io` and analyze parse; invalid freezes drop the event rather than
 soft-unfreeze (re-bill).
 
+**Who sets one.** For a while nobody could: analysis is told not to invent a
+freeze, and the commit endpoint refused to create one, so the mechanism was
+unreachable in production. `render_mix` now stamps it — when a mix completes it
+writes a new timeline version recording, per event, the duration that run
+actually requested and paid for (read back from the stem inventory, which is
+the post-clamp value the cache address was computed from), with
+`actor="system"` and `source="mix_freeze"`. The mix is recorded against the
+stamped version, since that is the document naming its addresses and it renders
+byte-identically. Events whose stem is absent stay unfrozen — a freeze with no
+provenance would be a fabricated number. Discrete events also have their
+placement span widened to the frozen source length, because the freeze switches
+on windowing and the stamp must not shorten the sound. A commit may then set a
+*first* freeze itself, but only at the value the event already routes to.
+
 **Not in this unit:** the Regenerate button's behaviour, which already exists.
 
 ## 7.3 Timeline write endpoint — M — **DONE**
@@ -211,9 +225,21 @@ document; server allocates immutable version N+1 via `save_timeline` with
 `source_duration_s`.
 
 **Freeze conservation:** multiset of identities
-`(name, intensity, kind, source_duration_s)` must match exactly — no invent,
-rebind, strip, empty-document drop, or delete of frozen content. Reorder and
+`(name, intensity, source_duration_s)` — no invent at an arbitrary value, no
+rebind, no in-place unfreeze, no empty-document wipe. Two deliberate holes:
+a *first* freeze at the event's own routed duration is allowed (otherwise 7.2
+is unreachable through the API), and **deleting** frozen content is allowed
+(the money is already spent; refusing it meant a director could never remove a
+generated sound). `kind` is not in the identity — with a freeze set it changes
+no part of the cache key, so a kind change is free. Reorder and
 placement/`seed` edits are free. Unfrozen events may be added/removed.
+
+**`duration` is server-owned** on commit: carried forward from the previous
+version like `history`, since ffprobe is its sole source of truth.
+
+**One log read.** The commit folds `list_events` once and hands it to the state
+load, the run-lock check and the live-run scan, rather than reading it three
+times (one object GET per event).
 
 **Run lock:** `409 already_running` from in-process JobRunner **or** a
 non-stale storage-side running run (event-log fold; `list_runs` has no
@@ -259,9 +285,14 @@ client downloading and decoding full audio.
 - **Storage:** sibling `{audio_key}.peaks.json` via `put_if_absent`; corrupt
   or wrong-resolution cache is treated as a miss and recomputed.
 - **Format:** JSON with parallel `min` / `max` float lists (two-sided envelope).
-- **Routes:** `GET .../peaks/stem?key=` and `GET .../peaks/mix?run_id=`
-  (latest mix if omitted). Stem keys must appear in a project inventory
-  (latest mix first, then short-circuiting scan).
+- **Routes:** `GET .../peaks/stem?key=`, `GET .../peaks/stems?run_id=` and
+  `GET .../peaks/mix?run_id=` (latest mix if omitted). Stem keys must appear in
+  a project inventory (latest mix first, then short-circuiting scan).
+- **Batch form for first paint:** `/peaks/stems` reads the run's inventory once
+  and returns every envelope keyed by `b2_key`. The per-key route pays for an
+  inventory download on each call, so a 40-event paint fetched the same object
+  40 times. A stem that is absent or undecodable is reported as an entry with
+  an `error` code rather than skipped — a hole must be visible as a hole.
 
 **Acceptance:** peaks for a known clip match its actual envelope at the chosen
 resolution, and the endpoint does not re-download audio it has already

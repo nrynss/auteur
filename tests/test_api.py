@@ -2671,8 +2671,6 @@ def test_timeline_commit_still_rejects_rename_of_a_frozen_event(
 
 def test_timeline_commit_ignores_the_bodys_duration(client, store, project):
     """duration is display-only with ffprobe as sole source of truth."""
-    from foleyflow.models import Timeline
-
     store.save_timeline(project.id, _timeline())
     body = _timeline_commit_body()
     body["duration"] = 999.0
