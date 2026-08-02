@@ -487,7 +487,7 @@ consume these primitives.
 
 # D. Screens
 
-## 7.8 Control room, read-only — L
+## 7.8 Control room, read-only — L — **DONE**
 
 **Depends on:** 7.6, 7.7; 7.5 for waveforms.
 
@@ -501,6 +501,44 @@ side, with confidence — a comparison, never a fault.
 
 **Acceptance:** a real seeded demo project renders completely with no
 placeholder or invented values.
+
+**Landed:** `ui/src/lib/control/` — `ControlRoom` (route `/projects/{id}` via
+a minimal path router in `App.svelte`; parallel fetches; fatal only when the
+project record fails, ancillary 404s become empty states), chrome (title +
+meta, Meter, `BudgetChip` with estimate tag and ledger-writable warning),
+viewer column = **explicit unfinished video slot** (ViewerPlaceholder says
+"video player — unit 7.9"; the scene rail beneath carries real scenes),
+rail tabs Readiness (checklist rows + latest run's stages) / Evidence
+(loudness with display-scale bars + target markers, warn notes as measured
+comparisons; continuity as side-by-side thumbnails with luma figures from
+scene stats, delta vs threshold, confidence, "nothing has been corrected") /
+History (versions, runs, event log, latest mix's real peaks via 7.5) /
+Dossier (provenance table). `Timeline`: ruler (1s ticks, 3s majors), lanes
+grouped by kind (Beds/Rhythmic/One-shots), event blocks with **structural**
+kind envelopes (discrete decay / rhythmic bursts / sustained bed — seeded by
+event index, deterministic; not claimed as measured — per-event peaks need
+the 7.10 edit model), read-only inspector (real fields only: event, index,
+start, span, generated, kind, intensity, seed), and a resizable frame via a
+real `role=separator` grip implemented as a Svelte action
+(`timeline-grip.ts`).
+
+**Verified against the live API:** the deployed `standoff_kling` project
+serves exactly the shapes consumed — readiness items (ok/warn), qa
+(measured −21.4 LUFS vs −14.0 target, visual issue scene_04→scene_05
+confidence 0.79, threshold 20), timeline (v1, 15.041667s, 28 events),
+scenes with mean_luma — and the computed continuity delta (31.8) matches the
+API's own detail string.
+
+Tests: `helpers.test.ts` (11) — lane grouping, honest placement (min block
+width), loudness phrasing, continuity figures, event-type tails. `npm test`
+54 passing; svelte-check 0/0; prod bundle 84 kB with the dev gallery still
+tree-shaken.
+
+**Not in this unit:** the player/preview (7.9), direct manipulation (7.10),
+spend paths and run locking (7.11), director mode (7.12), project
+creation/upload (7.13), polish incl. full keyboard map (7.14). The §9 states
+that 7.8 needed (loading, error, empty) are the minimal honest versions;
+loading/empty/error polish is 7.14's.
 
 ## 7.9 A/B player and browser preview — L
 

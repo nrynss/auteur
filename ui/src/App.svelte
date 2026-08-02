@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
+  import ControlRoom from "./lib/control/ControlRoom.svelte";
   import PrimitivesGallery from "./lib/PrimitivesGallery.svelte";
   import ThemeToggle from "./lib/components/ThemeToggle.svelte";
   import { ApiError, api } from "./lib/api/client";
@@ -10,21 +11,35 @@
   type ProjectSummary = components["schemas"]["ProjectSummary"];
   type ProjectListResponse = components["schemas"]["ProjectListResponse"];
 
+  // Minimal client-side router: /projects/{id} → control room, anything else
+  // → the scaffold home. Path-based so deep links work through the SPA
+  // catch-all (unit 7.6).
+  type Route = { name: "project"; id: string } | { name: "home" };
+  function parseRoute(pathname: string): Route {
+    const m = pathname.match(/^\/projects\/([^/]+)/);
+    return m ? { name: "project", id: m[1] } : { name: "home" };
+  }
+
+  let route = $state<Route>(parseRoute(window.location.pathname));
   let health = $state<HealthResponse | null>(null);
   let projects = $state<ProjectSummary[]>([]);
-  let status = $state<"loading" | "ready" | "error">("loading");
+  let homeStatus = $state<"loading" | "ready" | "error">("loading");
   let message = $state("");
+
+  onMount(() => {
+    const onPop = () => (route = parseRoute(window.location.pathname));
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  });
 
   onMount(async () => {
     try {
-      // One request proves the SPA ↔ API round trip end to end: schema-driven
-      // client, real health payload. Screens land in units 7.8+.
       health = await api<HealthResponse>("/api/v1/health");
       const list = await api<ProjectListResponse>("/api/v1/projects?limit=20");
       projects = list.projects;
-      status = "ready";
+      homeStatus = "ready";
     } catch (e) {
-      status = "error";
+      homeStatus = "error";
       message = e instanceof ApiError ? e.message : String(e);
     }
   });
@@ -34,52 +49,51 @@
   <title>FoleyFlow — Control room</title>
 </svelte:head>
 
-<header class="chrome">
-  <span class="brand">FoleyFlow</span>
-  {#if health}
-    <span class="dim">control room</span>
-    <span class="spacer"></span>
-    <span class="num faint">storage {health.storage}</span>
-    <span class="num faint">v{health.version}</span>
-    <ThemeToggle />
-  {/if}
-</header>
+{#if route.name === "project"}
+  <ControlRoom id={route.id} />
+{:else}
+  <header class="chrome">
+    <span class="brand">FoleyFlow</span>
+    {#if health}
+      <span class="dim">control room</span>
+      <span class="spacer"></span>
+      <span class="num faint">storage {health.storage}</span>
+      <span class="num faint">v{health.version}</span>
+      <ThemeToggle />
+    {/if}
+  </header>
 
-<main>
-  {#if status === "loading"}
-    <p class="dim">Contacting the API…</p>
-  {:else if status === "error"}
-    <p class="stop">
-      Could not reach the API — {message}
-    </p>
-  {:else}
-    <h1>Control room</h1>
-    <p class="dim">
-      Toolchain scaffold (unit 7.6) with the 7.7 component layer. The screens —
-      readiness, timeline, director mode — land in units 7.8–7.14.
-    </p>
-    <p>
-      {projects.length} project{projects.length === 1 ? "" : "s"} on this
-      deployment.
-    </p>
-    <ul class="projects">
-      {#each projects as p (p.id)}
-        <li>
-          <span class="num id">{p.id}</span>
-          <span>{p.title}</span>
-          <span class="dim">{p.status}</span>
-          {#if p.duration_s != null}
-            <span class="num faint">{p.duration_s.toFixed(1)}s</span>
-          {/if}
-        </li>
-      {/each}
-    </ul>
-  {/if}
+  <main>
+    {#if homeStatus === "loading"}
+      <p class="dim">Contacting the API…</p>
+    {:else if homeStatus === "error"}
+      <p class="stop">Could not reach the API — {message}</p>
+    {:else}
+      <h1>Control room</h1>
+      <p class="dim">
+        Unit 7.8: the read-only control room for any project — select one
+        below. The screens — timeline editing, player, director mode — land in
+        units 7.9–7.14.
+      </p>
+      <ul class="projects">
+        {#each projects as p (p.id)}
+          <li>
+            <a class="num id" href={`/projects/${p.id}`}>{p.id}</a>
+            <a href={`/projects/${p.id}`}>{p.title}</a>
+            <span class="dim">{p.status}</span>
+            {#if p.duration_s != null}
+              <span class="num faint">{p.duration_s.toFixed(1)}s</span>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
 
-  {#if import.meta.env.DEV}
-    <PrimitivesGallery />
-  {/if}
-</main>
+    {#if import.meta.env.DEV}
+      <PrimitivesGallery />
+    {/if}
+  </main>
+{/if}
 
 <style>
   .chrome {
@@ -127,6 +141,15 @@
     gap: 0.5rem 1rem;
     padding: 0.5rem 0;
     border-bottom: 1px solid var(--line);
+  }
+
+  a {
+    color: var(--text);
+    text-decoration: none;
+  }
+
+  a:hover {
+    color: var(--accent);
   }
 
   .num {

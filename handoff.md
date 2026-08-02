@@ -146,7 +146,15 @@ deleted. **7.7 landed**: design tokens per `docs/design/control-room.md`
 StageRow, SceneThumb, ConfirmDialog (cost-confirmed, focus-managed), Timecode
 (`formatTimecode`/`formatCost`), Meter, Panel, Kbd, Spinner, Icon, Button —
 plus Vitest (`npm test`, 20 tests, SSR contracts) and a dev-only gallery.
-Remaining: frontend chain from 7.8.
+**7.8 landed**: the read-only control room (`ui/src/lib/control/`) —
+`/projects/{id}` route, chrome with readiness meter + budget chip
+(estimate tag, ledger-writable warning), explicit unfinished video slot
+(player is 7.9), real scene rail, rail tabs Readiness / Evidence (loudness
+with targets + continuity comparisons, never a fault) / History (versions,
+runs, event log, latest mix's real peaks) / Dossier, and a read-only
+kind-lane timeline with a resizable separator grip. Verified against the
+live seeded `standoff_kling` project. `npm test` 54, svelte-check 0/0.
+Remaining: frontend chain from 7.9.
 
 The throwaway static dashboard (`api/static/index.html`) is deleted outright
 when 7.6 lands.
