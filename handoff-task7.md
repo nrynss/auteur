@@ -59,6 +59,11 @@ Settled; not open unless a unit proves one impossible.
    in git pretending to be current.
 9. **Director-mode model is `gemini-3.5-flash-lite`** (500 requests/day;
    `gemini-2.5-flash` allows 20 and would be exhausted in one session).
+10. **A commit submits the whole timeline document**, not a patch list. A
+    version *is* a document, so submitting one makes the endpoint idempotent by
+    construction, and director mode proposes a document diff rather than a
+    patch language someone has to invent. Units 7.3 and 7.12 share this shape —
+    it is a decision, not a per-unit choice.
 
 ## A.3 Rules that constrain every unit
 
@@ -73,7 +78,24 @@ Settled; not open unless a unit proves one impossible.
 - **Cost geometry is visible.** Free actions are instant and silent; anything
   that spends money says so before it does.
 
-## A.4 Corrections to earlier notes
+## A.4 The event round-trip trap
+
+**Any unit adding a field to `Event` must read this.**
+
+`Timeline` has an `extra_fields` catch-all. **`Event` does not.** It is a plain
+dataclass of five required fields, and `dict_to_timeline` enumerates them by
+hand (`timeline_io.py:33-41`). An event key that is not explicitly listed there
+is **silently dropped on round-trip** — no error, no warning.
+
+So adding `seed` (7.1) or `source_duration_s` (7.2) means editing `models.py`,
+`timeline_to_dict` *and* `dict_to_timeline` together. Adding it to the
+dataclass alone produces a field that vanishes on save and returns as `None` on
+load, and the symptom surfaces units later as an inexplicable determinism bug.
+
+Every unit touching `Event` needs a round-trip test: build a timeline, write
+it, read it back, assert the new field survived.
+
+## A.5 Corrections to earlier notes
 
 The previous version of task 7 in `handoff.md` was wrong in three ways that
 matter:
@@ -122,7 +144,7 @@ Add an optional `seed` field to the event:
 event carrying a frozen `seed` renders identically at two different
 `start_time` values apart from its placement.
 
-**Not in this unit:** the editor writing the seed down (that is 7.9), and any
+**Not in this unit:** the editor writing the seed down (that is 7.10), and any
 "reroll the variation" UI.
 
 ## 7.2 Split requested duration from placed span — M
@@ -170,13 +192,21 @@ There is **no timeline write path**. `GET /timeline` and
 Timelines are produced by analysis and forked by repair; nothing lets a client
 say "this event moves 200 ms left".
 
-Takes a client-submitted edit set and allocates version N+1 beside the
-original. Immutability is not an obstacle here — it is the design. One commit,
-one version (decision 1).
+The client submits **the whole timeline document** for the new version, not a
+patch list (decision 10). The server allocates version N+1 beside the original.
+Immutability is not an obstacle here — it is the design. One commit, one
+version (decision 1).
 
-**Acceptance:** committing an edit set creates a new version; the prior version
+Validation is the substance of this unit: the submitted document must be a
+well-formed timeline, and the fields that carry cost — `source_duration_s`
+above all — must not be silently altered by an edit that is supposed to be
+free. An edit that changes a cache-key field without going through Regenerate
+is a client bug and should be refused, not absorbed.
+
+**Acceptance:** committing a document creates a new version; the prior version
 is unchanged and still readable; a commit attempted while a run is in flight is
-refused consistently with the existing `409 already_running` rule.
+refused consistently with the existing `409 already_running` rule; a document
+that alters `source_duration_s` is rejected.
 
 ## 7.4 Signed URLs on the project record — S
 
@@ -233,6 +263,10 @@ Built assets are never committed (decision 8).
 **Acceptance:** `docker build` produces an image serving the SPA with no Node in
 it; a deep link to a client-side route returns the app; the API without a built
 bundle explains itself rather than 404ing.
+
+Note the test suite currently covers the dashboard route **not at all** —
+deleting `index.html` breaks nothing, which also means there is no regression
+net. This unit adds the coverage that does not exist today.
 
 ## 7.7 Component layer and design tokens — M
 
@@ -361,7 +395,44 @@ whether it reads as a tool.
 
 ---
 
-# E. Testing and bookkeeping
+# E. Running this with multiple agents
+
+**Logically independent is not the same as safely parallel.** Several units
+reason independently but edit the same files, and handing those to concurrent
+agents buys merge conflicts rather than speed.
+
+Two contention clusters:
+
+- `models.py`, `timeline_io.py`, `assemble.py` — units **7.1 and 7.2**.
+- `api/app.py`, `api/schemas.py`, `docs/api.md` — units **7.3, 7.4 and 7.5**.
+
+Give each cluster to one agent, sequenced internally.
+
+**Wave 1 — three agents, genuinely disjoint:**
+
+| agent | units | why it is safe |
+|---|---|---|
+| frontend | 7.6 | touches no Python the others touch |
+| backbone | 7.1 → 7.2 | the whole timeline-model cluster, sequenced |
+| api | 7.4 → 7.5 | 7.4 is small; landing it first keeps `app.py` churn ordered |
+
+**Wave 2:** 7.3 (needs 7.1 and 7.2 landed) ‖ 7.7 (needs 7.6). Different
+languages, different files.
+
+**Wave 3:** 7.8 ‖ 7.13. Both need only 7.6 and 7.7, and they touch different
+screens.
+
+**Wave 4:** 7.9 ‖ 7.11.
+
+**Wave 5 onward:** 7.10 → 7.12 → 7.14. These genuinely serialise; 7.10 depends
+on four prior units.
+
+**Critical path:** `7.6 → 7.7 → 7.8 → 7.9 → 7.10 → 7.12 → 7.14`. The frontend
+chain is the long pole, not the Python. Start 7.6 first and never let it block
+on a backend unit; the backbone (7.1 → 7.2 → 7.3) has slack against it, as long
+as 7.3 lands before 7.10 needs it.
+
+# F. Testing and bookkeeping
 
 Python-side tests for every new field, the write endpoint, the two project
 URLs, the peaks endpoint, and SPA serving. **The suite count in `handoff.md`
@@ -372,7 +443,7 @@ Vitest for the UI logic actually worth testing — A/B playhead sync, the
 cost-confirmation round trip, draft-to-commit version allocation — rather than
 blanket component tests.
 
-# F. Still open
+# G. Still open
 
 - Peaks endpoint shape: resolution, storage, response format (7.5).
 - Trim semantics per event kind: discrete needs a genuine new renderer path,
