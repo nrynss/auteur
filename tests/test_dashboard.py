@@ -152,3 +152,80 @@ def test_health_probe_when_unbuilt(client, tmp_path, monkeypatch):
     monkeypatch.setenv("FOLEYFLOW_STATIC_DIR", str(tmp_path / "static"))
     r = client.get(f"{API_PREFIX}/health")
     assert r.status_code == 200
+
+
+# -- cache and security headers ---------------------------------------------
+
+
+def test_index_is_not_cached_and_nosniff(client, tmp_path, monkeypatch):
+    """RFC 9111: index.html must be revalidated (no-cache), or heuristic
+    freshness can outlive a deploy and reference hashed asset filenames that
+    no longer exist. Applies to the root and every SPA deep link."""
+    _make_bundle(tmp_path)
+    monkeypatch.setenv("FOLEYFLOW_STATIC_DIR", str(tmp_path / "static"))
+    for path in ("/", f"/projects/{VALID_ID}/timeline"):
+        r = client.get(path)
+        assert r.status_code == 200
+        assert r.headers["cache-control"] == "no-cache"
+        assert r.headers["x-content-type-options"] == "nosniff"
+
+
+def test_assets_cached_immutably_and_nosniff(client, tmp_path, monkeypatch):
+    """Content-hashed /assets/* are immutable by construction — the one thing
+    safe to cache forever, and previously the one thing that was not cached."""
+    _make_bundle(tmp_path)
+    monkeypatch.setenv("FOLEYFLOW_STATIC_DIR", str(tmp_path / "static"))
+    for path in ("/assets/index-BEEdWDKB.js", "/assets/index-DtdrJn58.css"):
+        r = client.get(path)
+        assert r.status_code == 200
+        assert r.headers["cache-control"] == "public, max-age=31536000, immutable"
+        assert r.headers["x-content-type-options"] == "nosniff"
+
+
+def test_unbuilt_page_is_not_cached(client, tmp_path, monkeypatch):
+    """The unbuilt page is ephemeral — once the bundle exists it must not
+    linger in a cache."""
+    monkeypatch.setenv("FOLEYFLOW_STATIC_DIR", str(tmp_path / "static"))
+    r = client.get("/")
+    assert r.status_code == 200
+    assert r.headers["cache-control"] == "no-cache"
+    assert r.headers["x-content-type-options"] == "nosniff"
+
+
+# -- guard edges -------------------------------------------------------------
+
+
+def test_bare_api_path_stays_json_not_spa(client, tmp_path, monkeypatch):
+    """The one hole in the api/ guard: bare /api fell through to the SPA."""
+    _make_bundle(tmp_path)
+    monkeypatch.setenv("FOLEYFLOW_STATIC_DIR", str(tmp_path / "static"))
+    r = client.get("/api")
+    assert r.status_code == 404
+    assert not r.headers["content-type"].startswith("text/html")
+
+
+def test_head_root_supported(client, tmp_path, monkeypatch):
+    """HEAD-based uptime monitors probe / with HEAD; it must not 405."""
+    _make_bundle(tmp_path)
+    monkeypatch.setenv("FOLEYFLOW_STATIC_DIR", str(tmp_path / "static"))
+    r = client.head("/")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert r.headers["cache-control"] == "no-cache"
+    assert r.content == b""  # HEAD never carries a body
+
+
+def test_head_deep_link_supported(client, tmp_path, monkeypatch):
+    _make_bundle(tmp_path)
+    monkeypatch.setenv("FOLEYFLOW_STATIC_DIR", str(tmp_path / "static"))
+    r = client.head(f"/projects/{VALID_ID}/timeline")
+    assert r.status_code == 200
+
+
+def test_head_root_when_unbuilt(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("FOLEYFLOW_STATIC_DIR", str(tmp_path / "static"))
+    r = client.head("/")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert r.headers["cache-control"] == "no-cache"
+    assert r.content == b""

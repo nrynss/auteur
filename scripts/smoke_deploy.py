@@ -11,6 +11,12 @@ Catches two failures already seen in production:
   2. FOLEYFLOW_LEDGER_PATH forcing an unwritable / ephemeral local ledger
      (ledger_writable false)
 
+Also catches the structural one the status code alone cannot: the "UI not
+built" page is deliberately a 200 (decision 8, local dev), so a bundle-less
+image — one whose Node stage silently produced nothing — passes any check
+that only looks at the status of `GET /`. The `spa` check asserts the built
+SPA specifically.
+
 Usage:
   uv run python scripts/smoke_deploy.py --base-url https://… \\
       [--expect-sha SHA] [--timeout S]
@@ -248,6 +254,46 @@ def check_read_content(client: httpx.Client, base: str) -> CheckResult:
     )
 
 
+# Marker that the *built* SPA was served — the bundle's mount point. The
+# "UI not built" page never contains it.
+_BUILT_SPA_MARKER = '<div id="app">'
+_UNBUILT_MARKER = "not built"
+
+
+def check_spa(client: httpx.Client, base: str) -> CheckResult:
+    """GET / must serve the built SPA, not the "UI not built" page.
+
+    The unbuilt page is deliberately a 200 (local-dev friendly, decision 8),
+    so a status-code probe cannot tell a bundle-less image from a healthy
+    one. A deployed image always has the bundle; if this check fails, the
+    Node stage produced nothing and the deploy is broken even though /health
+    is green.
+    """
+    try:
+        r = client.get(_url(base, "/"))
+    except httpx.RequestError as e:
+        return CheckResult("spa", False, f"request failed: {e}")
+    if r.status_code != 200:
+        return CheckResult("spa", False, f"HTTP {r.status_code} on GET /")
+    content_type = r.headers.get("content-type", "")
+    if not content_type.startswith("text/html"):
+        return CheckResult(
+            "spa", False,
+            f"GET / returned {content_type!r}, expected text/html",
+        )
+    if _UNBUILT_MARKER in r.text:
+        return CheckResult(
+            "spa", False,
+            "GET / returned the 'UI not built' page — the image has no bundle",
+        )
+    if _BUILT_SPA_MARKER not in r.text:
+        return CheckResult(
+            "spa", False,
+            "GET / returned HTML but without the built SPA mount point",
+        )
+    return CheckResult("spa", True, "GET / serves the built SPA")
+
+
 def run_checks(
     base_url: str,
     expect_sha: str,
@@ -327,6 +373,7 @@ def run_checks(
         results.append(check_ledger_writable(client, base_url))
         results.append(check_projects_list(client, base_url))
         results.append(check_read_content(client, base_url))
+        results.append(check_spa(client, base_url))
         return results
     finally:
         if own_client:
@@ -342,7 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="smoke_deploy.py",
         description=(
             "Post-deploy smoke check: health, storage, worker, git_sha, "
-            "ledger_writable, and one read endpoint."
+            "ledger_writable, a read endpoint, and the built SPA at /."
         ),
     )
     p.add_argument(

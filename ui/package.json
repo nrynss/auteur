@@ -9,7 +9,8 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "npm run typegen && vite build",
+    "build": "npm run typegen && npm run check && vite build",
+    "build:fast": "npm run typegen && vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "typegen": "openapi-typescript openapi.json -o src/lib/api/schema.d.ts",
     "preview": "vite preview"

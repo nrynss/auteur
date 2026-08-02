@@ -14,6 +14,12 @@ point the router at a fixture bundle without writing into the source tree.
 The catch-all must never swallow API traffic: unknown `/api/v1/*` paths stay
 the API's JSON 404, and files are served only when they actually exist in the
 static directory (with a path-traversal guard on the file case).
+
+Cache headers are deliberate on both sides of the bundle (RFC 9111):
+`index.html` is `no-cache` so a deploy is visible immediately — heuristic
+freshness could outlive a deploy and reference hashed asset filenames that no
+longer exist — while content-hashed `/assets/*` are immutable by construction
+and safe to cache for a year. Both carry `X-Content-Type-Options: nosniff`.
 """
 
 from __future__ import annotations
@@ -27,6 +33,13 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 STATIC_DIR = Path(__file__).parent / "static"
 
 router = APIRouter()
+
+# Cache headers. no-cache means "revalidate before reuse", not "don't store" —
+# the browser still caches index.html, it just checks with the server on every
+# navigation, which is exactly what a deploy needs.
+_INDEX_CACHE_CONTROL = "no-cache"
+_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
+_SECURITY_HEADERS = {"X-Content-Type-Options": "nosniff"}
 
 _UNBUILT_PAGE = """<!doctype html>
 <html lang="en">
@@ -77,27 +90,44 @@ def _index_path() -> Path:
     return static_dir() / "index.html"
 
 
+def _index_headers() -> dict:
+    return {"Cache-Control": _INDEX_CACHE_CONTROL, **_SECURITY_HEADERS}
+
+
+def _asset_headers() -> dict:
+    return {"Cache-Control": _ASSET_CACHE_CONTROL, **_SECURITY_HEADERS}
+
+
 def _serve_index() -> Response:
-    return FileResponse(_index_path(), media_type="text/html")
+    return FileResponse(_index_path(), media_type="text/html",
+                        headers=_index_headers())
 
 
 def _unbuilt_page() -> Response:
-    return HTMLResponse(_UNBUILT_PAGE, status_code=200)
+    return HTMLResponse(_UNBUILT_PAGE, status_code=200, headers=_index_headers())
 
 
-@router.get("/", include_in_schema=False, response_class=HTMLResponse)
+# Both routes answer HEAD as well as GET: HEAD-based uptime monitors, CDNs and
+# load balancers probe the root with HEAD, and Starlette does not auto-register
+# HEAD for GET routes.
+@router.api_route("/", methods=["GET", "HEAD"], include_in_schema=False,
+                  response_class=HTMLResponse)
 def dashboard() -> Response:
     if _index_path().is_file():
         return _serve_index()
     return _unbuilt_page()
 
 
-@router.get("/{path:path}", include_in_schema=False, response_class=HTMLResponse)
+@router.api_route("/{path:path}", methods=["GET", "HEAD"],
+                   include_in_schema=False, response_class=HTMLResponse)
 def spa_fallback(path: str) -> Response:
     # Unknown API paths keep the API's own 404 (JSON error envelope), never
     # the SPA. The API router is registered before this one in main.py, so
-    # known routes never reach here; only unmatched ones do.
-    if path.startswith("api/") or path in ("docs", "redoc", "openapi.json"):
+    # known routes never reach here; only unmatched ones do. Bare /api is
+    # caught too — it is the one hole in a plain prefix check.
+    if path == "api" or path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="Not found")
+    if path in ("docs", "redoc", "openapi.json"):
         raise HTTPException(status_code=404, detail="Not found")
 
     root = static_dir()
@@ -112,7 +142,7 @@ def spa_fallback(path: str) -> Response:
         except ValueError:
             raise HTTPException(status_code=404, detail="Not found")
         if candidate.is_file():
-            return FileResponse(candidate)
+            return FileResponse(candidate, headers=_asset_headers())
 
     if _index_path().is_file():
         return _serve_index()

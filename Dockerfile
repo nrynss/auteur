@@ -37,20 +37,24 @@ RUN uv sync --frozen --no-dev
 RUN .venv/bin/python scripts/emit_openapi.py --out /schema/openapi.json
 
 
-FROM node:22-slim AS ui
+FROM node:22.12-slim AS ui
 
 # ui/ is built here and only its output is copied onward — no Node ships to
-# Cloud Run. Node 22 is the floor for Vite 8 (^20.19 || >=22.12).
-WORKDIR /app
+# Cloud Run. Node 22.12 is the floor for Vite 8 (^20.19 || >=22.12); pinned so
+# a floating node:22-slim tag can never resolve below the engines floor in
+# ui/package.json. The stage is conventional: WORKDIR is the ui root, npm ci
+# runs from package.json at the stage root, and the build runs in the same
+# directory — no reliance on ancestor node_modules resolution.
+WORKDIR /app/ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci
 
-COPY ui/ ./ui/
-COPY --from=build /schema/openapi.json ./ui/openapi.json
+COPY ui/ ./
+COPY --from=build /schema/openapi.json ./openapi.json
 # vite.config.ts writes the bundle to ../src/foleyflow/api/static — i.e.
 # /app/src/foleyflow/api/static in this stage — so the runtime image can copy
 # the built assets straight into the installed package.
-RUN cd ui && npm run build
+RUN npm run build
 
 
 FROM python:3.14-slim-bookworm

@@ -348,6 +348,37 @@ deep links, hashed assets, API 404s not swallowed, traversal refused).
 `App.svelte` shell is deliberately minimal — a health + project-list readout
 that proves the schema-driven client round trip.
 
+**Hardened post-landing (review fixes):**
+
+- **Contract drift fails the artifact build, not just CI** (decision 5).
+  `npm run build` is `typegen && check && vite build` — svelte-check runs
+  inside the Dockerfile's Node stage, so `docker build` fails on drifted
+  types. `build:fast` (typegen + vite build, no check) exists for iteration;
+  the default build is the safe one. CI's explicit check step stays so a
+  failure is attributable to a named step.
+- **The Dockerfile's Node stage is conventional and verified.** `WORKDIR
+  /app/ui`, `npm ci` at the stage root, build from the same directory — no
+  ancestor node_modules resolution — and `node:22.12-slim` is pinned so the
+  Vite 8 engines floor (^20.19 || >=22.12) is real, not incidental. CI gains
+  a `docker-build` job (master pushes + `workflow_dispatch`, not PRs) that
+  builds the image and asserts the acceptance criterion: container starts,
+  `GET /` serves the built SPA (not the unbuilt page), a deep link returns
+  the SPA, and node/npm are absent from the runtime image.
+- **Cache headers are deliberate in both directions** (RFC 9111).
+  `index.html` (root, deep links, and the unbuilt page) is `Cache-Control:
+  no-cache` so heuristic freshness cannot outlive a deploy and reference
+  hashed assets that no longer exist; content-hashed `/assets/*` are `public,
+  max-age=31536000, immutable`. Both carry `X-Content-Type-Options: nosniff`.
+- **The catch-all guard has no hole:** bare `/api` and `/api/*` are refused
+  (the API's JSON 404), and both routes answer `HEAD` as well as `GET` so
+  HEAD-based uptime monitors see the root as healthy.
+- **Post-deploy smoke detects a bundle-less image** (task 12's
+  `scripts/smoke_deploy.py`): the unbuilt page stays a 200 for local dev
+  (tests pin it), so `check_spa` asserts `GET /` serves the built SPA
+  specifically — mount point `<div id="app">` present, "not built" absent.
+  A structurally broken image now fails the smoke even though /health is
+  green.
+
 ## 7.7 Component layer and design tokens — M
 
 **Depends on:** 7.6. **Files:** `ui/src/lib/`.

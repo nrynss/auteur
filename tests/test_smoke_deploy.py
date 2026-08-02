@@ -97,12 +97,17 @@ def _openapi():
 
 
 def _router(overrides: dict | None = None):
-    """Map path (+ optional query key) -> (status, body)."""
+    """Map path (+ optional query key) -> (status, body).
+
+    A str body is served as text/html — used for GET / (the built SPA),
+    which `check_spa` probes.
+    """
     table = {
         "/api/v1/health": (200, _health()),
         "/api/v1/quota": (200, _quota()),
         "/api/v1/projects": (200, _projects()),
         "/api/v1/openapi.json": (200, _openapi()),
+        "/": (200, '<!doctype html><div id="app"></div>FoleyFlow control room'),
     }
     pid = "proj_01KTEST000000000000000000"
     table[f"/api/v1/projects/{pid}/dossier"] = (200, _dossier(pid))
@@ -119,6 +124,12 @@ def _router(overrides: dict | None = None):
         code, body = table[path]
         if body is None:
             return httpx.Response(code, content=b"")
+        if isinstance(body, str):
+            return httpx.Response(
+                code, text=body, headers={"content-type": "text/html"}
+            )
+        if isinstance(body, bytes):
+            return httpx.Response(code, content=body)
         return httpx.Response(code, json=body)
 
     return handler
@@ -146,8 +157,37 @@ def test_all_pass():
     names = [r.name for r in results]
     assert names == [
         "health", "storage", "worker", "git_sha",
-        "ledger_writable", "projects", "read_content",
+        "ledger_writable", "projects", "read_content", "spa",
     ]
+
+
+def test_bundleless_image_fails_the_spa_check():
+    """The 'UI not built' page is a 200, so a status-code probe cannot catch
+    a bundle-less image — check_spa must. (Decision 8 keeps the 200 for local
+    dev; the smoke path asserts the built SPA specifically.)"""
+    overrides = {
+        "/": (200, "<html><h2>The control-room UI is not built</h2></html>"),
+    }
+    with _client(overrides) as client:
+        results = smoke.run_checks(BASE, FULL_SHA, client=client)
+    assert not smoke.all_passed(results)
+    assert "spa" in _failed_names(results)
+    assert "not built" in _messages(results)["spa"]
+
+
+def test_spa_check_rejects_wrong_content_type():
+    overrides = {"/": (200, b"")}
+    with _client(overrides) as client:
+        results = smoke.run_checks(BASE, FULL_SHA, client=client)
+    assert "spa" in _failed_names(results)
+
+
+def test_spa_check_requires_the_mount_point():
+    overrides = {"/": (200, "<!doctype html><html></html>")}
+    with _client(overrides) as client:
+        results = smoke.run_checks(BASE, FULL_SHA, client=client)
+    assert "spa" in _failed_names(results)
+    assert "mount point" in _messages(results)["spa"]
 
 
 def test_short_sha_prefix_match():

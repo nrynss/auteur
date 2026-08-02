@@ -30,7 +30,8 @@ surfacing at demo time.
 
 ```sh
 npm run check   # svelte-check (type-check)
-npm run build   # typegen + vite build → src/foleyflow/api/static/
+npm run build   # typegen + svelte-check + vite build → src/foleyflow/api/static/
+npm run build:fast  # typegen + vite build, no type-check (iteration only)
 ```
 
 The Docker build runs `npm ci && npm run build` in a Node stage and copies

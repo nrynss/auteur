@@ -4,6 +4,7 @@ on:
   push:
     branches: [master, main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -98,3 +99,66 @@ jobs:
             echo "error: built SPA assets are tracked in git: $tracked" >&2
             exit 1
           fi
+
+  docker-build:
+    # Unit 7.6's acceptance criterion — the image serves the SPA with no Node
+    # in it — is otherwise verified by nobody. A full docker build on every PR
+    # is slow, so this runs on master pushes (every one is a deploy candidate)
+    # and on demand via workflow_dispatch; it is the pre-deploy gate.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: |
+          docker build \
+            --build-arg FOLEYFLOW_GIT_SHA="$GITHUB_SHA" \
+            --build-arg FOLEYFLOW_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t foleyflow:ci .
+
+      - name: Start the container
+        run: |
+          docker run -d --name foleyflow-ci -p 8099:8080 foleyflow:ci
+          for i in $(seq 1 45); do
+            curl -fsS http://localhost:8099/api/v1/health >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          echo "container did not become ready" >&2
+          docker logs foleyflow-ci >&2 || true
+          exit 1
+
+      - name: Assert the SPA is served, not the unbuilt page
+        run: |
+          body=$(curl -fsS http://localhost:8099/)
+          echo "$body" | grep -q '<div id="app">' || {
+            echo "error: GET / did not return the built SPA mount point" >&2
+            exit 1
+          }
+          if echo "$body" | grep -qi 'not built'; then
+            echo "error: GET / returned the 'UI not built' page" >&2
+            exit 1
+          fi
+
+      - name: Assert a deep link returns the SPA
+        run: |
+          curl -fsS \
+            http://localhost:8099/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ/timeline \
+            | grep -q '<div id="app">'
+
+      - name: Assert no Node ships in the runtime image
+        run: |
+          if docker exec foleyflow-ci sh -c 'command -v node'; then
+            echo "error: node is present in the runtime image" >&2
+            exit 1
+          fi
+          if docker exec foleyflow-ci sh -c 'command -v npm'; then
+            echo "error: npm is present in the runtime image" >&2
+            exit 1
+          fi
+          echo "no node/npm in the runtime image (expected)"
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f foleyflow-ci || true
