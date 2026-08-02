@@ -29,3 +29,9 @@ button {
   outline: var(--focus-ring);
   outline-offset: 2px;
 }
+
+/* While the timeline grip drag is in flight (timeline-grip.ts). */
+body.resizing {
+  cursor: row-resize;
+  user-select: none;
+}

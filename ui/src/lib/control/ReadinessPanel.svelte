@@ -1,16 +1,26 @@
 <script lang="ts">
   /** Readiness tab: the §6.1 checklist (real items from ProjectDetail) and
-   * the latest run's stages (live mid-flight — 7.11 polls; read-only here). */
+   * the most recent stage-bearing run (live mid-flight — 7.11 polls;
+   * read-only here). Runs arrive oldest-first, so the \"latest\" is the last
+   * element, and a run with stages is the one worth showing. */
   import ChecklistRow from "./ChecklistRow.svelte";
   import StageRow from "../components/StageRow.svelte";
   import type { ProjectDetail, RunOut } from "../api/projects";
 
   interface Props {
     project: ProjectDetail;
-    latestRun: RunOut | null;
+    runs: RunOut[];
   }
 
-  let { project, latestRun }: Props = $props();
+  let { project, runs }: Props = $props();
+
+  // The most recent run that actually recorded stages; fall back to the most
+  // recent run overall (which may legitimately have none, e.g. an export).
+  const latestRun = $derived(
+    [...runs].reverse().find((r) => (r.stages ?? []).length > 0) ??
+      runs[runs.length - 1] ??
+      null,
+  );
 </script>
 
 <div class="panel-body">

@@ -540,6 +540,24 @@ creation/upload (7.13), polish incl. full keyboard map (7.14). The §9 states
 that 7.8 needed (loading, error, empty) are the minimal honest versions;
 loading/empty/error polish is 7.14's.
 
+**Review fixes folded in:**
+
+- **Runs arrive oldest-first** (`ProjectStore.list_runs`); ReadinessPanel now
+  takes the run list and shows the most recent stage-bearing run (falling
+  back to the latest run overall), and HistoryPanel's "latest mix" is the
+  last mix element — both were off-by-one against the ordering. The mix
+  waveform is labelled with `project.mix_run_id`, the same run the peaks were
+  fetched for.
+- **Canvases repaint on theme change** (control-room.md §6): `theme.ts`
+  dispatches `ff:theme-change`; WaveformStrip and EnvelopeCanvas listen, so
+  the waveform ink updates when the toggle flips.
+- **A non-404 ancillary failure is not absence**: `quiet()` sets an
+  `ancillaryFailed` flag and the rail shows a warning row ("the empty rows
+  below are a failure, not absence") instead of silently rendering empty
+  states that look like the data does not exist.
+- The grip's `body.resizing` cursor class now has a rule (was set, never
+  styled); the timeline's resize action owns it.
+
 ## 7.9 A/B player and browser preview — L
 
 **Depends on:** 7.4, 7.8.

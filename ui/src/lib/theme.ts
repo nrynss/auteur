@@ -35,6 +35,8 @@ export function setTheme(theme: Theme): void {
     // Private mode / storage disabled: the attribute still applies for this
     // session; persistence is best-effort.
   }
+  // Canvas-drawn components repaint on theme change (control-room.md §6).
+  window.dispatchEvent(new Event("ff:theme-change"));
 }
 
 export function toggleTheme(): Theme {

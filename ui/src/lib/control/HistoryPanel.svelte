@@ -16,12 +16,15 @@
     runs: RunOut[];
     events: EventOut[];
     mixPeaks: PeaksResponse | null;
+    /** The run the mix peaks were fetched for — the project's latest mix. */
+    mixRunId: string | null;
   }
 
-  let { versions, runs, events, mixPeaks }: Props = $props();
+  let { versions, runs, events, mixPeaks, mixRunId }: Props = $props();
 
+  // Runs arrive oldest-first, so the latest mix is the LAST one.
   const mixes = $derived(runs.filter((r) => r.kind === "mix"));
-  const latestMix = $derived(mixes[0] ?? null);
+  const latestMix = $derived(mixes[mixes.length - 1] ?? null);
 
   const clock = (iso: string) => iso.slice(11, 19);
 </script>
@@ -58,9 +61,9 @@
     </ul>
   {/if}
 
-  {#if latestMix && mixPeaks}
+  {#if mixRunId && mixPeaks}
     <div class="mixwave">
-      <span class="mixwave-label">latest mix · {latestMix.id}</span>
+      <span class="mixwave-label">latest mix · {mixRunId}</span>
       <WaveformStrip peaks={mixPeaks} />
     </div>
   {/if}

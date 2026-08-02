@@ -3,7 +3,6 @@
    * thumbnails side by side with their measured mean luma, the delta against
    * the threshold, the confidence, and the sentence that nothing was
    * corrected. */
-  import { formatSeconds } from "../format";
   import type { SceneOut } from "../api/projects";
 
   interface ContinuityIssue {

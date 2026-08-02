@@ -43,8 +43,13 @@
   $effect(() => {
     paint();
     const onResize = () => paint();
+    const onTheme = () => paint();
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    window.addEventListener("ff:theme-change", onTheme);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("ff:theme-change", onTheme);
+    };
   });
 </script>
 

@@ -61,6 +61,9 @@
   let status = $state<"loading" | "ready" | "error">("loading");
   let error = $state("");
   let tab = $state<Tab>("readiness");
+  // A non-404 ancillary failure is NOT absence — say so rather than let a
+  // panel render an empty state that looks like the data does not exist.
+  let ancillaryFailed = $state(false);
 
   // An ancillary endpoint that has not produced yet is a 404 → empty state,
   // never an error. Only the project record failing is fatal.
@@ -69,6 +72,7 @@
       return await p;
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) return null;
+      ancillaryFailed = true;
       console.error("control room: ancillary fetch failed", e);
       return null;
     }
@@ -148,6 +152,12 @@
       </section>
 
       <aside class="rail">
+        {#if ancillaryFailed}
+          <p class="load-warn" role="status">
+            Some data failed to load — the empty rows below are a failure, not
+            absence. See the console.
+          </p>
+        {/if}
         <div class="tabs" role="tablist" aria-label="Project">
           {#each tabs as t (t.key)}
             <button
@@ -164,13 +174,13 @@
         </div>
 
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-readiness" id="tab-readiness" hidden={tab !== "readiness"}>
-          <ReadinessPanel {project} latestRun={runs[0] ?? null} />
+          <ReadinessPanel {project} {runs} />
         </div>
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-evidence" id="tab-evidence" hidden={tab !== "evidence"}>
           <EvidencePanel {qa} {scenes} />
         </div>
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-history" id="tab-history" hidden={tab !== "history"}>
-          <HistoryPanel {versions} {runs} {events} {mixPeaks} />
+          <HistoryPanel {versions} {runs} {events} {mixPeaks} mixRunId={project.mix_run_id ?? null} />
         </div>
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-dossier" id="tab-dossier" hidden={tab !== "dossier"}>
           <DossierPanel {dossier} />
@@ -266,6 +276,15 @@
     padding: 7px 10px 0;
     border-bottom: 1px solid var(--line);
     flex: 0 0 auto;
+  }
+
+  .load-warn {
+    margin: 0;
+    padding: 7px 13px;
+    font-size: var(--text-11);
+    color: var(--warn);
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--warn-q);
   }
 
   .tabs button {
