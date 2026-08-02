@@ -10,6 +10,7 @@ dashboard, and a test that stubbed the transport out would prove nothing.
 """
 
 import json
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,6 +25,25 @@ from foleyflow.storage import LocalBackend
 @pytest.fixture
 def store(tmp_path):
     return ProjectStore(LocalBackend(str(tmp_path / "b2")), work_dir=str(tmp_path / "w"))
+
+
+@pytest.fixture(autouse=True)
+def stub_worker_probe(monkeypatch):
+    """`foleyflow health` always asks the API to probe the SFX worker.
+
+    Autouse, and deliberately blunt: without it this module's "no network"
+    promise quietly becomes false the moment a test touches health, and it
+    would pass anyway on a machine that happens to have the worker running.
+    Individual tests override it by patching `get_adapter` again.
+    """
+    import foleyflow.providers as providers
+
+    class Stub:
+        def health(self):
+            return {"status": "ok", "model": "openmoss/moss-soundeffect-v2",
+                    "device": "stub-gpu", "auth_required": False}
+
+    monkeypatch.setattr(providers, "get_adapter", lambda name: Stub())
 
 
 @pytest.fixture
@@ -63,7 +83,40 @@ def run(client, *argv):
 
 def test_health(client, capsys):
     assert run(client, "health") == EXIT_OK
-    assert "storage=ok" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "storage=ok" in out
+    assert "worker  ok" in out
+    assert "stub-gpu" in out
+
+
+def test_health_warns_when_the_worker_wants_a_token_we_lack(client, capsys, monkeypatch):
+    """Healthy-looking and unable to generate a single stem."""
+    import foleyflow.providers as providers
+
+    class Stub:
+        def health(self):
+            return {"status": "ok", "auth_required": True,
+                    "auth_configured": False}
+
+    monkeypatch.setattr(providers, "get_adapter", lambda name: Stub())
+    assert run(client, "health") == EXIT_OK
+    captured = capsys.readouterr()
+    assert "FOLEYFLOW_SFX_WORKER_TOKEN" in captured.err
+
+
+def test_health_warns_but_succeeds_when_the_worker_is_down(client, capsys, monkeypatch):
+    """Exit 0: cached renders still work, so this is not a failed health check."""
+    import foleyflow.providers as providers
+
+    class Stub:
+        def health(self):
+            raise OSError("connection refused")
+
+    monkeypatch.setattr(providers, "get_adapter", lambda name: Stub())
+    assert run(client, "health") == EXIT_OK
+    captured = capsys.readouterr()
+    assert "worker  unreachable" in captured.out
+    assert "connection refused" in captured.err
 
 
 def test_quota_reports_estimates(client, capsys):
@@ -338,3 +391,135 @@ def test_render_unknown_flag_exits_nonzero():
     with pytest.raises(SystemExit) as excinfo:
         main(["render", "clip.mp4", "--not-a-real-flag"])
     assert excinfo.value.code != 0
+
+
+# -- prewarm -----------------------------------------------------------------
+
+@pytest.fixture
+def timeline_file(tmp_path):
+    from foleyflow.timeline_io import save_timeline
+
+    path = tmp_path / "tl.json"
+    save_timeline(_timeline(), str(path))
+    return str(path)
+
+
+@pytest.fixture
+def prewarm_backend(monkeypatch, tmp_path):
+    """A LocalBackend standing in for B2, plus a recording `prewarm`.
+
+    Patched at the module the command imports from, because `cmd_prewarm`
+    imports inside the function body — the point is to keep `fal_client` and
+    boto3 off the import path of a CLI that mostly does not need them.
+    """
+    import foleyflow.sfx_cache as sfx_cache
+    import foleyflow.storage as storage
+    from foleyflow.storage import LocalBackend
+
+    backend = LocalBackend(str(tmp_path / "cache"))
+    monkeypatch.setattr(storage, "get_backend", lambda *a, **k: backend)
+
+    calls = []
+
+    class Result:
+        def __init__(self, request):
+            self.request = request
+            self.ok = True
+            self.error = None
+
+    def _prewarm(be, work, requests, **kw):
+        calls.append(list(requests))
+        return [Result(r) for r in requests]
+
+    monkeypatch.setattr(sfx_cache, "prewarm", _prewarm)
+    return backend, calls
+
+
+def test_prewarm_dry_run_generates_nothing(client, capsys, timeline_file,
+                                           prewarm_backend):
+    _, calls = prewarm_backend
+    assert run(client, "prewarm", timeline_file, "--dry-run") == EXIT_OK
+    out = capsys.readouterr().out
+    assert "to generate" in out
+    assert "--dry-run" in out
+    assert calls == [], "dry-run must not generate"
+
+
+def test_prewarm_generates_only_the_misses(client, capsys, timeline_file,
+                                           prewarm_backend):
+    """A warm stem must not be regenerated — that is the whole point."""
+    from foleyflow.assemble import plan_requests
+    from foleyflow.sfx_cache import cache_object_key
+    from foleyflow.timeline_io import load_timeline
+
+    backend, calls = prewarm_backend
+    timeline = load_timeline(timeline_file)
+    planned = plan_requests(timeline, timeline.duration)
+    assert len(planned) > 1, "need at least two stems for this to mean anything"
+
+    # Seed exactly one stem into the cache.
+    warm = planned[0]
+    key = cache_object_key(warm.endpoint, warm.prompt, warm.duration_s, "")
+    seed = backend.local_path(key) if hasattr(backend, "local_path") else None
+    import os
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        f.write(b"RIFF0000WAVE")
+        tmp_wav = f.name
+    backend.put(key, tmp_wav, content_type="audio/wav")
+    os.unlink(tmp_wav)
+
+    assert run(client, "prewarm", timeline_file) == EXIT_OK
+    out = capsys.readouterr().out
+    assert f"{len(planned)} stems planned: 1 cached" in out
+
+    assert len(calls) == 1
+    requested = {r.prompt for r in calls[0]}
+    assert warm.prompt not in requested
+    assert len(calls[0]) == len(planned) - 1
+
+
+def test_prewarm_reports_failures_and_exits_nonzero(client, capsys, timeline_file,
+                                                    monkeypatch, prewarm_backend):
+    import foleyflow.sfx_cache as sfx_cache
+
+    class Failed:
+        def __init__(self, request):
+            self.request = request
+            self.ok = False
+            self.error = "worker unreachable"
+
+    monkeypatch.setattr(sfx_cache, "prewarm",
+                        lambda be, work, reqs, **kw: [Failed(r) for r in reqs])
+    assert run(client, "prewarm", timeline_file) == EXIT_API_ERROR
+    assert "worker unreachable" in capsys.readouterr().err
+
+
+def test_prewarm_sfx_tier_selects_a_different_endpoint(client, capsys,
+                                                       timeline_file,
+                                                       prewarm_backend, monkeypatch):
+    """`--sfx-tier` must apply before planning, or it warms the wrong keys.
+
+    Also asserts the env override is restored: a leftover FOLEYFLOW_SFX_TIER
+    would silently re-route every subsequent test onto the paid endpoint.
+    """
+    monkeypatch.delenv("FOLEYFLOW_SFX_TIER", raising=False)
+
+    run(client, "prewarm", timeline_file, "--sfx-tier", "test", "--dry-run")
+    test_out = capsys.readouterr().out
+    assert "FOLEYFLOW_SFX_TIER" not in os.environ
+
+    run(client, "prewarm", timeline_file, "--sfx-tier", "paid", "--dry-run")
+    paid_out = capsys.readouterr().out
+    assert "FOLEYFLOW_SFX_TIER" not in os.environ
+
+    assert "tier test" in test_out and "moss-soundeffect" in test_out
+    assert "tier paid" in paid_out
+    assert "moss-soundeffect" not in paid_out.splitlines()[0]
+
+
+def test_prewarm_rejects_an_unreadable_timeline(client, capsys, tmp_path,
+                                                prewarm_backend):
+    missing = str(tmp_path / "nope.json")
+    assert run(client, "prewarm", missing) != EXIT_OK
+    assert "cannot read timeline" in capsys.readouterr().err

@@ -338,7 +338,35 @@ class QuotaResponse(BaseModel):
 
 # -- health -----------------------------------------------------------------
 
+class WorkerHealth(BaseModel):
+    """Reachability of the SFX worker behind the active tier.
+
+    `status` is one of:
+
+    * `ok` — reachable and loaded;
+    * `loading` — reachable, model still building (the worker reports this for
+      its first ~13s and refuses generation with 503 meanwhile);
+    * `unreachable` — the probe failed. `detail` says how;
+    * `not_applicable` — the active tier is served by a hosted API, so there is
+      no worker to probe.
+
+    `auth_configured` is false when the worker demands a bearer token and this
+    process holds none. That combination reads as healthy from the outside and
+    fails every generation, so it is called out rather than folded into `ok`.
+    """
+
+    status: str
+    tier: Optional[str] = None
+    endpoint: Optional[str] = None
+    model: Optional[str] = None
+    device: Optional[str] = None
+    auth_required: Optional[bool] = None
+    auth_configured: Optional[bool] = None
+    detail: Optional[str] = None
+
+
 class HealthResponse(BaseModel):
     status: str
     storage: str
     version: str
+    worker: Optional[WorkerHealth] = None

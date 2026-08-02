@@ -121,6 +121,72 @@ def test_health_reports_degraded_when_storage_is_broken(store):
     assert body["status"] == "degraded"
 
 
+def test_health_does_not_probe_the_worker_unless_asked(client, monkeypatch):
+    """The default path must make no outbound call.
+
+    This endpoint is what a platform liveness check hits. If it probed the SFX
+    worker every time, a restart loop would be one unplugged GPU away — and the
+    offline test suite would quietly start doing network I/O.
+    """
+    import foleyflow.providers as providers
+
+    def _boom(name):
+        raise AssertionError("get_adapter must not be called without ?worker")
+
+    monkeypatch.setattr(providers, "get_adapter", _boom)
+    body = client.get(f"{API_PREFIX}/health").json()
+    assert body["worker"] is None
+
+
+def _stub_local_adapter(monkeypatch, payload=None, exc=None):
+    """Replace only the adapter, so real tier resolution is still exercised."""
+    import foleyflow.providers as providers
+
+    class Stub:
+        def health(self):
+            if exc is not None:
+                raise exc
+            return payload
+
+    monkeypatch.setattr(providers, "get_adapter", lambda name: Stub())
+
+
+def test_health_reports_a_reachable_worker(client, monkeypatch):
+    _stub_local_adapter(monkeypatch, payload={
+        "status": "ok", "model": "openmoss/moss-soundeffect-v2",
+        "device": "NVIDIA GeForce RTX 4070 SUPER",
+        "auth_required": True, "auth_configured": True,
+    })
+    body = client.get(f"{API_PREFIX}/health", params={"worker": "true"}).json()
+    worker = body["worker"]
+    assert worker["status"] == "ok"
+    assert worker["device"] == "NVIDIA GeForce RTX 4070 SUPER"
+    # The tier came from real config, not the stub.
+    assert worker["tier"] == "test"
+    assert worker["endpoint"] == "openmoss/moss-soundeffect-v2"
+
+
+def test_an_unreachable_worker_does_not_make_the_api_unhealthy(client, monkeypatch):
+    """A fully cached render needs no worker, so this must not read as down."""
+    _stub_local_adapter(monkeypatch, exc=OSError("connection refused"))
+    body = client.get(f"{API_PREFIX}/health", params={"worker": "true"}).json()
+    assert body["status"] == "ok"
+    assert body["storage"] == "ok"
+    assert body["worker"]["status"] == "unreachable"
+    assert "connection refused" in body["worker"]["detail"]
+
+
+def test_health_flags_a_worker_wanting_a_token_we_do_not_have(client, monkeypatch):
+    """Reads as healthy from outside and fails every generation."""
+    _stub_local_adapter(monkeypatch, payload={
+        "status": "ok", "auth_required": True, "auth_configured": False,
+    })
+    worker = client.get(f"{API_PREFIX}/health",
+                        params={"worker": "true"}).json()["worker"]
+    assert worker["auth_required"] is True
+    assert worker["auth_configured"] is False
+
+
 # -- projects ---------------------------------------------------------------
 
 def test_create_rejects_a_path_separator_in_the_filename(client):

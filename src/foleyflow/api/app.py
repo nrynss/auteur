@@ -45,6 +45,7 @@ from foleyflow.api.schemas import (
     TimelineResponse,
     TimelineVersionsResponse,
     UploadTarget,
+    WorkerHealth,
 )
 from foleyflow.api.uploads import create_upload_target, source_key
 from foleyflow.ids import is_valid
@@ -116,9 +117,17 @@ def create_app(store: Optional[ProjectStore] = None,
     # -- health -----------------------------------------------------------
 
     @app.get(f"{API_PREFIX}/health", response_model=HealthResponse, tags=["meta"])
-    def health() -> HealthResponse:
+    def health(worker: bool = False) -> HealthResponse:
         """Reports storage reachability too: an API that is up while B2 is not
-        will serve empty reads and accept writes that fail later."""
+        will serve empty reads and accept writes that fail later.
+
+        `?worker=true` additionally probes the SFX worker behind the active
+        tier. Off by default and deliberately so: this endpoint is what a
+        platform liveness check calls, and a liveness check that depends on a
+        third party can restart a perfectly healthy service because someone
+        else's GPU box is off. Operators ask for it explicitly — `foleyflow
+        health` always does.
+        """
         try:
             # exists() raises rather than returning False when the answer is
             # unknown, so a rotated or wrongly-scoped credential surfaces here
@@ -129,7 +138,8 @@ def create_app(store: Optional[ProjectStore] = None,
         except Exception:
             storage = "unavailable"
         return HealthResponse(status="ok" if storage == "ok" else "degraded",
-                              storage=storage, version=VERSION)
+                              storage=storage, version=VERSION,
+                              worker=_worker_health() if worker else None)
 
     # -- projects ---------------------------------------------------------
 
@@ -536,6 +546,47 @@ def create_app(store: Optional[ProjectStore] = None,
 
 
 # -- helpers ----------------------------------------------------------------
+
+def _worker_health() -> WorkerHealth:
+    """Probe the SFX worker behind the active tier.
+
+    Deliberately non-fatal: a render whose stems are all cached needs no worker
+    at all, so a worker that is down must not make the API report itself
+    unhealthy. It must, however, be *visible* — the failure this exists to catch
+    is a demo where `/health` says ok, the first uncached stem is requested, and
+    only then does anyone discover the GPU box is off or the tunnel is down.
+
+    Only the self-hosted tier has something to probe; the paid and fallback
+    tiers are hosted APIs whose reachability is not ours to assert.
+    """
+    from foleyflow.providers import get_adapter
+    from foleyflow.tiers import active_tier_name, get_tier
+
+    tier_name = None
+    try:
+        tier_name = active_tier_name()
+        tier = get_tier(tier_name) if tier_name else None
+        if tier is None or tier.adapter != "local":
+            return WorkerHealth(status="not_applicable", tier=tier_name,
+                                endpoint=tier.endpoint if tier else None)
+        adapter = get_adapter("local")
+        payload = adapter.health()
+    except Exception as exc:
+        # Configuration errors land here too — an unresolvable tier is just as
+        # much "you cannot generate" as an unplugged GPU.
+        return WorkerHealth(status="unreachable", tier=tier_name,
+                            detail=f"{type(exc).__name__}: {exc}")
+
+    return WorkerHealth(
+        status=payload.get("status") or "ok",
+        tier=tier_name,
+        endpoint=tier.endpoint,
+        model=payload.get("model"),
+        device=payload.get("device"),
+        auth_required=payload.get("auth_required"),
+        auth_configured=payload.get("auth_configured"),
+    )
+
 
 def _stages_by_run(store: ProjectStore, project_id: str) -> dict:
     """Stage records from the event log, grouped by run id.

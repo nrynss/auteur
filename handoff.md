@@ -15,7 +15,7 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
 - One package, `src/foleyflow`. One CLI, `foleyflow`. The HTTP contract in
   `docs/api.md` is written ahead of the code and treated as source of truth; two
   endpoints in it are marked **NOT IMPLEMENTED** and are tasks 2 and 3 below.
-- `uv run pytest -q` → **429 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **440 passed, 1 skipped**. No provider credentials
   required: the billed calls are stubbed at two seams, `stems.generate_many`
   and `sfx_cache.generate_canonical_wav`. Everything else — ffmpeg, the mix, the
   shared cache, storage, the Genblaze pipelines — runs for real.
@@ -49,18 +49,12 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
 
 ---
 
-## 1. Surface worker reachability in `/health` — S
+## 1. Surface worker reachability in `/health` — S — **DONE**
 
-`LocalSfxAdapter.health()` (`providers/local.py:137`) is written, handles the
-`auth_required` / `auth_configured` distinction, and is **called by nothing**.
-`GET /api/v1/health` and `cmd_health` (`cli.py:153`) report only API and storage,
-so `foleyflow health` says `ok` while the worker is unreachable — and the first
-symptom is a failed render.
-
-Wire the probe into `HealthResponse` as a non-fatal field: a worker that is down
-must not make the API look unhealthy, because a fully cached render does not need
-it. Test both branches — worker up with and without a configured token, and
-worker unreachable.
+`GET /api/v1/health?worker=true` probes via `LocalSfxAdapter.health()` and returns
+a non-fatal `WorkerHealth` field. Off by default so platform liveness checks do
+not depend on the GPU box; `foleyflow health` always asks for it. Unreachable or
+auth-misconfigured workers print a warning but still exit 0.
 
 ## 2. `POST /projects/{id}/events/{index}/regenerate` — M
 
@@ -132,19 +126,13 @@ synthesised verdict. QA warnings are review prompts, not automatic corrections �
 the visual continuity check in particular is an adjacent-shot mean-luma
 comparison and must never be presented as a detected fault.
 
-## 7. Expose stem pre-warming as a CLI verb — S
+## 7. Expose stem pre-warming as a CLI verb — S — **DONE**
 
-`sfx_cache.prewarm()` exists and is used inside `render_mix`, but there is no way
-to warm a timeline's stems without performing a render. CLI verbs today:
-`health quota list create show analyze mix export timeline scenes qa events runs run`.
-
-This matters because switching the active SFX tier changes every cache key by
-design — the warm stems belong to whichever tier generated them. Warming a tier
-currently means rendering on it.
-
-Add a verb taking a project or a timeline file plus a tier, reporting hit/miss
-counts and generating only the misses. `plan_requests` already produces exactly
-the deduped request list, so the work is CLI surface and reporting.
+`foleyflow prewarm <timeline.json> [--sfx-tier paid|fallback|test] [--tier full]
+[--dry-run]`. Sets `$FOLEYFLOW_SFX_TIER` before `plan_requests` (and restores it
+after), probes hits/misses, generates only the misses via `sfx_cache.prewarm`.
+`--sfx-tier` is the SFX provider tier; `--tier` is the mix degradation ladder —
+they are not the same axis.
 
 ---
 
