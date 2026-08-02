@@ -102,7 +102,35 @@ as an optional local-JSONL override for tests; it is not the deploy path.
 Failed storage writes mark the process unwritable so `ledger_writable()` is
 honest without double-billing a successful generation.
 
-## 6. Control room UI — L
+## 6. Per-project budgets — M
+
+Budgets are the product's spine: a project is approved with a dollar cap, and
+the ledger work (task 5) is what makes spend queryable. But a ledger row has
+no project attribution, so "what has this project spent" is unanswerable —
+run metadata covers only mix runs, and analysis spend is invisible per
+project. The control-room UI (task 7) should render a budget, so this lands
+before it.
+
+1. **Attribute every ledger row to a project.** `log_transaction` gains an
+   optional `project_id`; `execute_with_ledger` reads it from a contextvar the
+   job runner sets per run, so the deep provider seam keeps its signature.
+   Old rows stay valid (the field is optional). A direct `foleyflow render`
+   has no project: its rows stay unattributed and the CLI footer still sums
+   globally.
+2. **Budget definition.** `budget_usd` on the project record (default from
+   `providers.toml [budgets]`, config not code). Models priced at $0.00 (the
+   self-hosted tier) simply do not consume it.
+3. **A budget read.** `GET /projects/{id}/budget` — configured, spent (sum of
+   attributed rows), estimated, remaining, per-model breakdown, and the
+   `ledger_writable` fiction flag. Reused by the dossier and the UI. A
+   `foleyflow budget <project_id>` verb, like every other read.
+
+Acceptance: two projects that each spend $0.30 report their own
+spent/remaining without cross-talk; analysis spend is attributed to the
+project that triggered it; and the UI shows the measured number with its
+source (the ledger), never a verdict — per SPEC §8.4.
+
+## 7. Control room UI — L
 
 SPEC §6.1. Only the throwaway static dashboard (`api/static/index.html`) exists.
 
@@ -116,7 +144,7 @@ synthesised verdict. QA warnings are review prompts, not automatic corrections �
 the visual continuity check in particular is an adjacent-shot mean-luma
 comparison and must never be presented as a detected fault.
 
-## 7. Expose stem pre-warming as a CLI verb — S — **DONE**
+## 8. Expose stem pre-warming as a CLI verb — S — **DONE**
 
 `foleyflow prewarm <timeline.json> [--sfx-tier paid|fallback|test] [--tier full]
 [--dry-run]`. Sets `$FOLEYFLOW_SFX_TIER` before `plan_requests` (and restores it
