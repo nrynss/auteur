@@ -22,6 +22,10 @@
     source: string;
     /** Override the "measured from" phrasing (budget spend is not measured). */
     sourcePhrase?: string;
+    /** False for long-form statements (e.g. the continuity headline, which
+     * is a recorded sentence rather than −21.4 LUFS) — UI font, wraps, and
+     * the row stops squeezing the label. Default true. */
+    mono?: boolean;
     /** Measured comparison when the value is past its threshold — present
      * means warn-tone + glyph + word. */
     warn?: string | null;
@@ -38,19 +42,20 @@
     source,
     sourcePhrase = "measured from",
     warn = null,
+    mono = true,
     children,
     body,
   }: Props = $props();
 </script>
 
 <div class="evidence">
-  <div class="row">
+  <div class="row" class:statement={!mono}>
     <span class="name">{label}</span>
-    <span class="valwrap">
+    <span class="valwrap" class:statement={!mono}>
       {#if warn}
         <Icon name="alert" size={11} />
       {/if}
-      <span class="val num" class:warn={!!warn}>{value}</span>
+      <span class="val" class:num={mono} class:statement={!mono} class:warn={!!warn}>{value}</span>
       {#if warn}
         <span class="warn-note">{warn}</span>
       {/if}
@@ -92,6 +97,15 @@
     min-width: 0;
   }
 
+  .row.statement {
+    align-items: flex-start;
+  }
+
+  .valwrap.statement {
+    flex: 1 1 auto;
+    justify-content: flex-end;
+  }
+
   .valwrap :global(svg) {
     color: var(--warn);
     flex: 0 0 auto;
@@ -101,6 +115,13 @@
   .val {
     font-size: var(--text-13);
     font-weight: var(--w-590);
+  }
+
+  .val.statement {
+    font-family: var(--font-ui);
+    font-weight: var(--w-560);
+    font-size: var(--text-12);
+    line-height: 1.45;
   }
 
   .val.warn {

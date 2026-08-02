@@ -55,39 +55,42 @@
   value={recorded}
   source={source}
   sourcePhrase="recorded at"
+  mono={false}
 >
-  <div class="compare">
-    <figure>
-      {#if prev?.thumbnail_url}
-        <img src={prev.thumbnail_url} alt={`Scene ${prev.index + 1}`} loading="lazy" />
-      {:else}
-        <span class="ph" aria-hidden="true"></span>
-      {/if}
-      <figcaption class="num">
-        <span>{issue.compared_with ?? "—"}</span>
-        <span>luma {a == null ? "—" : a.toFixed(1)}</span>
-      </figcaption>
-    </figure>
-    <figure>
-      {#if curr?.thumbnail_url}
-        <img src={curr.thumbnail_url} alt={`Scene ${curr.index + 1}`} loading="lazy" />
-      {:else}
-        <span class="ph" aria-hidden="true"></span>
-      {/if}
-      <figcaption class="num">
-        <span>{issue.scene_id ?? "—"}</span>
-        <span>luma {b == null ? "—" : b.toFixed(1)}</span>
-      </figcaption>
-    </figure>
-  </div>
-  <p class="note">
-    This is an <b>adjacent-shot mean-luma comparison</b>, not a detected fault.
-    The headline above is the QA report's recorded figure; the per-scene luma
-    below is from the scene analysis. Threshold
-    <b class="num">{threshold.toFixed(1)}</b>
-    {#if confidence != null}, confidence <b class="num">{confidence}</b>{/if}.
-    Nothing has been corrected — decide whether the difference is intentional.
-  </p>
+  {#snippet body()}
+    <div class="compare">
+      <figure>
+        {#if prev?.thumbnail_url}
+          <img src={prev.thumbnail_url} alt={`Scene ${prev.index + 1}`} loading="lazy" />
+        {:else}
+          <span class="ph" aria-hidden="true"></span>
+        {/if}
+        <figcaption class="num">
+          <span>{issue.compared_with ?? "—"}</span>
+          <span>luma {a == null ? "—" : a.toFixed(1)}</span>
+        </figcaption>
+      </figure>
+      <figure>
+        {#if curr?.thumbnail_url}
+          <img src={curr.thumbnail_url} alt={`Scene ${curr.index + 1}`} loading="lazy" />
+        {:else}
+          <span class="ph" aria-hidden="true"></span>
+        {/if}
+        <figcaption class="num">
+          <span>{issue.scene_id ?? "—"}</span>
+          <span>luma {b == null ? "—" : b.toFixed(1)}</span>
+        </figcaption>
+      </figure>
+    </div>
+    <p class="note">
+      This is an <b>adjacent-shot mean-luma comparison</b>, not a detected fault.
+      The headline above is the QA report's recorded figure; the per-scene luma
+      below is from the scene analysis. Threshold
+      <b class="num">{threshold.toFixed(1)}</b>
+      {#if confidence != null}, confidence <b class="num">{confidence}</b>{/if}.
+      Nothing has been corrected — decide whether the difference is intentional.
+    </p>
+  {/snippet}
 </Evidence>
 
 <style>

@@ -51,4 +51,26 @@ describe("ContinuityCard", () => {
     expect(body).toContain("adjacent-shot mean-luma comparison");
     expect(body).toContain("Nothing has been corrected");
   });
+
+  it("renders the comparison in Evidence's BODY slot, not the meter bar", () => {
+    // Regression: the comparison was previously passed as default children,
+    // which Evidence renders inside the 3px meter bar — thumbnails and note
+    // colliding with the source row. Assert structural position, not just
+    // substring presence. (Svelte scoped CSS inserts a hash into class
+    // attributes, so match class tokens.)
+    const { body } = renderCard("run_abc123");
+    const iBody = body.search(/class="body[^"]*"/);
+    const iBar = body.indexOf('class="bar"');
+    const iCompare = body.search(/class="compare[^"]*"/);
+    expect(iBody).toBeGreaterThan(-1); // the body slot rendered
+    expect(iBar).toBe(-1); // nothing sits in the 3px meter slot
+    expect(iCompare).toBeGreaterThan(iBody); // compare lives inside the body
+  });
+
+  it("renders the recorded sentence as a statement, not a mono metric", () => {
+    const { body } = renderCard("run_abc123");
+    // The headline is a full recorded sentence — UI font, wrapping layout,
+    // not the tabular-mono −21.4 LUFS treatment.
+    expect(body).toMatch(/class="val[^"]*\sstatement(\s|")/);
+  });
 });

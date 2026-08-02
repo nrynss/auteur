@@ -558,6 +558,15 @@ loading/empty/error polish is 7.14's.
 - The grip's `body.resizing` cursor class now has a rule (was set, never
   styled); the timeline's resize action owns it.
 
+**Continuity slot regression fixed (third review round):** the comparison
+content was passed as Evidence's default `children`, which renders inside the
+3px meter bar — thumbnails and note collided with the source row. It now
+renders through the `body` snippet, and the recorded headline uses a new
+`mono={false}` statement treatment (UI font, wrapping, row no longer squeezes
+the label) instead of the tabular-mono −21.4 LUFS slot. The regression test
+asserts structural position (compare inside the body slot, nothing in the
+bar), which the substring-based tests could not catch.
+
 ## 7.9 A/B player and browser preview — L
 
 **Depends on:** 7.4, 7.8.
