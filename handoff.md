@@ -117,7 +117,10 @@ counted), remaining, per-model breakdown, `estimate: true` and
 `ledger_writable`; the dossier carries a compact block. Analyze and
 regenerate are gated at the route (422 with the numbers when `remaining <
 estimate`); free calls and cap-less projects are never refused; no reservation
-(documented).
+(documented). Mix is deliberately NOT gated — its cost depends on cache hits
+and is unknowable at the door, so a paid-tier mix can outspend the cap (the
+overage is reported, not prevented; the UI must not imply the cap covers
+every dollar).
 
 The CLI has a first-class current project — positional id > `--project` >
 `$FOLEYFLOW_PROJECT` > `foleyflow use`'s persisted default — and `foleyflow
