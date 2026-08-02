@@ -1,24 +1,7 @@
-/* Global shell tokens. Minimal by design — unit 7.7 owns the full design
-   token layer; this is only enough for the 7.6 scaffold to read as intended
-   (near-neutral ground, teal accent, monospace numerics). */
+/* Base element styles over the design tokens (unit 7.7). All colours live in
+   theme.css; nothing here may name a colour. */
 
-:root {
-  --ground: #eff1f1;
-  --surface: #ffffff;
-  --raised: #f7f8f8;
-  --line: #d6dbdb;
-  --text: #121618;
-  --dim: #5e6a6e;
-  --faint: #8a9599;
-  --accent: #2e7d74;
-  --stop: #b4453c;
-
-  --font-ui:
-    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui,
-    sans-serif;
-  --font-mono:
-    ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
-}
+@import "./lib/theme.css";
 
 * {
   box-sizing: border-box;
@@ -39,4 +22,10 @@ body {
 
 button {
   font: inherit;
+}
+
+/* The one global focus treatment: visible, accent, never suppressed. */
+:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
 }

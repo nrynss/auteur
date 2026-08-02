@@ -1,0 +1,189 @@
+/* Design tokens — unit 7.7. Source of truth: docs/design/control-room.md §2–§5.
+ *
+ * Rules enforced here, structurally:
+ * - Tokens are defined on :root (light), redefined under
+ *   @media (prefers-color-scheme: dark), and redefined again under
+ *   :root[data-theme="dark"] / [data-theme="light"] so an explicit toggle wins
+ *   in both directions. Components consume tokens only — never raw colours.
+ * - Semantic colours (--ok/--warn/--stop) are never the accent and never
+ *   decorate; every state pairs colour with a glyph and a word (see Chip).
+ * - One shadow, reserved for the video frame (--shadow-frame).
+ * - Numerics are monospace with tabular figures (see .num).
+ *
+ * The dark values are the same set, redefined, not lightened derivatives —
+ * both themes get equal care. */
+
+:root {
+  color-scheme: light;
+
+  /* surfaces */
+  --ground: #eff1f1;
+  --surface: #ffffff;
+  --raised: #f7f8f8;
+  --sunken: #e4e7e7;
+  --line: #d6dbdb;
+  --line-soft: #e3e7e7;
+
+  /* text */
+  --text: #121618;
+  --dim: #5e6a6e;
+  --faint: #8a9599;
+
+  /* accent — selection/active/primary action only */
+  --accent: #2e7d74;
+  --accent-q: #d7e8e5;
+
+  /* semantic — state only, always with a glyph and a word */
+  --ok: #3f7d53;
+  --ok-q: color-mix(in srgb, var(--ok) 14%, transparent);
+  --warn: #9a6b14;
+  --warn-q: color-mix(in srgb, var(--warn) 16%, transparent);
+  --stop: #b4453c;
+  --stop-q: color-mix(in srgb, var(--stop) 14%, transparent);
+
+  /* waveform ink */
+  --wave: #7fa9a3;
+
+  /* typography */
+  --font-ui:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui,
+    sans-serif;
+  --font-mono:
+    ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --text-10: 10px;
+  --text-11: 11.5px;
+  --text-12: 12.5px;
+  --text-13: 13px;
+  --text-14: 14px;
+  --w-500: 500;
+  --w-560: 560;
+  --w-590: 590;
+
+  /* form */
+  --r-sm: 5px;
+  --r: 7px;
+  --r-lg: 10px;
+  --r-pill: 999px;
+
+  /* the one shadow — the video frame only */
+  --shadow-frame: 0 1px 2px rgba(0, 0, 0, 0.18), 0 12px 32px rgba(0, 0, 0, 0.2);
+
+  /* layout */
+  --chrome-h: 46px;
+  --rail-w: 344px;
+  --tl-min-h: 148px;
+  --breakpoint-narrow: 1000px;
+
+  /* elevation for modal layers (border + backdrop, never a drop shadow) */
+  --z-dialog: 100;
+  --z-chrome: 50;
+
+  /* focus ring — the one thing that may break the palette, for visibility */
+  --focus-ring: 2px solid var(--accent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --ground: #0e1113;
+    --surface: #171b1e;
+    --raised: #1f2427;
+    --sunken: #0a0d0f;
+    --line: #2a3033;
+    --line-soft: #222729;
+
+    --text: #e8edee;
+    --dim: #8c989c;
+    --faint: #6b7679;
+
+    --accent: #4fb3a6;
+    --accent-q: #1b3330;
+
+    --ok: #5fb37a;
+    --ok-q: color-mix(in srgb, var(--ok) 16%, transparent);
+    --warn: #d9a441;
+    --warn-q: color-mix(in srgb, var(--warn) 16%, transparent);
+    --stop: #e0655c;
+    --stop-q: color-mix(in srgb, var(--stop) 16%, transparent);
+
+    --wave: #3e6b67;
+
+    --shadow-frame: 0 1px 2px rgba(0, 0, 0, 0.4), 0 14px 36px rgba(0, 0, 0, 0.5);
+  }
+}
+
+/* An explicit toggle wins in both directions. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --ground: #0e1113;
+  --surface: #171b1e;
+  --raised: #1f2427;
+  --sunken: #0a0d0f;
+  --line: #2a3033;
+  --line-soft: #222729;
+
+  --text: #e8edee;
+  --dim: #8c989c;
+  --faint: #6b7679;
+
+  --accent: #4fb3a6;
+  --accent-q: #1b3330;
+
+  --ok: #5fb37a;
+  --ok-q: color-mix(in srgb, var(--ok) 16%, transparent);
+  --warn: #d9a441;
+  --warn-q: color-mix(in srgb, var(--warn) 16%, transparent);
+  --stop: #e0655c;
+  --stop-q: color-mix(in srgb, var(--stop) 16%, transparent);
+
+  --wave: #3e6b67;
+
+  --shadow-frame: 0 1px 2px rgba(0, 0, 0, 0.4), 0 14px 36px rgba(0, 0, 0, 0.5);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --ground: #eff1f1;
+  --surface: #ffffff;
+  --raised: #f7f8f8;
+  --sunken: #e4e7e7;
+  --line: #d6dbdb;
+  --line-soft: #e3e7e7;
+
+  --text: #121618;
+  --dim: #5e6a6e;
+  --faint: #8a9599;
+
+  --accent: #2e7d74;
+  --accent-q: #d7e8e5;
+
+  --ok: #3f7d53;
+  --ok-q: color-mix(in srgb, var(--ok) 14%, transparent);
+  --warn: #9a6b14;
+  --warn-q: color-mix(in srgb, var(--warn) 16%, transparent);
+  --stop: #b4453c;
+  --stop-q: color-mix(in srgb, var(--stop) 14%, transparent);
+
+  --wave: #7fa9a3;
+
+  --shadow-frame: 0 1px 2px rgba(0, 0, 0, 0.18), 0 12px 32px rgba(0, 0, 0, 0.2);
+}
+
+/* Numerics: monospace, tabular — every timecode, duration, cost and key.
+ * Digits must not jitter as they change. */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Uppercase micro-labels (10px, tracked). */
+.eyebrow {
+  font-size: var(--text-10);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--faint);
+  font-weight: 600;
+}

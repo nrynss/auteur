@@ -1,0 +1,41 @@
+/** Formatting for the numerics the control room lives on — timecodes at the
+ * precision a director works at (tens of milliseconds), and dollar costs.
+ * Pure functions; every consumer renders through them so digits never jitter
+ * between components. */
+
+/** "m:ss.mmm" (or "h:mm:ss.mmm" past the hour). Null/non-finite → "—" so a
+ * number that does not exist renders as an absent value, never a fake one. */
+export function formatTimecode(
+  seconds: number | null | undefined,
+  opts: { ms?: boolean; hours?: boolean } = {},
+): string {
+  const { ms = true, hours = false } = opts;
+  if (seconds == null || !Number.isFinite(seconds)) return "—";
+  const neg = seconds < 0 ? "-" : "";
+  // Work in thousandths so rounding carries correctly (59.9996 → 1:00.000,
+  // never 0:59.1000).
+  const totalMs = Math.round(Math.abs(seconds) * 1000);
+  const milli = totalMs % 1000;
+  const totalSec = Math.floor(totalMs / 1000);
+  const sec = totalSec % 60;
+  const min = Math.floor(totalSec / 60) % 60;
+  const hr = Math.floor(totalSec / 3600);
+  const showH = hours || hr > 0;
+  const minPart = showH ? String(min).padStart(2, "0") : String(min);
+  const out = `${showH ? `${hr}:` : ""}${minPart}:${String(sec).padStart(2, "0")}`;
+  return neg + out + (ms ? "." + String(milli).padStart(3, "0") : "");
+}
+
+/** "$0.30", "$1,234.56". Null → "—". */
+export function formatCost(
+  usd: number | null | undefined,
+): string {
+  if (usd == null || !Number.isFinite(usd)) return "—";
+  return (
+    "$" +
+    usd.toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })
+  );
+}

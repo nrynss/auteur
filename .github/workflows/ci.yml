@@ -88,6 +88,10 @@ jobs:
         working-directory: ui
         run: npm run check
 
+      - name: Run UI tests
+        working-directory: ui
+        run: npm test
+
       - name: Build the UI
         working-directory: ui
         run: npm run build

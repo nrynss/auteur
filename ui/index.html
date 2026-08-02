@@ -3,6 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Set the theme before first paint so there is no light-flash for dark
+         users (tokens live in ui/src/lib/theme.css). Best-effort; the app's
+         ThemeToggle writes the same key. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("foleyflow-theme");
+          if (t === "dark" || t === "light") {
+            document.documentElement.dataset.theme = t;
+          }
+        } catch (e) {}
+      })();
+    </script>
     <!-- Inline SVG favicon: no asset file to lose or serve. -->
     <link
       rel="icon"

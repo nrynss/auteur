@@ -379,7 +379,7 @@ that proves the schema-driven client round trip.
   A structurally broken image now fails the smoke even though /health is
   green.
 
-## 7.7 Component layer and design tokens — M
+## 7.7 Component layer and design tokens — M — **DONE**
 
 **Depends on:** 7.6. **Files:** `ui/src/lib/`.
 **Read first:** `docs/design/control-room.md` — the locked direction — and open
@@ -404,6 +404,51 @@ state must not encode meaning in colour alone.
 existing library to claude.ai as standalone preview HTML, it does not design
 anything, and with Svelte it would mean duplicate previews that drift or a
 render step. Revisit only if the library must be shared outside the repo.)*
+
+**Landed:** tokens in `ui/src/lib/theme.css` exactly per control-room.md §2–§5
+— full light/dark sets on `:root`, redefined under `@media
+(prefers-color-scheme: dark)` and again under `:root[data-theme="dark"]` /
+`[data-theme="light"]` so an explicit toggle wins in both directions; one
+shadow (the video frame only); mono/tabular numerics via `.num`. Theme
+mechanism: `theme.ts` (resolve/set/toggle, persisted to localStorage) + an
+inline pre-paint script in `ui/index.html` (no light-flash) + `ThemeToggle`.
+
+Twelve primitives in `ui/src/lib/components/`:
+
+- **Button** — secondary/primary/ghost/danger, `pending` (spinner + disabled),
+  sm size, data-* passthrough.
+- **Chip** — the four states; every chip renders a glyph AND the word (colour
+  never carries meaning alone), `aria-label` is word + detail, `pressed`/
+  `live` variants for the version selector.
+- **Evidence** — the structural honesty rule: `source` is a **required** prop,
+  so a screen showing a QA number without naming the artifact it was measured
+  from does not compile. Default phrase "measured from", overridable.
+- **SceneThumb** — index badge + honest span timecodes (9.5px mono), current
+  ring, lazy images, placeholder for missing thumbs.
+- **StageRow** — name, status chip (running/failed/done), elapsed, retries,
+  provider; renders mid-flight (7.11 polls).
+- **ConfirmDialog** — modal, focus-managed (confirm button on open, return on
+  close, Tab trap), Escape/backdrop cancel, cost line (7.11's "cannot spend
+  money it never displayed"), border + backdrop instead of a drop shadow (§4).
+- **Timecode / format.ts** — `formatTimecode` (m:ss.mmm, carries rounding
+  across second boundaries, absent → "—") + `formatCost`.
+- **Meter, Panel, Kbd, Spinner** (reduced-motion aware), **Icon** (inline SVG,
+  no emoji; catalog in `lib/icons.ts`).
+
+**Vitest landed** (§F): `npm test` — 20 tests in node env (SSR `render()`,
+no jsdom): `format.test.ts` (rounding/carry/absent), `theme.test.ts`
+(resolveTheme precedence), Chip a11y contract (word present for every state),
+Evidence render contract. CI ui-build job runs `npm test` between check and
+build. `ui/vitest.config.ts`.
+
+Dev-only gallery (`PrimitivesGallery`, rendered under `import.meta.env.DEV`
+only, never ships) with honest sample values from the mockup's real
+`standoff_kling` project.
+
+**Not in this unit:** any screen (7.8+), timelines/waveforms (7.9/7.10), and
+the §9 states (loading/empty/error, run lock, draft-vs-committed, director
+diff, keyboard map) — those are design work for the units that need them, and
+consume these primitives.
 
 ---
 

@@ -30,6 +30,7 @@ surfacing at demo time.
 
 ```sh
 npm run check   # svelte-check (type-check)
+npm test        # vitest — pure logic + SSR-rendered component contracts
 npm run build   # typegen + svelte-check + vite build → src/foleyflow/api/static/
 npm run build:fast  # typegen + vite build, no type-check (iteration only)
 ```

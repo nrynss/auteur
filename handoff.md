@@ -139,7 +139,14 @@ timeline write, signed project URLs, waveform peaks). **7.6 landed**: Svelte 5
 schema, `api/dashboard.py` serves the built SPA with a deep-link catch-all and
 an explicit "UI not built" page, Dockerfile gains a Node stage (no Node ships
 in the runtime image), CI gains a UI build job, the throwaway `index.html` is
-deleted. Remaining: frontend chain from 7.7.
+deleted. **7.7 landed**: design tokens per `docs/design/control-room.md`
+(`theme.css`, light/dark/system with explicit-toggle wins, theme persistence
++ pre-paint script) and twelve primitives in `ui/src/lib/components/` — Chip
+(glyph+word, colour never alone), Evidence (source required structurally),
+StageRow, SceneThumb, ConfirmDialog (cost-confirmed, focus-managed), Timecode
+(`formatTimecode`/`formatCost`), Meter, Panel, Kbd, Spinner, Icon, Button —
+plus Vitest (`npm test`, 20 tests, SSR contracts) and a dev-only gallery.
+Remaining: frontend chain from 7.8.
 
 The throwaway static dashboard (`api/static/index.html`) is deleted outright
 when 7.6 lands.

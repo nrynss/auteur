@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
+  import PrimitivesGallery from "./lib/PrimitivesGallery.svelte";
+  import ThemeToggle from "./lib/components/ThemeToggle.svelte";
   import { ApiError, api } from "./lib/api/client";
   import type { components } from "./lib/api/schema";
 
@@ -37,8 +39,9 @@
   {#if health}
     <span class="dim">control room</span>
     <span class="spacer"></span>
-    <span class="mono">storage {health.storage}</span>
-    <span class="mono faint">v{health.version}</span>
+    <span class="num faint">storage {health.storage}</span>
+    <span class="num faint">v{health.version}</span>
+    <ThemeToggle />
   {/if}
 </header>
 
@@ -52,8 +55,8 @@
   {:else}
     <h1>Control room</h1>
     <p class="dim">
-      Toolchain scaffold (unit 7.6). The screens — readiness, timeline,
-      director mode — land in units 7.7–7.14.
+      Toolchain scaffold (unit 7.6) with the 7.7 component layer. The screens —
+      readiness, timeline, director mode — land in units 7.8–7.14.
     </p>
     <p>
       {projects.length} project{projects.length === 1 ? "" : "s"} on this
@@ -62,32 +65,36 @@
     <ul class="projects">
       {#each projects as p (p.id)}
         <li>
-          <span class="mono id">{p.id}</span>
+          <span class="num id">{p.id}</span>
           <span>{p.title}</span>
           <span class="dim">{p.status}</span>
           {#if p.duration_s != null}
-            <span class="mono faint">{p.duration_s.toFixed(1)}s</span>
+            <span class="num faint">{p.duration_s.toFixed(1)}s</span>
           {/if}
         </li>
       {/each}
     </ul>
+  {/if}
+
+  {#if import.meta.env.DEV}
+    <PrimitivesGallery />
   {/if}
 </main>
 
 <style>
   .chrome {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 0.75rem;
-    height: 46px;
+    height: var(--chrome-h);
     padding: 0 1rem;
     background: var(--surface);
     border-bottom: 1px solid var(--line);
   }
 
   .brand {
-    font-weight: 590;
-    font-size: 14px;
+    font-weight: var(--w-590);
+    font-size: var(--text-14);
     letter-spacing: 0.01em;
   }
 
@@ -102,8 +109,8 @@
   }
 
   h1 {
-    font-size: 14px;
-    font-weight: 590;
+    font-size: var(--text-14);
+    font-weight: var(--w-590);
     margin: 0 0 0.5rem;
   }
 
@@ -122,14 +129,14 @@
     border-bottom: 1px solid var(--line);
   }
 
-  .mono {
+  .num {
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
   .id {
     color: var(--faint);
-    font-size: 11.5px;
+    font-size: var(--text-11);
     grid-column: 1 / -1;
   }
 
