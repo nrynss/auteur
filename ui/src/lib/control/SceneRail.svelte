@@ -6,16 +6,22 @@
 
   interface Props {
     scenes: SceneOut[];
+    /** True when the fetch failed. An empty rail must not claim a cause it
+     * does not know — "analysis has not run" is a specific, checkable claim
+     * and is false when the request simply failed. */
+    failed?: boolean;
   }
 
-  let { scenes }: Props = $props();
+  let { scenes, failed = false }: Props = $props();
 
   let selected = $state<number | null>(null);
 </script>
 
 <div class="rail" role="group" aria-label="Scenes">
   {#if scenes.length === 0}
-    <span class="empty">No scenes yet — analysis has not run.</span>
+    <span class="empty">
+      {failed ? "Scenes could not be loaded." : "No scenes yet — analysis has not run."}
+    </span>
   {:else}
     {#each scenes as s (s.id)}
       <SceneThumb

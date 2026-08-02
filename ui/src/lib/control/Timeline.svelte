@@ -2,12 +2,14 @@
   /** Read-only timeline (unit 7.8): ruler, kind-grouped lanes with event
    * blocks (structural envelopes), and an inspector for the selected event.
    * Editing is unit 7.10; nothing here mutates. The frame is resizable via
-   * the real separator grip (control-room.md §5). */
+   * the real separator grip (control-room.md §5).
+   * Unit 7.11: exposes selected event index + locked prop + regenerate slot. */
   import EnvelopeCanvas from "./EnvelopeCanvas.svelte";
   import { groupLanes, placeEvent } from "./helpers";
   import { timelineGrip } from "./timeline-grip";
   import { transientOffset } from "./preview";
   import type { TimelineEventOut } from "../api/projects";
+  import type { Snippet } from "svelte";
 
   interface Props {
     timeline: {
@@ -16,15 +18,45 @@
       ambience: string;
       events: TimelineEventOut[];
     } | null;
+    /** True when the fetch failed — an empty timeline must not claim
+     * "analysis has not run", which is a specific and in that case false
+     * statement about the project. */
+    failed?: boolean;
+    /** When true, selection still works but edit affordances stay off (7.10/7.11). */
+    locked?: boolean;
+    /** Selected event index (API address for repair — never name). */
+    selectedIndex?: number | null;
+    onselect?: (index: number | null) => void;
+    /** Inspector actions for the selected event (e.g. Regenerate, 7.11). */
+    inspectorActions?: Snippet<[event: TimelineEventOut]>;
   }
 
-  let { timeline }: Props = $props();
+  let {
+    timeline,
+    failed = false,
+    locked = false,
+    selectedIndex = null,
+    onselect,
+    inspectorActions,
+  }: Props = $props();
 
   const PPS = 64; // px per second — the ruler's working density
 
   let selected = $state<number | null>(null);
   let height = $state(236);
   const MIN_H = 148;
+
+  // Parent may drive selection (ControlRoom); keep local state in sync.
+  $effect(() => {
+    if (selectedIndex !== undefined && selectedIndex !== selected) {
+      selected = selectedIndex;
+    }
+  });
+
+  function select(index: number) {
+    selected = index;
+    onselect?.(index);
+  }
 
   const lanes = $derived(timeline ? groupLanes(timeline.events) : []);
   const widthPx = $derived((timeline?.duration ?? 0) * PPS);
@@ -68,7 +100,11 @@
       <span class="ver num">v{timeline.version}</span>
     {/if}
     <span class="spacer"></span>
-    <span class="note">read-only — edits land in 7.10</span>
+    {#if locked}
+      <span class="note lock">run in flight — locked</span>
+    {:else}
+      <span class="note">read-only — edits land in 7.10</span>
+    {/if}
   </div>
 
   <div class="wrap">
@@ -102,7 +138,11 @@
 
       {#if lanes.length === 0}
         <div class="empty">
-          <p>No timeline yet — analysis has not run.</p>
+          <p>
+            {failed
+              ? "The timeline could not be loaded."
+              : "No timeline yet — analysis has not run."}
+          </p>
         </div>
       {:else}
         {#each lanes as lane}
@@ -120,7 +160,7 @@
                   style={`left:${p.leftPx}px;width:${p.widthPx}px`}
                   aria-label={`${ev.name} — index ${ev.index}, starts at ${ev.start_time.toFixed(3)}s`}
                   aria-pressed={selected === ev.index}
-                  onclick={() => (selected = ev.index)}
+                  onclick={() => select(ev.index)}
                 >
                   <EnvelopeCanvas kind={ev.kind} seed={ev.index} />
                   <span class="bname">{ev.name}</span>
@@ -147,6 +187,11 @@
       <div class="field"><span class="flabel">Intensity</span><span class="fval">{selectedEvent.intensity}</span></div>
       {#if selectedEvent.seed != null}
         <div class="field"><span class="flabel">Mix seed</span><span class="fval num">{selectedEvent.seed}</span></div>
+      {/if}
+      {#if inspectorActions}
+        <span class="insp-actions">
+          {@render inspectorActions(selectedEvent)}
+        </span>
       {/if}
     {:else}
       <p class="empty">No event selected — click a block.</p>
@@ -219,6 +264,17 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--faint);
+  }
+
+  .note.lock {
+    color: var(--warn);
+  }
+
+  .insp-actions {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .wrap {

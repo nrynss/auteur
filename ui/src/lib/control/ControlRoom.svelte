@@ -17,6 +17,7 @@
   import Timeline from "./Timeline.svelte";
   import ViewerPlaceholder from "./ViewerPlaceholder.svelte";
   import { ApiError } from "../api/client";
+  import { quiet } from "./quiet";
   import {
     getBudget,
     getDossier,
@@ -68,16 +69,16 @@
 
   // An ancillary endpoint that has not produced yet is a 404 → empty state,
   // never an error. Only the project record failing is fatal.
-  const quiet = async <T,>(p: Promise<T>): Promise<T | null> => {
-    try {
-      return await p;
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 404) return null;
-      ancillaryFailed = true;
-      console.error("control room: ancillary fetch failed", e);
-      return null;
-    }
-  };
+  //
+  // `quiet` lives in quiet.ts and NOT here: written inline as a generic arrow,
+  // Svelte's TypeScript strip drops its parameter list and every call throws
+  // at runtime while svelte-check stays green. Keep this file free of generic
+  // arrow functions — a local `const guard = <T,>(p) => …` wrapper would
+  // reintroduce exactly the same bug.
+  function onAncillaryFailure(e: unknown) {
+    ancillaryFailed = true;
+    console.error("control room: ancillary fetch failed", e);
+  }
 
   onMount(async () => {
     try {
@@ -88,14 +89,14 @@
       return;
     }
     const [sc, tl, vs, ev, rs, qaR, dos, bud] = await Promise.all([
-      quiet(getScenes(id)),
-      quiet(getTimeline(id)),
-      quiet(getTimelineVersions(id)),
-      quiet(getEvents(id)),
-      quiet(getRuns(id)),
-      quiet(getQa(id)),
-      quiet(getDossier(id)),
-      quiet(getBudget(id)),
+      quiet(getScenes(id), onAncillaryFailure),
+      quiet(getTimeline(id), onAncillaryFailure),
+      quiet(getTimelineVersions(id), onAncillaryFailure),
+      quiet(getEvents(id), onAncillaryFailure),
+      quiet(getRuns(id), onAncillaryFailure),
+      quiet(getQa(id), onAncillaryFailure),
+      quiet(getDossier(id), onAncillaryFailure),
+      quiet(getBudget(id), onAncillaryFailure),
     ]);
     scenes = sc?.scenes ?? [];
     timeline = tl;
@@ -106,7 +107,7 @@
     dossier = dos;
     budget = bud;
     if (project.mix_run_id) {
-      mixPeaks = await quiet(getMixPeaks(id, project.mix_run_id));
+      mixPeaks = await quiet(getMixPeaks(id, project.mix_run_id), onAncillaryFailure);
     }
     status = "ready";
   });
@@ -158,7 +159,7 @@
         {:else}
           <ViewerPlaceholder />
         {/if}
-        <SceneRail {scenes} />
+        <SceneRail {scenes} failed={ancillaryFailed} />
       </section>
 
       <aside class="rail">
@@ -198,7 +199,7 @@
       </aside>
     </div>
 
-    <Timeline {timeline} />
+    <Timeline {timeline} failed={ancillaryFailed} />
   </div>
 {/if}
 
