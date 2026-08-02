@@ -7,6 +7,7 @@ written against; the domain behaviour underneath has its own tests.
 """
 
 import json
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1860,3 +1861,194 @@ def test_budget_read_503s_on_a_ledger_outage(client, store, project,
     r = client.get(f"{API_PREFIX}/projects/{project.id}/budget")
     assert r.status_code == 503
     assert r.json()["error"]["code"] == "storage_unavailable"
+
+
+# -- waveform peaks (unit 7.5) ----------------------------------------------
+
+def _put_canonical_wav(backend, key, duration_s=0.05, amp=0.4):
+    """Upload a short stereo sine so the peaks route has real audio to decode."""
+    import numpy as np
+    import soundfile as sf
+    import tempfile
+
+    n = int(round(duration_s * 48000))
+    t = np.arange(n) / 48000.0
+    tone = (amp * np.sin(2 * np.pi * 100 * t)).astype(np.float32)
+    stereo = np.column_stack([tone, tone])
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        path = f.name
+    try:
+        sf.write(path, stereo, 48000, format="WAV", subtype="FLOAT")
+        backend.put(key, path, content_type="audio/wav")
+    finally:
+        os.unlink(path)
+    return key
+
+
+def _seed_stem_inventory(store, project, stem_key):
+    """Record a mix run whose stem inventory lists ``stem_key``."""
+    version = store.save_timeline(project.id, _timeline())
+    run = store.start_run(project.id, "mix")
+    store.save_stem_inventory(project.id, run.id, [
+        {"cache_key": "deadbeef", "b2_key": stem_key, "prompt": "gunshot"},
+    ])
+    mix_key = store.mix_key(project.id, run.id)
+    video_key = store.mix_video_key(project.id, run.id)
+    store.backend.put_bytes(video_key, b"MP4", content_type="video/mp4")
+    store.record_mix(project.id, run_id=run.id,
+                     mix_key=mix_key, video_key=video_key,
+                     tier="full", timeline_version=version,
+                     stem_count=1, generated_count=0)
+    store.complete_run(run, timeline_version=version)
+    return run
+
+
+def test_stem_peaks_404_unknown_project(client):
+    r = client.get(f"{API_PREFIX}/projects/{VALID_ID}/peaks/stem",
+                   params={"key": "cache/abc.wav"})
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "project_not_found"
+
+
+def test_stem_peaks_rejects_foreign_key(client, store, project):
+    """A key not in any stem inventory for this project is refused."""
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/stem",
+                   params={"key": "cache/not-ours.wav"})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_request"
+    assert r.json()["error"]["detail"]["key"] == "cache/not-ours.wav"
+
+
+def test_stem_peaks_404_when_audio_missing(client, store, project):
+    """Authorised key, but the WAV was never uploaded → audio_not_found."""
+    stem_key = "cache/ghost.wav"
+    _seed_stem_inventory(store, project, stem_key)
+    assert not store.backend.exists(stem_key)
+
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/stem",
+                   params={"key": stem_key})
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "audio_not_found"
+
+
+def test_stem_peaks_200_returns_envelope(client, store, project):
+    stem_key = "cache/realstem.wav"
+    _put_canonical_wav(store.backend, stem_key, duration_s=0.05, amp=0.4)
+    _seed_stem_inventory(store, project, stem_key)
+
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/stem",
+                   params={"key": stem_key})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["peaks_per_second"] == 100
+    assert body["sample_rate"] == 48000
+    assert body["channels"] == 2
+    assert body["duration_s"] == pytest.approx(0.05, abs=1e-4)
+    # length ≈ duration * pps
+    assert len(body["min"]) == len(body["max"])
+    assert len(body["max"]) == pytest.approx(0.05 * 100, abs=1)
+    assert max(body["max"]) == pytest.approx(0.4, abs=0.05)
+    # Peaks object cached beside the audio.
+    assert store.backend.exists(stem_key + ".peaks.json")
+
+
+def test_mix_peaks_404_when_no_mix(client, project):
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/mix")
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "mix_not_found"
+
+
+def test_mix_peaks_200_for_latest_mix(client, store, project):
+    version = store.save_timeline(project.id, _timeline())
+    run = store.start_run(project.id, "mix")
+    mix_key = store.mix_key(project.id, run.id)
+    _put_canonical_wav(store.backend, mix_key, duration_s=0.08, amp=0.55)
+    video_key = store.mix_video_key(project.id, run.id)
+    store.backend.put_bytes(video_key, b"MP4", content_type="video/mp4")
+    store.record_mix(project.id, run_id=run.id,
+                     mix_key=mix_key, video_key=video_key,
+                     tier="full", timeline_version=version,
+                     stem_count=0, generated_count=0)
+    store.complete_run(run, timeline_version=version)
+
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/mix")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["peaks_per_second"] == 100
+    assert len(body["max"]) == pytest.approx(0.08 * 100, abs=1)
+    assert max(abs(v) for v in body["max"]) == pytest.approx(0.55, abs=0.05)
+
+    # Explicit run_id works the same.
+    r2 = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/mix",
+                    params={"run_id": run.id})
+    assert r2.status_code == 200
+    assert r2.json()["min"] == body["min"]
+
+
+def test_mix_peaks_404_unknown_run(client, store, project):
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/mix",
+                   params={"run_id": "run_01KYJD1RKETS3KTX5HA3H5JPDQ"})
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "run_not_found"
+
+
+def test_mix_peaks_404_run_without_mix(client, store, project):
+    """Run exists (started) but never produced a mix → mix_not_found, not run_not_found."""
+    run = store.start_run(project.id, "mix")
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/mix",
+                   params={"run_id": run.id})
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "mix_not_found"
+    assert r.json()["error"]["detail"]["run_id"] == run.id
+
+
+def test_mix_peaks_404_missing_wav(client, store, project):
+    """Mix recorded in the log but mix.wav never uploaded."""
+    version = store.save_timeline(project.id, _timeline())
+    run = store.start_run(project.id, "mix")
+    mix_key = store.mix_key(project.id, run.id)
+    video_key = store.mix_video_key(project.id, run.id)
+    store.backend.put_bytes(video_key, b"MP4", content_type="video/mp4")
+    store.record_mix(project.id, run_id=run.id,
+                     mix_key=mix_key, video_key=video_key,
+                     tier="full", timeline_version=version)
+    store.complete_run(run, timeline_version=version)
+    assert not store.backend.exists(mix_key)
+
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/mix",
+                   params={"run_id": run.id})
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "audio_not_found"
+
+
+def test_stem_peaks_recomputes_corrupt_cache(client, store, project):
+    """Corrupt peaks JSON beside a valid stem still yields 200 + valid envelope."""
+    stem_key = "cache/recompute.wav"
+    _put_canonical_wav(store.backend, stem_key, duration_s=0.05, amp=0.4)
+    _seed_stem_inventory(store, project, stem_key)
+    store.backend.put_bytes(
+        stem_key + ".peaks.json", b"{not valid json", content_type="application/json")
+
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/stem",
+                   params={"key": stem_key})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["peaks_per_second"] == 100
+    assert len(body["min"]) == len(body["max"])
+    assert len(body["max"]) == pytest.approx(0.05 * 100, abs=1)
+    # Cache overwritten with valid peaks.
+    stored = json.loads(
+        store.backend.get_bytes(stem_key + ".peaks.json").decode("utf-8"))
+    assert stored["min"] == body["min"]
+    assert stored["max"] == body["max"]
+
+
+def test_stem_peaks_400_invalid_wav(client, store, project):
+    stem_key = "cache/garbage.wav"
+    store.backend.put_bytes(stem_key, b"not a wav file", content_type="audio/wav")
+    _seed_stem_inventory(store, project, stem_key)
+
+    r = client.get(f"{API_PREFIX}/projects/{project.id}/peaks/stem",
+                   params={"key": stem_key})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_request"

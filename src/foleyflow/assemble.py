@@ -279,6 +279,13 @@ def assemble_timeline(timeline: Timeline, clip_duration_s: float,
                 continue
             clip = load_clip(sfx_fn(route_event(ev)))
             clip, onset_s = trim_onset(clip)
+            # With source_duration_s frozen, placement duration windows the
+            # one-shot so resize is free (does not change the SFX cache key).
+            # Absent source_duration_s → play full clip (legacy, byte-identical).
+            # duration <= 0 → empty slice; place() no-ops (no energy in the mix).
+            if ev.source_duration_s is not None:
+                max_samples = max(0, int(round(ev.duration * SR)))
+                clip = clip[:max_samples]
             gain = GAINS.get(f"discrete_{ev.intensity}", GAINS["discrete_med"])
             # +50 ms late bias; onset_s compensates for the kept pre-roll so
             # the transient itself lands at start_time + bias exactly.

@@ -430,6 +430,112 @@ def test_seed_zero_is_frozen_not_absent(tmp_path):
     assert a.tobytes() == b.tobytes()
 
 
+# -- source_duration_s discrete windowing (unit 7.2) --
+
+def _discrete_only_timeline(duration: float, source_duration_s=None,
+                            start_time: float = 1.0):
+    """Minimal timeline: no ambience/rhythmic so the mix is pure discrete."""
+    return Timeline(
+        duration=0.0,
+        ambience="",
+        events=[
+            Event(name="glass impact", start_time=start_time, duration=duration,
+                  intensity="high", kind="discrete",
+                  source_duration_s=source_duration_s),
+        ],
+    )
+
+
+def _long_discrete_sfx_fn(tmp_path, clip_seconds: float = 2.0):
+    """SFX stand-in: hot DC clip of fixed length (no leading silence)."""
+    data = _dc(clip_seconds, amp=0.5)
+    p = str(tmp_path / "long_discrete.wav")
+    sf.write(p, data, SR, subtype="FLOAT")
+
+    def fn(request):
+        return p
+
+    return fn
+
+
+def test_absent_source_duration_s_discrete_plays_full_clip(tmp_path):
+    """Legacy: placement duration is ignored for discrete; full clip plays."""
+    fn = _long_discrete_sfx_fn(tmp_path, clip_seconds=2.0)
+    # Short placement duration — without freeze, still places the full 2 s.
+    mix = assemble.assemble_timeline(
+        _discrete_only_timeline(duration=0.5, source_duration_s=None),
+        5.0, tier="discrete", sfx_fn=fn)
+    start = int(round((1.0 + assemble.DISCRETE_BIAS_S) * SR))
+    # Past the 10 ms fade-in, DC should still be present near 1.5 s into clip.
+    far = start + int(1.5 * SR)
+    assert mix[far, 0] == pytest.approx(
+        0.5 * assemble.GAINS["discrete_high"], rel=1e-3)
+
+
+def test_source_duration_s_windows_discrete_to_placement_duration(tmp_path):
+    """With freeze, a longer generated clip is truncated to placement duration."""
+    fn = _long_discrete_sfx_fn(tmp_path, clip_seconds=2.0)
+    frozen = 2.0  # matches generated length; not used for windowing
+    mix_full = assemble.assemble_timeline(
+        _discrete_only_timeline(duration=2.0, source_duration_s=frozen),
+        5.0, tier="discrete", sfx_fn=fn)
+    mix_short = assemble.assemble_timeline(
+        _discrete_only_timeline(duration=0.4, source_duration_s=frozen),
+        5.0, tier="discrete", sfx_fn=fn)
+    assert mix_full.tobytes() != mix_short.tobytes()
+    start = int(round((1.0 + assemble.DISCRETE_BIAS_S) * SR))
+    # Full placement: energy ~1.5 s into the clip.
+    far = start + int(1.5 * SR)
+    assert abs(mix_full[far, 0]) > 0.1
+    assert abs(mix_short[far, 0]) < 1e-6  # short placement ends before here
+    # Short placement still has energy near the start (past fade).
+    near = start + int(0.1 * SR)
+    assert abs(mix_short[near, 0]) > 0.1
+
+
+def test_placement_resize_changes_mix_not_route_duration(tmp_path):
+    """Resize placement with frozen source_duration_s: mix changes, request does not."""
+    from foleyflow.routing import route_event
+
+    frozen = 2.0
+    fn = _long_discrete_sfx_fn(tmp_path, clip_seconds=2.0)
+    t_short = _discrete_only_timeline(duration=0.5, source_duration_s=frozen)
+    t_long = _discrete_only_timeline(duration=1.5, source_duration_s=frozen)
+    req_short = route_event(t_short.events[0])
+    req_long = route_event(t_long.events[0])
+    assert req_short.duration_s == req_long.duration_s == frozen
+    # plan_requests stem inventory must also match.
+    plans_s = assemble.plan_requests(t_short, 5.0, tier="discrete")
+    plans_l = assemble.plan_requests(t_long, 5.0, tier="discrete")
+    assert [(r.endpoint, r.prompt, r.duration_s) for r in plans_s] == \
+           [(r.endpoint, r.prompt, r.duration_s) for r in plans_l]
+    mix_s = assemble.assemble_timeline(t_short, 5.0, tier="discrete", sfx_fn=fn)
+    mix_l = assemble.assemble_timeline(t_long, 5.0, tier="discrete", sfx_fn=fn)
+    assert mix_s.tobytes() != mix_l.tobytes()
+
+
+def test_frozen_source_duration_s_duration_zero_places_silence(tmp_path):
+    """Freeze on + placement duration=0 → empty window; no energy from that event."""
+    fn = _long_discrete_sfx_fn(tmp_path, clip_seconds=2.0)
+    mix = assemble.assemble_timeline(
+        _discrete_only_timeline(duration=0.0, source_duration_s=2.0),
+        5.0, tier="discrete", sfx_fn=fn)
+    # Pure discrete timeline, no ambience: mix must stay silent.
+    assert not np.any(mix)
+
+
+def test_absent_source_duration_s_placement_duration_does_not_window(tmp_path):
+    """Legacy absent freeze: two placement durations still play the full clip."""
+    fn = _long_discrete_sfx_fn(tmp_path, clip_seconds=2.0)
+    mix_a = assemble.assemble_timeline(
+        _discrete_only_timeline(duration=0.3, source_duration_s=None),
+        5.0, tier="discrete", sfx_fn=fn)
+    mix_b = assemble.assemble_timeline(
+        _discrete_only_timeline(duration=1.7, source_duration_s=None),
+        5.0, tier="discrete", sfx_fn=fn)
+    assert mix_a.tobytes() == mix_b.tobytes()
+
+
 # -- write_mix --
 
 def test_write_mix_produces_canonical_float32_wav(tmp_path):

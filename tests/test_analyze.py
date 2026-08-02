@@ -120,6 +120,63 @@ def test_parse_timeline_json_preserves_seed_zero():
     assert timeline.events[0].seed == 0
 
 
+def test_parse_timeline_json_preserves_optional_source_duration_s():
+    """A.4 trap on the analyze path: source_duration_s must not be dropped."""
+    raw_json = json.dumps({
+        "duration": 6.0,
+        "ambience": "wind",
+        "events": [
+            {"name": "match strike", "start_time": 1.0, "duration": 0.5,
+             "intensity": "high", "kind": "discrete", "source_duration_s": 2.0},
+            {"name": "footsteps on gravel", "start_time": 2.0, "duration": 2.0,
+             "intensity": "med", "kind": "rhythmic"},
+        ],
+    })
+    timeline = parse_timeline_json(raw_json, clip_duration=6.0)
+    assert timeline.events[0].source_duration_s == 2.0
+    assert timeline.events[1].source_duration_s is None
+
+
+def test_parse_timeline_json_preserves_source_duration_s_zero():
+    """0.0 is falsy but a real freeze — must not be treated as absent."""
+    raw_json = json.dumps({
+        "duration": 4.0,
+        "ambience": "wind",
+        "events": [
+            {"name": "match strike", "start_time": 1.0, "duration": 0.3,
+             "intensity": "high", "kind": "discrete", "source_duration_s": 0.0},
+        ],
+    })
+    timeline = parse_timeline_json(raw_json, clip_duration=4.0)
+    assert len(timeline.events) == 1
+    assert timeline.events[0].source_duration_s == 0.0
+
+
+def test_parse_timeline_json_drops_event_on_invalid_source_duration_s(capsys):
+    """Invalid freeze must hard-drop the event, not soft-null (which re-bills)."""
+    raw_json = json.dumps({
+        "duration": 6.0,
+        "ambience": "wind",
+        "events": [
+            {"name": "bad freeze", "start_time": 1.0, "duration": 0.5,
+             "intensity": "high", "kind": "discrete",
+             "source_duration_s": "2.0"},
+            {"name": "negative freeze", "start_time": 2.0, "duration": 0.5,
+             "intensity": "med", "kind": "discrete",
+             "source_duration_s": -1.0},
+            {"name": "ok event", "start_time": 3.0, "duration": 0.5,
+             "intensity": "med", "kind": "discrete"},
+        ],
+    })
+    timeline = parse_timeline_json(raw_json, clip_duration=6.0)
+    assert len(timeline.events) == 1
+    assert timeline.events[0].name == "ok event"
+    assert timeline.events[0].source_duration_s is None
+    out = capsys.readouterr().out.lower()
+    assert "dropping" in out
+    assert "source_duration_s" in out
+
+
 def test_parse_timeline_json_with_markdown_fences():
     raw_json = """```json
     {

@@ -61,7 +61,7 @@ optional structured context. Clients branch on `code`, never on `message`.
 |---|---|---|
 | 400 | `invalid_request` | Malformed body or parameter |
 | 400 | `invalid_id` | An id that is not a well-formed ULID of the right kind |
-| 404 | `project_not_found` / `run_not_found` / `timeline_not_found` / `qa_not_found` | Unknown id |
+| 404 | `project_not_found` / `run_not_found` / `timeline_not_found` / `qa_not_found` / `audio_not_found` | Unknown id or missing audio |
 | 409 | `already_running` | A run of this kind is already in flight for the project |
 | 409 | `immutable_conflict` | An attempt to overwrite a completed artifact |
 | 422 | `precondition_failed` | Valid request, wrong state (e.g. export before analysis) |
@@ -577,6 +577,62 @@ project from now on. Overrides apply first-come by `before`, so a row can
 never land in two projects. `foleyflow --project <id> render` opts future
 project-less renders into a project instead, and `foleyflow attribute <id>`
 writes the adoption.
+
+---
+
+### 3.12 Waveform peaks
+
+Server-side peak envelopes for control-room waveforms. Computing peaks once
+on the server beats every client downloading full audio just to draw a line.
+
+**Resolution:** 100 peaks per second (10 ms bins). Dense enough for timeline
+zoom, small enough that a 30 s stem is ~3000 floats per `min`/`max` array.
+
+**Storage:** peaks live next to the audio object as `{audio_key}.peaks.json`
+(e.g. `cache/03f8c512074fd16b.wav.peaks.json`, or
+`projects/{id}/runs/{run_id}/mix.wav.peaks.json`). Written with
+`put_if_absent` so concurrent first paints do not race. A cache hit returns
+the stored JSON without re-decoding audio.
+
+**Peak algorithm:** for each 10 ms bin, `min` and `max` across every sample
+and channel in that bin (two-sided envelope). Values are raw float samples
+from the canonical 48 kHz stereo float WAV (typically in `[-1, 1]`).
+
+```
+GET /api/v1/projects/{id}/peaks/stem?key=<b2_key>
+GET /api/v1/projects/{id}/peaks/mix?run_id=<run_id>
+```
+
+`200`
+
+```json
+{
+  "peaks_per_second": 100,
+  "channels": 2,
+  "sample_rate": 48000,
+  "duration_s": 1.75,
+  "min": [-0.12, -0.08, …],
+  "max": [0.15, 0.11, …]
+}
+```
+
+| Route | Selects audio | Auth |
+|---|---|---|
+| `/peaks/stem?key=` | Content-addressed stem at `key` | `key` must appear as a `b2_key` in some stem inventory for this project |
+| `/peaks/mix?run_id=` | `mix.wav` for that run (omit `run_id` → latest mix) | Run must belong to the project |
+
+| Status | When |
+|---|---|
+| `404 project_not_found` | Unknown project |
+| `404 audio_not_found` | Authorised key but the WAV is not in storage |
+| `404 mix_not_found` | Mix route: project/run exists but has no completed mix |
+| `404 run_not_found` | Mix route: unknown `run_id` |
+| `400 invalid_request` | Stem key not in this project's inventories (foreign keys refused); or authorised key is not a valid WAV |
+| `400 invalid_id` | Malformed project or run id |
+
+`min` and `max` are the same length: `ceil(duration_s * peaks_per_second)`
+bins (empty audio → empty arrays). The client draws a two-sided waveform
+from the pair; mono max-abs is recoverable as `max(abs(min[i]), abs(max[i]))`.
 
 ---
 

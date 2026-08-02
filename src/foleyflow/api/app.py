@@ -37,6 +37,7 @@ from foleyflow.api.schemas import (
     ExportRequest,
     HealthResponse,
     ModelQuotaOut,
+    PeaksResponse,
     ProjectDetail,
     ProjectListResponse,
     ProjectSummary,
@@ -683,6 +684,64 @@ def create_app(store: Optional[ProjectStore] = None,
             raise err.QaNotFound(project_id)
         return QaReportResponse(**raw)
 
+    # -- waveform peaks ---------------------------------------------------
+
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/peaks/stem",
+             response_model=PeaksResponse, tags=["peaks"])
+    def get_stem_peaks(project_id: str, key: str = Query(..., min_length=1)) -> PeaksResponse:
+        """Peak envelope for a stem the project actually used (docs/api.md §3.12).
+
+        ``key`` must appear as a ``b2_key`` in some stem inventory for this
+        project — arbitrary bucket keys are refused. Peaks are cached beside
+        the audio; a hit never re-decodes the WAV.
+        """
+        from foleyflow.peaks import is_project_stem_key
+        from foleyflow.storage.base import validate_key
+
+        _check_project_id(project_id)
+        _load_state(store, project_id)
+        try:
+            validate_key(key)
+        except StorageError as e:
+            raise err.InvalidRequest(f"Invalid storage key: {key}",
+                                     detail={"key": key}) from e
+        if not is_project_stem_key(store, project_id, key):
+            raise err.InvalidRequest(
+                "Stem key is not in this project's inventories",
+                detail={"key": key, "project_id": project_id},
+            )
+        return _peaks_response(store, key)
+
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/peaks/mix",
+             response_model=PeaksResponse, tags=["peaks"])
+    def get_mix_peaks(project_id: str,
+                      run_id: Optional[str] = Query(None)) -> PeaksResponse:
+        """Peak envelope for a mix WAV (docs/api.md §3.12).
+
+        ``run_id`` selects the mix; omit it for the latest completed mix.
+        Only ``store.mix_key`` is used — never a client-supplied path.
+        """
+        _check_project_id(project_id)
+        _load_state(store, project_id)
+
+        if run_id is not None:
+            if not is_valid(run_id, "run"):
+                raise err.InvalidId(f"Not a valid run id: {run_id}",
+                                    detail={"run_id": run_id})
+            mix = store.get_mix(project_id, run_id)
+            if mix is None:
+                if not _run_exists(store, project_id, run_id):
+                    raise err.RunNotFound(run_id)
+                raise err.MixNotFound(project_id, run_id)
+            audio_key = store.mix_key(project_id, run_id)
+        else:
+            mix = store.get_latest_mix(project_id)
+            if mix is None:
+                raise err.MixNotFound(project_id)
+            audio_key = store.mix_key(project_id, mix["run_id"])
+
+        return _peaks_response(store, audio_key)
+
     # -- runs and events --------------------------------------------------
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/runs",
@@ -962,6 +1021,55 @@ def _load_state(store: ProjectStore, project_id: str):
         raise err.ProjectNotFound(project_id) from e
     except StorageError as e:
         raise err.StorageUnavailable("Project storage is unreachable") from e
+
+
+def _run_exists(store: ProjectStore, project_id: str, run_id: str) -> bool:
+    """True when the run has a terminal record or any event for ``run_id``."""
+    try:
+        store.get_run(project_id, run_id)
+        return True
+    except ObjectNotFound:
+        pass
+    except StorageError:
+        # Unreachable storage is not "run missing"; re-raise as unavailable
+        # only when we truly cannot answer. Event-log fallback still works
+        # when run.json is absent for an in-flight run.
+        pass
+    for event in store.list_events(project_id):
+        if event.run_id == run_id:
+            return True
+    return False
+
+
+def _peaks_response(store: ProjectStore, audio_key: str) -> PeaksResponse:
+    """Compute or load cached peaks for ``audio_key`` and shape the wire type.
+
+    ``ObjectNotFound`` on the audio → ``audio_not_found``. Undecodable WAV →
+    ``invalid_request``. Other storage faults → ``storage_unavailable``
+    (never a false 404).
+    """
+    from foleyflow.peaks import InvalidAudioError, get_or_compute_peaks
+
+    try:
+        result = get_or_compute_peaks(
+            store.backend, audio_key, work_dir=store.work_dir)
+    except ObjectNotFound as e:
+        raise err.AudioNotFound(audio_key) from e
+    except InvalidAudioError as e:
+        raise err.InvalidRequest(
+            f"Audio object is not a valid WAV: {audio_key}",
+            detail={"key": audio_key},
+        ) from e
+    except StorageError as e:
+        raise err.StorageUnavailable("Project storage is unreachable") from e
+    return PeaksResponse(
+        peaks_per_second=result.peaks_per_second,
+        channels=result.channels,
+        sample_rate=result.sample_rate,
+        duration_s=result.duration_s,
+        min=result.min,
+        max=result.max,
+    )
 
 
 def _sign(store: ProjectStore, key: Optional[str]) -> Optional[str]:

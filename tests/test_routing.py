@@ -19,8 +19,11 @@ SELF_HOSTED = "openmoss/moss-soundeffect-v2"
 ELEVENLABS = "fal-ai/elevenlabs/sound-effects/v2"
 
 
-def _ev(name, kind="discrete", intensity="med", duration=1.0, start_time=0.0):
-    return Event(name=name, start_time=start_time, duration=duration, intensity=intensity, kind=kind)
+def _ev(name, kind="discrete", intensity="med", duration=1.0, start_time=0.0,
+        source_duration_s=None):
+    return Event(name=name, start_time=start_time, duration=duration,
+                 intensity=intensity, kind=kind,
+                 source_duration_s=source_duration_s)
 
 
 # -- All event names from samples/timelines/clip_1.json, clip_2.json, clip_3.json --
@@ -100,6 +103,73 @@ def test_rhythmic_events_get_loop_duration_regardless_of_event_duration():
         req = route_event(_ev("footsteps on gravel", kind="rhythmic", duration=duration))
         assert 1.5 <= req.duration_s <= 2.0
     assert route_event(_ev("footsteps on gravel", kind="rhythmic", duration=99.0)).duration_s == RHYTHMIC_LOOP_S
+
+
+# -- source_duration_s freeze (unit 7.2) --
+
+def test_absent_source_duration_s_is_legacy_per_kind():
+    """No source_duration_s → discrete/continuous get headroom; rhythmic loop."""
+    assert route_event(
+        _ev("wooden box handling", kind="discrete", duration=0.8)
+    ).duration_s == 1.3
+    assert abs(route_event(
+        _ev("wooden door creaking", kind="continuous", duration=1.25)
+    ).duration_s - 1.75) < 1e-9
+    assert route_event(
+        _ev("footsteps on gravel", kind="rhythmic", duration=6.0)
+    ).duration_s == RHYTHMIC_LOOP_S
+
+
+def test_source_duration_s_freezes_request_duration_across_placement_resize():
+    """Placement duration change must not change SfxRequest.duration_s / cache key."""
+    frozen = 2.0
+    short = route_event(_ev(
+        "wooden box handling", kind="discrete", duration=1.0,
+        source_duration_s=frozen))
+    long = route_event(_ev(
+        "wooden box handling", kind="discrete", duration=3.0,
+        source_duration_s=frozen))
+    assert short.duration_s == frozen
+    assert long.duration_s == frozen
+    assert short.duration_s == long.duration_s
+    # Continuous same rule.
+    c_short = route_event(_ev(
+        "wooden door creaking", kind="continuous", duration=0.5,
+        source_duration_s=frozen))
+    c_long = route_event(_ev(
+        "wooden door creaking", kind="continuous", duration=4.0,
+        source_duration_s=frozen))
+    assert c_short.duration_s == c_long.duration_s == frozen
+
+
+def test_source_duration_s_does_not_add_headroom_again():
+    """Frozen value is the generated length already; no second HEADROOM_S."""
+    req = route_event(_ev(
+        "match strike", kind="discrete", duration=0.3, source_duration_s=1.5))
+    assert req.duration_s == 1.5  # not 2.0
+
+
+def test_source_duration_s_on_rhythmic_overrides_loop_length():
+    """Frozen source_duration_s is used for rhythmic SFX request too."""
+    req = route_event(_ev(
+        "footsteps on gravel", kind="rhythmic", duration=6.0,
+        source_duration_s=1.5))
+    assert req.duration_s == 1.5
+
+
+def test_source_duration_s_zero_is_present_not_legacy():
+    """source_duration_s=0.0 is falsy but must freeze (not fall through to headroom)."""
+    from foleyflow.routing import HEADROOM_S
+
+    frozen = 0.0
+    req = route_event(_ev(
+        "match strike", kind="discrete", duration=0.8, source_duration_s=frozen))
+    # Would be 0.8 + HEADROOM_S under legacy; freeze keeps 0.0 (then clamp may
+    # lift to the endpoint floor — either way it is not duration+headroom).
+    assert req.duration_s != 0.8 + HEADROOM_S
+    # Explicit freeze path: clamp applied to 0.0, never headroom formula.
+    lo, _hi = _get_duration_limits(req.endpoint)
+    assert req.duration_s == lo  # floor clamp of frozen 0.0
 
 
 # -- Ambience routing --

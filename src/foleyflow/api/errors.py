@@ -92,6 +92,36 @@ class QaNotFound(NotFound):
         )
 
 
+class AudioNotFound(NotFound):
+    """Authorised audio key, but the WAV is not in storage."""
+
+    code = "audio_not_found"
+
+    def __init__(self, key: str):
+        super().__init__(
+            f"No audio object at {key}",
+            detail={"key": key},
+        )
+
+
+class MixNotFound(NotFound):
+    """Project or run exists, but there is no completed mix to serve."""
+
+    code = "mix_not_found"
+
+    def __init__(self, project_id: str, run_id: Optional[str] = None):
+        if run_id:
+            super().__init__(
+                f"Run {run_id} has no completed mix",
+                detail={"project_id": project_id, "run_id": run_id},
+            )
+        else:
+            super().__init__(
+                "Project has no completed mix yet",
+                detail={"project_id": project_id},
+            )
+
+
 class AlreadyRunning(ApiError):
     status_code = 409
     code = "already_running"

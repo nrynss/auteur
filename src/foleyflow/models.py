@@ -12,6 +12,11 @@ class Event:
     # name+start_time (legacy, byte-identical to pre-seed timelines). When set,
     # nudging start_time keeps the same jitter texture — only placement shifts.
     seed: Optional[int] = None
+    # What was actually requested/generated from SFX — part of the cache key
+    # (endpoint, prompt, duration, variant). None = legacy: discrete/continuous
+    # request event.duration + HEADROOM_S; rhythmic requests RHYTHMIC_LOOP_S.
+    # When set, placement duration may change freely without re-billing.
+    source_duration_s: Optional[float] = None
 
 @dataclass
 class Timeline:

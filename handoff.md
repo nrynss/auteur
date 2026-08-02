@@ -19,7 +19,7 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   **7 (control-room UI)** last. Tasks **9–17** are **DONE**.
 - CI (10), build identity (11), post-deploy smoke (12), doctor (13), live paid
   + fallback SFX (14), demo evidence (15), and Secret Manager (16) are in place.
-- `uv run pytest -q` → **583 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **631 passed, 1 skipped**. No provider credentials
   required for tests: the billed calls are stubbed at two seams,
   `stems.generate_many` and `sfx_cache.generate_canonical_wav`. Everything else
   — ffmpeg, the mix, the shared cache, storage, the Genblaze pipelines — runs
@@ -133,9 +133,10 @@ outgrew a section: it is not a status page but a director's tool — a directly
 editable timeline, an AI addressed in text that proposes edits rather than
 applying them, and a browser-side preview so the edit loop costs nothing.
 
-**Backend progress:** units **7.1** (frozen mix seed) and **7.4** (signed
-`source_url` / `mix_url` on `GET /projects/{id}`) are done. Remaining backend
-backbone: 7.2, 7.3, 7.5; frontend chain starts at 7.6.
+**Backend progress:** units **7.1** (frozen mix seed), **7.2**
+(`source_duration_s` vs placement span), **7.4** (signed `source_url` /
+`mix_url`), and **7.5** (waveform peaks) are done. Remaining backend backbone:
+7.3 (timeline write); frontend chain starts at 7.6.
 
 The throwaway static dashboard (`api/static/index.html`) is deleted outright
 when 7.6 lands.
@@ -150,9 +151,9 @@ got wrong, and that shape the work:
   write path at all (7.3). Source and mix signed URLs now live on the project
   record (7.4); dossier remains the full inventory.
 - **The timeline data model needs three changes first** — frozen per-event mix
-  `seed` is in (7.1); still needed: `source_duration_s` split from the
-  placement span, and trim support (7.2) — or the editor lies about what it is
-  doing.
+  `seed` (7.1) and `source_duration_s` / free placement resize (7.2) are in;
+  timeline write (7.3) is the remaining backend gate before the editor can
+  commit honestly.
 
 Evidence-first, per SPEC §8.4: show the measured number and its source, never a
 synthesised verdict. QA warnings are review prompts, not automatic corrections —

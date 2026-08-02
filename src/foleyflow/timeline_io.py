@@ -2,6 +2,7 @@
 --from-timeline), run_spike.py, and the samples/ export."""
 
 import json
+import math
 
 from foleyflow.models import Event, Timeline
 
@@ -16,9 +17,11 @@ def timeline_to_dict(t: Timeline) -> dict:
             "intensity": ev.intensity,
             "kind": ev.kind,
         }
-        # Omit null seeds so existing timelines stay clean / unchanged.
+        # Omit null optionals so existing timelines stay clean / unchanged.
         if ev.seed is not None:
             ed["seed"] = ev.seed
+        if ev.source_duration_s is not None:
+            ed["source_duration_s"] = ev.source_duration_s
         events.append(ed)
     d = {
         "duration": t.duration,
@@ -46,6 +49,25 @@ def _coerce_seed(raw) -> int | None:
     return raw
 
 
+def _coerce_source_duration_s(raw) -> float | None:
+    """Optional frozen SFX request duration. JSON null / missing → None.
+    Accept int or float (JSON numbers); reject bool/str, negatives, non-finite.
+    0.0 is valid and means a frozen zero-length request (not the same as
+    absent/legacy). Shared with analyze so freeze validation is one rule."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise TypeError(
+            f"event source_duration_s must be a number or null, "
+            f"got {type(raw).__name__}")
+    val = float(raw)
+    if not math.isfinite(val) or val < 0.0:
+        raise ValueError(
+            f"event source_duration_s must be a non-negative finite number, "
+            f"got {raw!r}")
+    return val
+
+
 def dict_to_timeline(d: dict) -> Timeline:
     events = [
         Event(
@@ -55,6 +77,7 @@ def dict_to_timeline(d: dict) -> Timeline:
             intensity=ev["intensity"],
             kind=ev["kind"],
             seed=_coerce_seed(ev.get("seed")),
+            source_duration_s=_coerce_source_duration_s(ev.get("source_duration_s")),
         ) for ev in d["events"]
     ]
     # Identify history and extra fields in input dictionary

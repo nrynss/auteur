@@ -158,10 +158,10 @@ preserve seed when present.
 **Not in this unit:** the editor writing the seed down (that is 7.10), and any
 "reroll the variation" UI.
 
-## 7.2 Split requested duration from placed span — M
+## 7.2 Split requested duration from placed span — M — **DONE**
 
 **Depends on:** nothing (land with or after 7.1). **Files:** `models.py`,
-`routing.py`, `assemble.py`, `timeline_io.py`, tests.
+`routing.py`, `assemble.py`, `timeline_io.py`, `analyze.py`, tests.
 
 `routing.py` builds the SFX request duration differently per kind
 (`routing.py:138-140`):
@@ -189,6 +189,13 @@ continuous are span changes to paths that already exist.
 with an identical stem inventory — every `b2_key` unchanged, nothing
 regenerated. Existing timelines without `source_duration_s` behave exactly as
 today.
+
+**Landed:** optional `Event.source_duration_s`. Absent → legacy
+`duration + HEADROOM` / `RHYTHMIC_LOOP_S` and full discrete play-out. Present →
+that value is the SFX request length (no second headroom); discrete windows
+the stem to placement `duration` (empty placement → silence). Round-trip via
+`timeline_io` and analyze parse; invalid freezes drop the event rather than
+soft-unfreeze (re-bill).
 
 **Not in this unit:** the Regenerate button's behaviour, which already exists.
 
@@ -239,19 +246,24 @@ for a reserved-but-empty `input_key`). `mix_url` is the latest mix's
 **Acceptance:** a project with a completed mix serves both URLs, signed at the
 standard TTL; a project before analysis serves neither and does not error.
 
-## 7.5 Waveform peaks endpoint — M
+## 7.5 Waveform peaks endpoint — M — **DONE**
 
-**Depends on:** nothing. **Files:** `docs/api.md`, new peaks module,
-`api/app.py`, tests. **Shape is open — decide it in this unit.**
+**Depends on:** nothing. **Files:** `docs/api.md`, `peaks.py`, `api/app.py`,
+`api/schemas.py`, tests.
 
 Precomputed peak data per stem and per mix. A timeline of flat coloured
 rectangles is the visual signature of generated software; waveforms are what
 make it read as an instrument. Computing peaks server-side once beats every
 client downloading and decoding full audio.
 
-Open questions this unit settles: resolution (peaks per second), storage
-(alongside the stem in B2, or computed on demand and cached), and whether the
-response is JSON or a compact binary array.
+**Decisions landed:**
+- **Resolution:** 100 peaks/second (`PEAKS_PER_SECOND`).
+- **Storage:** sibling `{audio_key}.peaks.json` via `put_if_absent`; corrupt
+  or wrong-resolution cache is treated as a miss and recomputed.
+- **Format:** JSON with parallel `min` / `max` float lists (two-sided envelope).
+- **Routes:** `GET .../peaks/stem?key=` and `GET .../peaks/mix?run_id=`
+  (latest mix if omitted). Stem keys must appear in a project inventory
+  (latest mix first, then short-circuiting scan).
 
 **Acceptance:** peaks for a known clip match its actual envelope at the chosen
 resolution, and the endpoint does not re-download audio it has already
@@ -465,9 +477,6 @@ blanket component tests.
 
 # G. Still open
 
-- Peaks endpoint shape: resolution, storage, response format (7.5).
-- Trim semantics per event kind: discrete needs a genuine new renderer path,
-  rhythmic and continuous are span changes (7.2).
 - The states the mockup does not cover — loading, empty, error, the in-flight
   run lock, draft-versus-committed, and the director-mode diff drawn on the
   timeline itself. Listed in `docs/design/control-room.md` §9. These are design

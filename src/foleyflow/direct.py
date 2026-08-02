@@ -32,6 +32,9 @@ Schema constraints (must be preserved exactly in the output):
   (float seconds), "intensity", and "kind".
 - Optional "seed" (integer): when present on an input event, copy it through
   unchanged. Do not invent a seed for events that lack one.
+- Optional "source_duration_s" (float): when present on an input event, copy
+  it through unchanged. Do not invent source_duration_s for events that lack
+  one; do not change it when only placement (start_time / duration) is edited.
 - "intensity" must be exactly one of: "low", "med", "high".
 - "kind" must be exactly one of: "discrete", "rhythmic", "continuous".
 - The top level has "duration" (float seconds), "ambience" (string), and

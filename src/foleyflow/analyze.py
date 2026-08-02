@@ -13,6 +13,7 @@ load_dotenv()
 
 from foleyflow.models import Event, Timeline
 from foleyflow.providers.config import get_analysis_config
+from foleyflow.timeline_io import _coerce_source_duration_s
 
 # Default VLM model — read from providers.toml [analysis] section.
 # Default is Gemini Flash; OpenAI gpt-5.6-luna is optional via --model.
@@ -233,8 +234,19 @@ def _validate_event(ev: dict, clip_duration: float | None) -> Event | None:
             print(f"Warning: ignoring non-int seed {ev['seed']!r} for '{name}'.")
             seed = None
 
+    # Optional frozen SFX request duration (unit 7.2). Same A.4 trap: must
+    # pass through or editor freezes are dropped on re-parse. Invalid values
+    # hard-drop the event — soft-nulling would re-bill on re-render (unfrozen).
+    try:
+        source_duration_s = _coerce_source_duration_s(ev.get("source_duration_s"))
+    except (TypeError, ValueError) as e:
+        print(f"Warning: dropping event '{name}' — invalid source_duration_s "
+              f"{ev.get('source_duration_s')!r}: {e}")
+        return None
+
     return Event(name=name.strip(), start_time=start, duration=duration,
-                 intensity=intensity, kind=kind, seed=seed)
+                 intensity=intensity, kind=kind, seed=seed,
+                 source_duration_s=source_duration_s)
 
 def parse_timeline_json(text: str, clip_duration: float | None = None) -> Timeline:
     """Parse JSON text into Timeline and Event dataclasses, with one repair retry.

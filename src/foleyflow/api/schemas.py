@@ -424,6 +424,24 @@ class QuotaResponse(BaseModel):
     models: List[ModelQuotaOut]
 
 
+# -- waveform peaks ---------------------------------------------------------
+
+class PeaksResponse(BaseModel):
+    """Two-sided peak envelope for a stem or mix (docs/api.md §3.12).
+
+    ``min``/``max`` are parallel arrays of raw float samples (typically in
+    ``[-1, 1]``) at ``peaks_per_second`` resolution. Length is
+    ``ceil(duration_s * peaks_per_second)`` for non-empty audio.
+    """
+
+    peaks_per_second: int
+    channels: int
+    sample_rate: int
+    duration_s: float
+    min: List[float]
+    max: List[float]
+
+
 # -- health -----------------------------------------------------------------
 
 class WorkerHealth(BaseModel):

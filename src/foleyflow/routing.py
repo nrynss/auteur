@@ -133,7 +133,12 @@ def route_event(event: Event) -> SfxRequest:
     endpoint, tier = _tiered(endpoint)
     prompt = _apply_intensity(event.name, event.intensity)
 
-    if event.kind == "rhythmic":
+    # source_duration_s freezes the SFX request length so placement resize is
+    # free (not in the cache key). Absent → legacy behavior for byte identity.
+    if event.source_duration_s is not None:
+        # Already the generated length (includes any headroom from first gen).
+        duration_s = event.source_duration_s
+    elif event.kind == "rhythmic":
         # One loopable segment, not the full interval — T3 tiles it.
         duration_s = RHYTHMIC_LOOP_S
     else:
