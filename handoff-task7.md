@@ -785,9 +785,10 @@ shared-cache section cannot be read as project provenance.
 
 ## 7.18 Backend read latency — M — **DONE**
 
-**Depends on:** nothing. Measured 2026-08-03 against the live bucket.
+**Depends on:** nothing. Measured 2026-08-03 against the live bucket; phase-2
+offline harness 2026-08-03.
 
-**Landed:** Concurrent `get_bytes_many` (bound pool) for `list_events`,
+**Landed (wave 1):** Concurrent `get_bytes_many` (bound pool) for `list_events`,
 `list_runs`, `list_projects`, ledger rows, and attributions; storage-mode
 `ledger_writable` probe cached 15s (fail-closed pin still immediate);
 ledger row cache single-flight + 10s TTL with write invalidation **and an
@@ -796,11 +797,37 @@ only accept a still-fresh cache (leader failure does not serve stale money);
 GET /qa uses `get_project` existence instead of a full event fold; GET /budget
 folds state and scans the ledger in parallel (no double fold);
 `get_project` parallelises scenes/QA/source-mix HEADs (StorageError → 503);
-dossier concurrent HEADs (7.17 LIST-metadata still the full size win). Suite 706.
+dossier concurrent HEADs (7.17 LIST-metadata still the full size win).
 
-The control room's first paint no longer waits on the slowest fetch (panels
-fill in independently, the dossier is lazy), but the underlying calls were slow
-enough to matter on their own (pre-fix, live B2 2026-08-03):
+**Landed (phase-2, no Redis):**
+- **A. Write-through exact aggregates** — process-local per-project spend
+  (`total` / `estimated` / `actual` / `by_endpoint`) and per-endpoint
+  timestamps for quota windows. Seeded once from a full scan; O(1) updates on
+  successful `log_transaction`; invalidated on attribution rescue / test rewire.
+  Same semantics as a full scan (failed calls counted). Mid-write reseed uses
+  entry identity so a concurrent budget poll cannot double-count. Multi-instance:
+  no TTL (sharper than the 10s row cache); single-instance deploy is the
+  topology that keeps this exact.
+- **B. Event-log checkpoint** — `list_events` caches bodies keyed by
+  `(process epoch, key count, last key)`; `append_event` bumps epoch and
+  clears so same-process folds never miss a just-written event.
+- **C. Two shared pools** — `get_io_pool()` (24) for multi-get only;
+  `get_route_pool()` (8) for route fan-out that may nest multi-gets (same-pool
+  nesting deadlocks under load).
+- **Harness:** `uv run python scripts/latency_bench.py` (fixed per-op delay on
+  LocalBackend; baseline/after JSON under `scripts/`).
+
+Suite 718. Offline harness @ 50 ms/op, ~60 events, 200 ledger rows (warm after
+cold seed on the same process):
+
+| path | baseline warm | phase-2 warm | notes |
+|---|---|---|---|
+| `GET /projects/{id}` fold | ~304 ms | ~151 ms | list_keys + project + parallel HEADs; no event multi-get |
+| `GET /quota` | ~0.2 ms | ~0.1 ms | row cache / aggregates |
+| `GET /budget` | ~254 ms | ~101 ms | state checkpoint + O(1) spend |
+| `GET /qa` | ~100 ms | ~100 ms | already cheap |
+
+Live B2 pre-fix (wave 1 context):
 
 | endpoint | measured |
 |---|---|
@@ -812,10 +839,9 @@ enough to matter on their own (pre-fix, live B2 2026-08-03):
 | `GET /projects/{id}/timeline` | 0.7 s |
 | `GET /projects/{id}/scenes` | 0.7 s |
 
-`/projects/{id}` is the one that still gates first paint, because it is the
-shell and nothing can render without it. Budget and quota are full ledger
-scans over one immutable object per billed call; the dossier remains
-HEAD-per-object until 7.17.
+`/projects/{id}` still gates first paint. Phase-2 cuts asymptotic ledger work
+for budget/quota after seed and halves the event-log cost on warm project
+folds; dossier size-without-HEAD remains 7.17.
 
 ---
 

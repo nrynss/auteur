@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
@@ -67,7 +66,11 @@ from foleyflow.ids import is_valid
 from foleyflow.projects import ProjectStore
 from foleyflow.qa import build_report
 from foleyflow.stages import StageRecord
-from foleyflow.storage.base import ObjectNotFound, StorageError
+from foleyflow.storage.base import (
+    ObjectNotFound,
+    StorageError,
+    get_route_pool,
+)
 
 API_PREFIX = "/api/v1"
 VERSION = "0.1.0"
@@ -264,17 +267,18 @@ def create_app(store: Optional[ProjectStore] = None,
         # use plain _sign (no HEAD) and stay cheap/sync.
         mix_video_key = (state.latest_mix or {}).get("video_key")
         try:
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                scenes_f = pool.submit(store.load_scenes, project_id)
-                qa_f = pool.submit(store.load_qa_report, project_id)
-                source_url_f = pool.submit(
-                    _sign_if_exists, store, state.project.input_key)
-                mix_url_f = pool.submit(
-                    _sign_if_exists, store, mix_video_key)
-                scenes = scenes_f.result()
-                qa_report = qa_f.result()
-                source_url = source_url_f.result()
-                mix_url = mix_url_f.result()
+            # Route pool (not multi-get): nested get_bytes_many is safe.
+            pool = get_route_pool()
+            scenes_f = pool.submit(store.load_scenes, project_id)
+            qa_f = pool.submit(store.load_qa_report, project_id)
+            source_url_f = pool.submit(
+                _sign_if_exists, store, state.project.input_key)
+            mix_url_f = pool.submit(
+                _sign_if_exists, store, mix_video_key)
+            scenes = scenes_f.result()
+            qa_report = qa_f.result()
+            source_url = source_url_f.result()
+            mix_url = mix_url_f.result()
         except ObjectNotFound as e:
             # Same classification as _load_state: absent vs unreachable.
             raise err.ProjectNotFound(project_id) from e
@@ -1412,14 +1416,14 @@ def _dossier_artifacts(store: ProjectStore, project_id: str, state) -> List[Arti
 
     if not candidates:
         return []
-    # Bound workers: dozens of objects is common; hundreds would open too many
-    # sockets if unbounded.
-    workers = max(1, min(24, len(candidates)))
+    # Route pool (separate from multi-get) so nested storage I/O cannot deadlock.
+    pool = get_route_pool()
     artifacts: List[ArtifactOut] = []
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for result in pool.map(_resolve, candidates):
-            if result is not None:
-                artifacts.append(result)
+    futures = [pool.submit(_resolve, item) for item in candidates]
+    for fut in futures:
+        result = fut.result()
+        if result is not None:
+            artifacts.append(result)
     return artifacts
 
 
@@ -1741,14 +1745,15 @@ def _budget_response(store: ProjectStore, project_id: str, *,
 
     try:
         if state is None:
-            # Project fold (budget_usd) and full ledger spend do not depend on
-            # each other — serialising them stacked two multi-second B2 scans
-            # on GET /budget (unit 7.18).
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                state_f = pool.submit(store.get_state, project_id)
-                spend_f = pool.submit(project_spend, project_id)
-                state = state_f.result()
-                spend = spend_f.result()
+            # Project fold (budget_usd) and ledger spend do not depend on each
+            # other — serialising them stacked two multi-second B2 scans on
+            # GET /budget (unit 7.18). Route pool (not multi-get): each side
+            # may nested multi-get; same-pool nesting deadlocks.
+            pool = get_route_pool()
+            state_f = pool.submit(store.get_state, project_id)
+            spend_f = pool.submit(project_spend, project_id)
+            state = state_f.result()
+            spend = spend_f.result()
         else:
             spend = project_spend(project_id)
         budget = state.budget_usd

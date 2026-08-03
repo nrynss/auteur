@@ -1,0 +1,109 @@
+{
+  "delay_ms": 50.0,
+  "seed": {
+    "projects": 3,
+    "events": 82,
+    "ledger_rows": 200,
+    "runs": 6,
+    "primary_project_id": "proj_01KZ2S36D57SYMGXT6YD5ATE43",
+    "project_ids": [
+      "proj_01KZ2S36D57SYMGXT6YD5ATE43",
+      "proj_01KZ2S36HE72YKFHTK87YC2RAY",
+      "proj_01KZ2S36HH4VE34RWPKGJYPYEW"
+    ]
+  },
+  "measurements": [
+    {
+      "name": "GET /projects/{id} fold [cold]",
+      "wall_ms": 303.8082760031102,
+      "ops": {
+        "head": 2,
+        "get_bytes": 63,
+        "list_keys": 1
+      },
+      "note": ""
+    },
+    {
+      "name": "GET /quota [cold]",
+      "wall_ms": 555.8239639940439,
+      "ops": {
+        "put_bytes": 1,
+        "get_bytes": 200,
+        "list_keys": 1
+      },
+      "note": ""
+    },
+    {
+      "name": "GET /budget [cold]",
+      "wall_ms": 101.02237400133163,
+      "ops": {
+        "get_bytes": 1,
+        "list_keys": 2
+      },
+      "note": ""
+    },
+    {
+      "name": "GET /qa [cold]",
+      "wall_ms": 100.38724799233023,
+      "ops": {
+        "get_bytes": 2
+      },
+      "note": ""
+    },
+    {
+      "name": "dossier heads (sample) [cold]",
+      "wall_ms": 151.32993200677447,
+      "ops": {
+        "head": 4,
+        "get_bytes": 1,
+        "list_keys": 1
+      },
+      "note": ""
+    },
+    {
+      "name": "GET /projects/{id} fold [warm]",
+      "wall_ms": 150.99041399662383,
+      "ops": {
+        "head": 2,
+        "get_bytes": 3,
+        "list_keys": 1
+      },
+      "note": ""
+    },
+    {
+      "name": "GET /quota [warm]",
+      "wall_ms": 0.09994000720325857,
+      "ops": {},
+      "note": ""
+    },
+    {
+      "name": "GET /budget [warm]",
+      "wall_ms": 100.83925499930046,
+      "ops": {
+        "get_bytes": 1,
+        "list_keys": 1
+      },
+      "note": ""
+    },
+    {
+      "name": "GET /qa [warm]",
+      "wall_ms": 100.38411800633185,
+      "ops": {
+        "get_bytes": 2
+      },
+      "note": ""
+    },
+    {
+      "name": "dossier heads (sample) [warm]",
+      "wall_ms": 151.29010200325865,
+      "ops": {
+        "head": 4,
+        "get_bytes": 1,
+        "list_keys": 1
+      },
+      "note": ""
+    }
+  ],
+  "root": "(temp)",
+  "label": "after"
+}

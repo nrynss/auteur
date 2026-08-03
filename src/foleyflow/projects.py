@@ -40,9 +40,10 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from foleyflow.models import Timeline
 from foleyflow.qa import QaReport, findings_signature, report_from_dict, with_preserved_audio
@@ -55,6 +56,26 @@ from foleyflow.storage.base import (
     StorageError,
     get_bytes_many,
 )
+
+# Process-local event-log checkpoint (unit 7.18 phase-2).
+# Fingerprint = (process epoch, key count, last key). Same-process appends bump
+# the epoch and clear the entry so a just-written event is never missing.
+# Cross-process appends change list_keys fingerprint → miss. Multi-instance
+# limitation matches the ledger row cache: each process holds its own view.
+_event_log_lock = threading.Lock()
+_event_log_epoch: Dict[str, int] = {}
+# project_id -> (epoch, (n_keys, last_key), events)
+_event_log_cache: Dict[str, Tuple[int, Tuple[int, str], List["Event"]]] = {}
+
+
+def invalidate_event_log_cache(project_id: Optional[str] = None) -> None:
+    """Drop cached event lists (one project, or all). Tests / backend rewire."""
+    with _event_log_lock:
+        if project_id is None:
+            _event_log_cache.clear()
+            _event_log_epoch.clear()
+        else:
+            _event_log_cache.pop(project_id, None)
 
 # Lifecycle event types — SPEC.md §8.4's domain-neutral names. Deliberately not
 # incident-domain terms inherited from Mosaic.
@@ -478,9 +499,10 @@ class ProjectStore:
     def append_event(self, project_id: str, event_type: str, *,
                      actor: str = "system", run_id: Optional[str] = None,
                      payload: Optional[dict] = None) -> Event:
+        project_id = self._check_id(project_id, "proj")
         event = Event(
             id=new_event_id(),
-            project_id=self._check_id(project_id, "proj"),
+            project_id=project_id,
             type=event_type,
             created_at=utcnow(),
             actor=actor,
@@ -491,6 +513,10 @@ class ProjectStore:
         # cannot lose each other's events.
         self._put_json(f"{self.events_prefix(project_id)}{event.id}.json",
                        event.to_dict())
+        # Never serve state missing this event in the same process.
+        with _event_log_lock:
+            _event_log_epoch[project_id] = _event_log_epoch.get(project_id, 0) + 1
+            _event_log_cache.pop(project_id, None)
         return event
 
     def list_events(self, project_id: str) -> List[Event]:
@@ -500,17 +526,50 @@ class ProjectStore:
         Events are fetched concurrently: against B2 each GET is tens–hundreds
         of ms, and a busy project has dozens of events — serial GETs were the
         dominant cost of GET /projects/{id} (unit 7.18).
+
+        Process-local checkpoint: after the first multi-get for a stable key
+        set, subsequent folds reuse the event list (still re-lists keys so a
+        cross-process append is detected). Same-process appends bump an epoch
+        and clear the cache immediately.
         """
+        project_id = self._check_id(project_id, "proj")
         keys = sorted(self.backend.list_keys(self.events_prefix(project_id)))
+        fingerprint: Tuple[int, str] = (
+            len(keys), keys[-1] if keys else "")
+        with _event_log_lock:
+            epoch = _event_log_epoch.get(project_id, 0)
+            cached = _event_log_cache.get(project_id)
+            if (cached is not None
+                    and cached[0] == epoch
+                    and cached[1] == fingerprint):
+                # Return a shallow copy so callers cannot mutate the cache.
+                return list(cached[2])
+
         if not keys:
+            with _event_log_lock:
+                if _event_log_epoch.get(project_id, 0) == epoch:
+                    _event_log_cache[project_id] = (epoch, fingerprint, [])
             return []
+
         # skip_missing=False: a listed event object must exist; a miss or a
         # storage fault fails the whole log rather than silently dropping rows.
         blobs = get_bytes_many(self.backend, keys, skip_missing=False)
-        return [
+        events = [
             Event.from_dict(json.loads(blobs[k].decode("utf-8")))
             for k in keys
         ]
+        with _event_log_lock:
+            # Discard if an append landed while we multi-got — caller still
+            # receives this snapshot (same race as an uncached mid-write list);
+            # the next call re-fetches.
+            if _event_log_epoch.get(project_id, 0) == epoch:
+                _event_log_cache[project_id] = (epoch, fingerprint, events)
+        return events
+
+    @staticmethod
+    def invalidate_state_cache(project_id: Optional[str] = None) -> None:
+        """Alias for :func:`invalidate_event_log_cache` (bench / tests)."""
+        invalidate_event_log_cache(project_id)
 
     # -- runs -------------------------------------------------------------
 

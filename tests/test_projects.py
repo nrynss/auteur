@@ -398,3 +398,44 @@ def test_list_events_concurrent_fetch_is_chronological_and_complete(store, proje
     assert [e.payload["i"] for e in bulk] == list(range(15))
     # ULID ids are creation-ordered; concurrent fetch must preserve that.
     assert [e.id for e in events] == sorted(e.id for e in events)
+
+
+def test_event_log_cache_reused_until_append(store, project, monkeypatch):
+    """Second list_events must not re-GET bodies when the key set is stable."""
+    store.append_event(project.id, "postproduction.test.cached", payload={"n": 1})
+    # Prime the cache.
+    first = store.list_events(project.id)
+    assert any(e.type == "postproduction.test.cached" for e in first)
+
+    gets = {"n": 0}
+    real_get = store.backend.get_bytes
+
+    def counting_get(key):
+        gets["n"] += 1
+        return real_get(key)
+
+    monkeypatch.setattr(store.backend, "get_bytes", counting_get)
+    second = store.list_events(project.id)
+    assert [e.id for e in second] == [e.id for e in first]
+    assert gets["n"] == 0, "stable key set should hit the event-log checkpoint"
+
+
+def test_event_log_cache_invalidates_on_append(store, project, monkeypatch):
+    """append_event must clear the checkpoint so the new event is visible."""
+    store.list_events(project.id)  # prime
+    store.append_event(project.id, "postproduction.test.after_cache",
+                       payload={"n": 2})
+    events = store.list_events(project.id)
+    assert any(e.type == "postproduction.test.after_cache" for e in events)
+    # State fold must also see it (never serve pre-append snapshot).
+    state = store.get_state(project.id)
+    assert state.event_count == len(events)
+
+
+def test_get_state_sees_just_appended_event(store, project):
+    """Same-process append then get_state must include the new event."""
+    before = store.get_state(project.id).event_count
+    store.append_event(project.id, "postproduction.test.immediate",
+                       payload={})
+    after = store.get_state(project.id)
+    assert after.event_count == before + 1

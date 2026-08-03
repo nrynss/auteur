@@ -126,18 +126,29 @@ _row_sf_lock = threading.Lock()
 _row_sf_cv = threading.Condition(_row_sf_lock)
 _row_sf_in_flight: bool = False
 
-# Running per-project spend for the alert path (task 9b addendum).
-# project_spend is a full ledger scan; the row cache is invalidated on every
-# successful write — exactly when an alert check would run — so N concurrent
-# stems would each re-list the whole bucket. Instead: one seed scan per
-# project per process, then O(1) increments. Per-project locks serialize
-# seed+increment so concurrent stems neither double-count nor skip. GET
-# /budget still uses the full project_spend for the accurate panel.
+# Exact process-local aggregates (unit 7.18 phase-2).
+#
+# Per-project spend was first introduced for the alert path (task 9b): one seed
+# scan per project per process, then O(1) increments so N concurrent stems do
+# not each re-list the bucket. Phase-2 extends the same structure with
+# ``by_endpoint`` and serves GET /budget from it once seeded — still exact
+# (failed calls counted; attributions applied at seed), never an approximate
+# sketch. Multi-instance: each process holds its own totals (same limitation
+# as other process-local caches). Unlike the 10s row cache, spend/quota
+# aggregates have no TTL: a process that only reads never re-lists until
+# invalidate or restart. Single Cloud Run instance + in-process jobs is the
+# deploy topology that makes this exact; multi-instance would need a shared
+# memo or accept per-process seeds. A process that never wrote still seeds
+# on first read from storage.
+#
+# Quota aggregates keep per-endpoint timestamps so daily/minute windows stay
+# exact as wall-clock advances. Write-through on successful log_transaction;
+# full scan seeds on first read when empty.
 _spend_lock = threading.Lock()
 # project_id -> Lock serialising seed/increment/alert claim for that project
 _project_locks: Dict[str, threading.Lock] = {}
-# project_id -> {"total", "estimated", "actual"}
-_running_spend: Dict[str, Dict[str, float]] = {}
+# project_id -> {"total", "estimated", "actual", "by_endpoint": {endpoint: float}}
+_running_spend: Dict[str, Dict[str, Any]] = {}
 # project_id -> (budget_usd, generation_event_id, monotonic_time_loaded)
 _budget_cache: Dict[str, tuple] = {}
 _BUDGET_CACHE_TTL_S = 2.0
@@ -145,6 +156,12 @@ _BUDGET_CACHE_TTL_S = 2.0
 # alerts under same-process fan-out. Key: (project_id, generation, threshold).
 _alert_claims: set = set()
 _alert_claim_lock = threading.Lock()
+
+# Quota timestamp aggregates: endpoint -> list of call timestamps (all outcomes).
+_quota_agg_lock = threading.Lock()
+_quota_ts: Dict[str, List[float]] = {}
+_quota_agg_seeded: bool = False
+_quota_agg_epoch: int = 0
 
 
 def _file_ledger_path(path: Optional[str] = None) -> Optional[str]:
@@ -188,6 +205,110 @@ def _invalidate_writable_cache() -> None:
     with _writable_cache_lock:
         _writable_cache = None
         _writable_cache_at = 0.0
+
+
+def invalidate_ledger_aggregates() -> None:
+    """Drop spend + quota write-through aggregates (tests / backend rewire).
+
+    Prefer :func:`invalidate_project_spend_cache` for a single project after
+    attribution rescue. This clears everything, including quota timestamps.
+    """
+    global _quota_agg_seeded, _quota_agg_epoch
+    with _spend_lock:
+        _running_spend.clear()
+        _alert_claims.clear()
+        _budget_cache.clear()
+    with _quota_agg_lock:
+        _quota_ts.clear()
+        _quota_agg_seeded = False
+        _quota_agg_epoch += 1
+
+
+def _quota_note_transaction(endpoint: str, timestamp: float) -> None:
+    """Write-through one row into the quota aggregate (storage mode).
+
+    When the aggregate is not yet seeded, bump the epoch so any in-flight seed
+    discards its pre-write snapshot and re-scans (includes this row).
+    """
+    global _quota_agg_epoch
+    with _quota_agg_lock:
+        if _quota_agg_seeded:
+            _quota_ts.setdefault(endpoint, []).append(float(timestamp))
+        else:
+            # Force reseed: a concurrent seed started before this write must
+            # not install a snapshot that misses it.
+            _quota_agg_epoch += 1
+
+
+def _ensure_quota_agg_seeded() -> None:
+    """Seed per-endpoint timestamps from a full ledger scan (once per process)."""
+    global _quota_agg_seeded, _quota_ts
+
+    if _file_ledger_path() is not None:
+        return
+
+    while True:
+        with _quota_agg_lock:
+            if _quota_agg_seeded:
+                return
+            epoch_at_start = _quota_agg_epoch
+
+        rows = iter_transactions()
+        built: Dict[str, List[float]] = {}
+        for row in rows:
+            ep = row.get("endpoint") or "unknown"
+            ts = row.get("timestamp")
+            if isinstance(ts, (int, float)):
+                built.setdefault(ep, []).append(float(ts))
+
+        with _quota_agg_lock:
+            if _quota_agg_epoch != epoch_at_start:
+                # Write landed mid-seed; retry so the map includes new rows.
+                continue
+            if not _quota_agg_seeded:
+                _quota_ts = built
+                _quota_agg_seeded = True
+            return
+
+
+def endpoint_call_counts(
+    endpoint: str,
+    *,
+    minute_ago: float,
+    day_start: float,
+    rows: Optional[List[dict]] = None,
+    ledger_path: Optional[str] = None,
+) -> tuple:
+    """``(per_minute, per_day)`` call counts for one endpoint.
+
+    Failed calls are included (same rule as :func:`foleyflow.quota.get_quota`).
+    ``rows`` / ``ledger_path`` force a scan path (unit tests); storage mode
+    otherwise answers from write-through aggregates after one seed scan.
+    """
+    if rows is not None or ledger_path is not None or _file_ledger_path() is not None:
+        per_minute = per_day = 0
+        for row in (rows if rows is not None else iter_transactions(ledger_path)):
+            if row.get("endpoint") != endpoint:
+                continue
+            ts = row.get("timestamp")
+            if not isinstance(ts, (int, float)):
+                continue
+            if ts >= day_start:
+                per_day += 1
+            if ts >= minute_ago:
+                per_minute += 1
+        return per_minute, per_day
+
+    _ensure_quota_agg_seeded()
+    with _quota_agg_lock:
+        stamps = list(_quota_ts.get(endpoint, ()))
+    per_minute = per_day = 0
+    for ts in stamps:
+        if ts >= day_start:
+            per_day += 1
+        if ts >= minute_ago:
+            per_minute += 1
+    return per_minute, per_day
 
 
 def get_params_hash(arguments: Dict[str, Any]) -> str:
@@ -305,6 +426,7 @@ def log_transaction(endpoint: str, params_hash: str, cost: float, success: bool,
     alerting bug must not become a render bug.
     """
     project_id = _current_project.get()
+    timestamp = time.time()
     record = {
         "endpoint": endpoint,
         "params_hash": params_hash,
@@ -312,18 +434,25 @@ def log_transaction(endpoint: str, params_hash: str, cost: float, success: bool,
         "cost_source": cost_source,
         "success": success,
         "error": error,
-        "timestamp": time.time(),
+        "timestamp": timestamp,
         # Present-but-None when unattributed (a direct render): project_spend
         # filters on this key, and old rows without it read as None too.
         "project_id": project_id,
     }
-    # Seed *before* the write (scan excludes this row); always increment after.
-    # Per-project lock keeps concurrent stems from double-counting (task 9b).
+    # Seed *before* the write (scan excludes this row); increment after only
+    # when the same entry object is still installed. If a concurrent
+    # project_spend / attribution rescue reseeded from a post-write scan in
+    # the unlocked gap, that map already includes this row — incrementing
+    # would double-count GET /budget (phase-2 adversarial P0).
     plock = _project_lock(project_id) if project_id else None
+    seed_entry_id: Optional[int] = None
     if plock is not None:
         try:
             with plock:
                 _ensure_running_spend_seeded(project_id)
+                entry = _running_spend.get(project_id)
+                if entry is not None and "by_endpoint" in entry:
+                    seed_entry_id = id(entry)
         except Exception as exc:
             print(f"[ledger] WARNING: budget spend seed failed for "
                   f"{project_id}: {type(exc).__name__}: {exc}",
@@ -337,6 +466,10 @@ def log_transaction(endpoint: str, params_hash: str, cost: float, success: bool,
         _set_write_ok(True)
         # New row is on the backend; drop any snapshot so the next read sees it.
         _invalidate_row_cache()
+        # Write-through exact aggregates (storage mode). File mode has no
+        # process-local spend cache for the alert path either.
+        if path is None:
+            _quota_note_transaction(endpoint, timestamp)
     except Exception as e:
         _set_write_ok(False)
         print(f"[ledger] WARNING: failed to record transaction for "
@@ -347,7 +480,9 @@ def log_transaction(endpoint: str, params_hash: str, cost: float, success: bool,
     if plock is not None and project_id:
         try:
             with plock:
-                spend = _running_spend_after(project_id, cost, cost_source)
+                spend = _running_spend_after(
+                    project_id, cost, cost_source, endpoint=endpoint,
+                    seed_entry_id=seed_entry_id)
                 _maybe_emit_budget_alerts(project_id, spend=spend)
         except Exception as exc:
             print(f"[ledger] WARNING: budget alert check failed for "
@@ -622,20 +757,8 @@ def summarize_ledger(path: Optional[str] = None) -> Dict[str, Any]:
     return {"total": total, "by_endpoint": by_endpoint}
 
 
-def project_spend(project_id: str) -> Dict[str, Any]:
-    """Spend attributed to one project: total + per-endpoint + cost_source split.
-
-    Failed calls are counted, the same rule quota uses — a request that failed
-    may still have consumed provider quota. Rows written before attribution
-    existed, and rows from a direct (project-less) render, carry no
-    `project_id`; those are claimed by a rescue override (see
-    :func:`record_attribution`) when one covers their timestamp, else they
-    belong to no project.
-
-    ``estimated`` / ``actual`` sum the portions whose ``cost_source`` is
-    estimate vs actual — budget alerts carry both so "$4.90 spent, $3.10 of
-    it estimated" is a different claim from all-actual.
-    """
+def _project_spend_scan(project_id: str) -> Dict[str, Any]:
+    """Full-ledger scan for one project's spend (source of truth for seeding)."""
     total = 0.0
     estimated = 0.0
     actual = 0.0
@@ -660,6 +783,66 @@ def project_spend(project_id: str) -> Dict[str, Any]:
             "estimated": estimated, "actual": actual}
 
 
+def _spend_entry_to_result(entry: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "total": float(entry["total"]),
+        "estimated": float(entry["estimated"]),
+        "actual": float(entry["actual"]),
+        "by_endpoint": dict(entry.get("by_endpoint") or {}),
+    }
+
+
+def _install_running_spend(project_id: str, spend: Dict[str, Any]) -> Dict[str, Any]:
+    """Install a scan result into the process-local exact aggregate."""
+    entry = {
+        "total": float(spend["total"]),
+        "estimated": float(spend["estimated"]),
+        "actual": float(spend["actual"]),
+        "by_endpoint": dict(spend.get("by_endpoint") or {}),
+    }
+    _running_spend[project_id] = entry
+    return _spend_entry_to_result(entry)
+
+
+def project_spend(project_id: str) -> Dict[str, Any]:
+    """Spend attributed to one project: total + per-endpoint + cost_source split.
+
+    Failed calls are counted, the same rule quota uses — a request that failed
+    may still have consumed provider quota. Rows written before attribution
+    existed, and rows from a direct (project-less) render, carry no
+    `project_id`; those are claimed by a rescue override (see
+    :func:`record_attribution`) when one covers their timestamp, else they
+    belong to no project.
+
+    ``estimated`` / ``actual`` sum the portions whose ``cost_source`` is
+    estimate vs actual — budget alerts carry both so "$4.90 spent, $3.10 of
+    it estimated" is a different claim from all-actual.
+
+    Storage mode answers from the process-local exact aggregate when seeded
+    (write-through on :func:`log_transaction`); otherwise one full scan seeds
+    it. Semantics match a full scan. File-mode ledger always scans.
+    """
+    if _file_ledger_path() is not None:
+        return _project_spend_scan(project_id)
+
+    plock = _project_lock(project_id)
+    with plock:
+        entry = _running_spend.get(project_id)
+        if entry is not None and "by_endpoint" in entry:
+            return _spend_entry_to_result(entry)
+
+    # Seed outside the short critical path of concurrent readers that already
+    # have an entry; first seeder does the scan under the project lock so two
+    # concurrent cold reads cannot double-install from racing scans that each
+    # miss a concurrent write-through (writes also hold this lock).
+    with plock:
+        entry = _running_spend.get(project_id)
+        if entry is not None and "by_endpoint" in entry:
+            return _spend_entry_to_result(entry)
+        spend = _project_spend_scan(project_id)
+        return _install_running_spend(project_id, spend)
+
+
 def _project_lock(project_id: str) -> threading.Lock:
     """Per-project lock for seed + increment + in-process alert claim."""
     with _spend_lock:
@@ -674,8 +857,10 @@ def invalidate_project_spend_cache(project_id: Optional[str] = None) -> None:
     """Drop running-spend cache (one project, or all).
 
     Call after an attribution rescue adopts rows the running total never
-    saw, or from tests that rewire the ledger backend.
+    saw, or from tests that rewire the ledger backend. When ``project_id``
+    is None also drops quota timestamp aggregates (full backend rewire).
     """
+    global _quota_agg_seeded, _quota_agg_epoch
     with _spend_lock:
         if project_id is None:
             _running_spend.clear()
@@ -684,6 +869,11 @@ def invalidate_project_spend_cache(project_id: Optional[str] = None) -> None:
             _running_spend.pop(project_id, None)
             _alert_claims.difference_update(
                 {c for c in _alert_claims if c[0] == project_id})
+    if project_id is None:
+        with _quota_agg_lock:
+            _quota_ts.clear()
+            _quota_agg_seeded = False
+            _quota_agg_epoch += 1
 
 
 def invalidate_budget_cache(project_id: Optional[str] = None) -> None:
@@ -696,51 +886,48 @@ def invalidate_budget_cache(project_id: Optional[str] = None) -> None:
 
 
 def _ensure_running_spend_seeded(project_id: str) -> None:
-    """One full project_spend per project per process, before the triggering write.
+    """One full project spend scan per project per process, before the write.
 
     Caller holds the per-project lock. The scan must run *before* the new row
     is written so it is not double-counted when we add ``cost``.
     """
-    if project_id in _running_spend:
+    entry = _running_spend.get(project_id)
+    if entry is not None and "by_endpoint" in entry:
         return
-    spend = project_spend(project_id)
-    if project_id not in _running_spend:
-        _running_spend[project_id] = {
-            "total": float(spend["total"]),
-            "estimated": float(spend["estimated"]),
-            "actual": float(spend["actual"]),
-        }
+    spend = _project_spend_scan(project_id)
+    if project_id not in _running_spend or "by_endpoint" not in _running_spend.get(
+            project_id, {}):
+        _install_running_spend(project_id, spend)
 
 
 def _running_spend_after(project_id: str, cost: float,
-                         cost_source: str) -> Dict[str, float]:
+                         cost_source: str, *,
+                         endpoint: str = "unknown",
+                         seed_entry_id: Optional[int] = None) -> Dict[str, float]:
     """Add this row's cost to the running total. Caller holds the project lock.
 
-    Always increments when a seed exists. If seed never landed (earlier
-    failure), re-seeds from a post-write full scan — that scan already
-    includes this row, so we must not add ``cost`` again. Never installs a
-    zero baseline that would permanently undercount.
+    Increment only when ``seed_entry_id`` still names the installed entry —
+    that object was seeded *before* the write and does not yet include
+    ``cost``. If the map was cleared or replaced (attribution rescue,
+    concurrent reseed after the durable write, failed pre-write seed), a
+    post-write full scan already includes this row; install without adding.
+    Never installs a zero baseline that would permanently undercount.
     """
     entry = _running_spend.get(project_id)
-    if entry is not None:
+    if (entry is not None and "by_endpoint" in entry
+            and seed_entry_id is not None and id(entry) == seed_entry_id):
         entry["total"] += cost
         if cost_source == "actual":
             entry["actual"] += cost
         else:
             entry["estimated"] += cost
-        return dict(entry)
+        by_ep = entry.setdefault("by_endpoint", {})
+        by_ep[endpoint] = float(by_ep.get(endpoint, 0.0)) + cost
+        return _spend_entry_to_result(entry)
 
-    # Seed failed before the write. Scan now includes this row — install
-    # without adding cost. A failed scan leaves the cache empty so the next
-    # call can retry rather than poisoning the process with $0.
-    spend = project_spend(project_id)
-    entry = {
-        "total": float(spend["total"]),
-        "estimated": float(spend["estimated"]),
-        "actual": float(spend["actual"]),
-    }
-    _running_spend[project_id] = entry
-    return dict(entry)
+    # Seed missing, replaced, or never landed. Scan includes this row.
+    spend = _project_spend_scan(project_id)
+    return _install_running_spend(project_id, spend)
 
 
 def _cached_budget(project_id: str) -> tuple:

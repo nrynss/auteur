@@ -31,6 +31,7 @@ def storage_ledger(tmp_path, monkeypatch):
     monkeypatch.setattr("foleyflow.storage.get_backend", lambda *a, **k: backend)
     ledger._invalidate_row_cache()
     ledger._invalidate_writable_cache()
+    ledger.invalidate_project_spend_cache()
     return backend
 
 
@@ -564,3 +565,228 @@ def test_single_flight_waiter_does_not_serve_stale_on_leader_failure(
     now = time.monotonic()
     if ledger._row_cache is not None:
         assert (now - ledger._row_cache_at) >= ledger._ROW_CACHE_TTL_S
+
+
+# -- unit 7.18 phase-2: write-through exact aggregates ----------------------
+
+def test_project_spend_aggregate_matches_full_scan(storage_ledger):
+    """Seeded process-local spend must equal a forced full scan."""
+    with ledger.set_project_context("proj_A"):
+        ledger.log_transaction("gemini-2.5-flash", "a1", 0.10, success=True)
+        ledger.log_transaction("gemini-2.5-flash", "a2", 0.20, success=False,
+                               error="429")
+        ledger.log_transaction("eleven_multilingual_v2", "a3", 0.05,
+                               success=True, cost_source="actual")
+    with ledger.set_project_context("proj_B"):
+        ledger.log_transaction("gemini-2.5-flash", "b1", 0.40, success=True)
+
+    # Force re-seed from scan for a clean comparison.
+    ledger.invalidate_project_spend_cache()
+    from_agg = ledger.project_spend("proj_A")
+    # Bypass aggregate: clear and scan again via internal scan helper.
+    scanned = ledger._project_spend_scan("proj_A")
+    assert from_agg["total"] == pytest.approx(scanned["total"])
+    assert from_agg["estimated"] == pytest.approx(scanned["estimated"])
+    assert from_agg["actual"] == pytest.approx(scanned["actual"])
+    assert from_agg["by_endpoint"] == scanned["by_endpoint"]
+    # Failed call still counted (0.20).
+    assert from_agg["total"] == pytest.approx(0.35)
+    assert from_agg["by_endpoint"]["gemini-2.5-flash"] == pytest.approx(0.30)
+    assert from_agg["by_endpoint"]["eleven_multilingual_v2"] == pytest.approx(0.05)
+    assert from_agg["actual"] == pytest.approx(0.05)
+    assert from_agg["estimated"] == pytest.approx(0.30)
+
+
+def test_project_spend_write_through_stays_exact_after_new_rows(storage_ledger):
+    """After seed, further log_transaction increments must match a rescan."""
+    with ledger.set_project_context("proj_A"):
+        ledger.log_transaction("m", "h0", 0.10, success=True)
+    # Seed via public API.
+    assert ledger.project_spend("proj_A")["total"] == pytest.approx(0.10)
+    with ledger.set_project_context("proj_A"):
+        ledger.log_transaction("m", "h1", 0.07, success=True)
+        ledger.log_transaction("n", "h2", 0.03, success=False, error="x")
+    agg = ledger.project_spend("proj_A")
+    scanned = ledger._project_spend_scan("proj_A")
+    assert agg["total"] == pytest.approx(scanned["total"]) == pytest.approx(0.20)
+    assert agg["by_endpoint"] == scanned["by_endpoint"]
+
+
+def test_concurrent_write_and_spend_never_undercounts(storage_ledger):
+    """Concurrent stems + readers must not undercount project spend."""
+    n_writers = 8
+    rows_each = 5
+
+    def writer(wid: int):
+        with ledger.set_project_context("proj_C"):
+            for i in range(rows_each):
+                ledger.log_transaction(
+                    "gemini-2.5-flash", f"w{wid}-{i}", 0.01, success=True)
+
+    def reader():
+        # Touch the aggregate path repeatedly while writers run.
+        for _ in range(20):
+            ledger.project_spend("proj_C")
+
+    threads = [threading.Thread(target=writer, args=(w,))
+               for w in range(n_writers)]
+    threads.append(threading.Thread(target=reader))
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10.0)
+
+    expected = n_writers * rows_each * 0.01
+    agg = ledger.project_spend("proj_C")
+    scanned = ledger._project_spend_scan("proj_C")
+    assert scanned["total"] == pytest.approx(expected)
+    assert agg["total"] == pytest.approx(expected)
+    assert agg["total"] == pytest.approx(scanned["total"])
+
+
+def test_quota_aggregates_match_full_scan(storage_ledger, monkeypatch):
+    """endpoint_call_counts after seed equals counting raw rows."""
+    from datetime import datetime
+    from foleyflow.quota import RESET_TZ, get_quota
+
+    now = datetime.now(RESET_TZ)
+    with ledger.set_project_context("proj_Q"):
+        for i in range(6):
+            ledger.log_transaction("gemini-2.5-flash", f"q{i}", 0.01,
+                                   success=(i % 2 == 0))
+        ledger.log_transaction("other-model", "ox", 0.01, success=True)
+
+    ledger.invalidate_project_spend_cache()  # also drops quota aggregates
+    q_agg = get_quota("gemini-2.5-flash", now=now)
+    # Force scan path with explicit rows.
+    rows = ledger.iter_transactions()
+    q_scan = get_quota("gemini-2.5-flash", now=now, rows=rows)
+    assert q_agg.per_day.used == q_scan.per_day.used == 6
+    assert q_agg.per_minute.used == q_scan.per_minute.used
+
+
+def test_quota_write_through_counts_new_row_without_rescan(storage_ledger):
+    """A successful log_transaction updates quota aggregates in place."""
+    from datetime import datetime
+    from foleyflow.quota import RESET_TZ, get_quota
+
+    now = datetime.now(RESET_TZ)
+    with ledger.set_project_context("proj_Q"):
+        ledger.log_transaction("gemini-2.5-flash", "q0", 0.01, success=True)
+    assert get_quota("gemini-2.5-flash", now=now).per_day.used == 1
+    # Invalidate only the row cache so the next read would re-list if aggregates
+    # were wrong — write-through should still see the second call.
+    ledger._invalidate_row_cache()
+    with ledger.set_project_context("proj_Q"):
+        ledger.log_transaction("gemini-2.5-flash", "q1", 0.01, success=False,
+                               error="nope")
+    assert get_quota("gemini-2.5-flash", now=now).per_day.used == 2
+
+
+def test_attribution_rescue_invalidates_spend_aggregate(storage_ledger):
+    """Adopted rows must appear in project_spend after rescue."""
+    import time as _time
+    old = _time.time() - 3600
+    for i in range(3):
+        row = {"endpoint": "gemini-2.5-flash", "params_hash": f"u{i}",
+               "cost_estimate": 0.10, "success": True, "timestamp": old,
+               "project_id": None, "cost_source": "estimate"}
+        storage_ledger.put_bytes(
+            f"{ledger.LEDGER_PREFIX}u{i}.json",
+            json.dumps(row).encode())
+    ledger._invalidate_row_cache()
+    ledger.invalidate_project_spend_cache()
+
+    assert ledger.project_spend("proj_A")["total"] == pytest.approx(0.0)
+    assert ledger.record_attribution("proj_A", before=old + 10) == 3
+    # Cache was dropped; reseed must include adopted rows.
+    spend = ledger.project_spend("proj_A")
+    assert spend["total"] == pytest.approx(0.30)
+
+
+def test_spend_no_overcount_when_reseeded_during_write_gap(storage_ledger, monkeypatch):
+    """Invalidate + reseed mid-write must not double-count the new row.
+
+    log_transaction seeds, releases the project lock for the durable put,
+    then increments. If project_spend reseeds from a post-write scan in that
+    gap, a blind increment overcounts GET /budget (phase-2 adversarial P0).
+    """
+    with ledger.set_project_context("proj_A"):
+        ledger.log_transaction("m", "seed", 0.10, success=True)
+    assert ledger.project_spend("proj_A")["total"] == pytest.approx(0.10)
+
+    real_put = storage_ledger.put_if_absent
+    gap = threading.Event()
+    in_put = threading.Event()
+
+    def put_with_gap(key, data, content_type=None):
+        in_put.set()
+        # Hold the write so the concurrent reseed can install a post-write map.
+        # First put the object so a scan in the gap *includes* this row.
+        result = real_put(key, data, content_type=content_type)
+        gap.wait(timeout=3.0)
+        return result
+
+    monkeypatch.setattr(storage_ledger, "put_if_absent", put_with_gap)
+
+    errors: list = []
+
+    def writer():
+        try:
+            with ledger.set_project_context("proj_A"):
+                ledger.log_transaction("m", "mid", 0.50, success=True)
+        except Exception as exc:  # pragma: no cover
+            errors.append(exc)
+
+    def reseed_in_gap():
+        assert in_put.wait(timeout=2.0)
+        # Drop the pre-write entry and install a scan that already has "mid".
+        ledger.invalidate_project_spend_cache("proj_A")
+        # project_spend will scan and install post-write totals.
+        ledger.project_spend("proj_A")
+        gap.set()
+
+    t_w = threading.Thread(target=writer)
+    t_r = threading.Thread(target=reseed_in_gap)
+    t_w.start()
+    t_r.start()
+    t_w.join(timeout=5.0)
+    t_r.join(timeout=5.0)
+
+    assert errors == []
+    agg = ledger.project_spend("proj_A")
+    scanned = ledger._project_spend_scan("proj_A")
+    assert scanned["total"] == pytest.approx(0.60)
+    assert agg["total"] == pytest.approx(scanned["total"]), (
+        f"overcount: agg={agg['total']} scan={scanned['total']}"
+    )
+
+
+def test_spend_no_overcount_after_seed_failure_then_concurrent_spend(
+        storage_ledger, monkeypatch):
+    """If pre-write seed fails, a gap reseed + post-write path must not add twice."""
+    with ledger.set_project_context("proj_A"):
+        ledger.log_transaction("m", "seed", 0.10, success=True)
+    ledger.invalidate_project_spend_cache("proj_A")
+
+    calls = {"n": 0}
+    real_scan = ledger._project_spend_scan
+
+    def flaky_seed_scan(project_id):
+        calls["n"] += 1
+        # First call is pre-write seed inside log_transaction — fail it.
+        if calls["n"] == 1:
+            raise StorageError("seed scan failed")
+        return real_scan(project_id)
+
+    monkeypatch.setattr(ledger, "_project_spend_scan", flaky_seed_scan)
+
+    with ledger.set_project_context("proj_A"):
+        ledger.log_transaction("m", "after", 0.40, success=True)
+
+    # Restore real scan for the assertion path.
+    monkeypatch.setattr(ledger, "_project_spend_scan", real_scan)
+    agg = ledger.project_spend("proj_A")
+    scanned = ledger._project_spend_scan("proj_A")
+    assert scanned["total"] == pytest.approx(0.50)
+    assert agg["total"] == pytest.approx(0.50)

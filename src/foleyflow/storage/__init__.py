@@ -23,6 +23,8 @@ from foleyflow.storage.base import (
     PreconditionFailed,
     StorageError,
     get_bytes_many,
+    get_io_pool,
+    get_route_pool,
 )
 from foleyflow.storage.local import LocalBackend
 from foleyflow.storage.factory import get_backend
@@ -36,4 +38,6 @@ __all__ = [
     "LocalBackend",
     "get_backend",
     "get_bytes_many",
+    "get_io_pool",
+    "get_route_pool",
 ]

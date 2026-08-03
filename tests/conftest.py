@@ -62,6 +62,8 @@ def _isolate_ambient_deploy_config(tmp_path, monkeypatch):
     ledger._invalidate_row_cache()
     ledger._invalidate_writable_cache()
     ledger.invalidate_project_spend_cache()
+    from foleyflow.projects import invalidate_event_log_cache
+    invalidate_event_log_cache()
 
     yield
 
@@ -70,3 +72,4 @@ def _isolate_ambient_deploy_config(tmp_path, monkeypatch):
     ledger._invalidate_row_cache()
     ledger._invalidate_writable_cache()
     ledger.invalidate_project_spend_cache()
+    invalidate_event_log_cache()

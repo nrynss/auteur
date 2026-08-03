@@ -19,7 +19,8 @@ into permanent run records. Messages here name the *key* — which the caller
 already knows — never the resolved local path, bucket, or provider URL.
 """
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Protocol, Sequence, runtime_checkable
 
@@ -161,6 +162,60 @@ class Backend(Protocol):
 # hundreds of sockets on a large ledger.
 _DEFAULT_MULTI_GET_WORKERS = 24
 
+# Process-level pool for storage multi-get only (unit 7.18 phase-2).
+# Creating a ThreadPoolExecutor per multi-get under poll storms exploded
+# threads; one capped pool queues instead.
+#
+# Route-level fan-out (get_project parallel scenes/QA/HEAD, budget
+# state+spend, dossier HEADs) uses a *separate* pool — see
+# :func:`get_route_pool`. Submitting work onto the multi-get pool that then
+# calls ``get_bytes_many`` (which blocks on the same pool) deadlocks when
+# every worker is waiting on nested futures (phase-2 adversarial P0).
+_IO_POOL_WORKERS = 24
+_io_pool: Optional[ThreadPoolExecutor] = None
+_io_pool_lock = threading.Lock()
+
+_ROUTE_POOL_WORKERS = 8
+_route_pool: Optional[ThreadPoolExecutor] = None
+_route_pool_lock = threading.Lock()
+
+
+def get_io_pool(max_workers: int = _IO_POOL_WORKERS) -> ThreadPoolExecutor:
+    """Shared bound thread pool for storage multi-get only.
+
+    ``max_workers`` is accepted for API symmetry with callers that know their
+    fan-out; the process pool is sized to ``_IO_POOL_WORKERS`` and never
+    grows past that cap. Do **not** run tasks here that themselves call
+    :func:`get_bytes_many` — use :func:`get_route_pool` for route fan-out.
+    """
+    global _io_pool
+    del max_workers  # pool size is process-global; fan-out is queue depth.
+    with _io_pool_lock:
+        if _io_pool is None:
+            _io_pool = ThreadPoolExecutor(
+                max_workers=_IO_POOL_WORKERS,
+                thread_name_prefix="ff-storage-io",
+            )
+        return _io_pool
+
+
+def get_route_pool(max_workers: int = _ROUTE_POOL_WORKERS) -> ThreadPoolExecutor:
+    """Shared pool for independent route I/O that may nest multi-gets.
+
+    Separate from :func:`get_io_pool` so a budget handler that fans out
+    ``get_state`` + ``project_spend`` (each may multi-get) cannot deadlock
+    by blocking io-pool workers on more io-pool work.
+    """
+    global _route_pool
+    del max_workers
+    with _route_pool_lock:
+        if _route_pool is None:
+            _route_pool = ThreadPoolExecutor(
+                max_workers=_ROUTE_POOL_WORKERS,
+                thread_name_prefix="ff-route-io",
+            )
+        return _route_pool
+
 
 def get_bytes_many(
     backend: Backend,
@@ -187,6 +242,9 @@ def get_bytes_many(
     Any other ``StorageError`` (or unexpected exception wrapped as one) fails
     the whole operation. Never silently drop events/rows on a transient
     backend fault.
+
+    Uses the process-level :func:`get_io_pool` so concurrent polls do not each
+    spawn a fresh executor.
     """
     if not keys:
         return {}
@@ -210,25 +268,29 @@ def get_bytes_many(
         return out
 
     hard_error: Optional[BaseException] = None
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        future_map = {pool.submit(_fetch, key): key for key in unique}
-        for fut in as_completed(future_map):
-            key = future_map[fut]
-            try:
-                out[key] = fut.result()
-            except ObjectNotFound as exc:
-                if not skip_missing and hard_error is None:
-                    hard_error = exc
-            except StorageError as exc:
-                if hard_error is None:
-                    hard_error = exc
-            except Exception as exc:
-                if hard_error is None:
-                    hard_error = StorageError(
-                        f"failed to read {key!r}: {type(exc).__name__}: {exc}"
-                    )
-        if hard_error is not None:
-            raise hard_error
+    pool = get_io_pool()
+    # Submit up to ``workers`` tasks; the shared pool queues the rest so a
+    # single multi-get cannot spawn unbounded threads.
+    future_map: Dict[Future, str] = {
+        pool.submit(_fetch, key): key for key in unique
+    }
+    for fut in as_completed(future_map):
+        key = future_map[fut]
+        try:
+            out[key] = fut.result()
+        except ObjectNotFound as exc:
+            if not skip_missing and hard_error is None:
+                hard_error = exc
+        except StorageError as exc:
+            if hard_error is None:
+                hard_error = exc
+        except Exception as exc:
+            if hard_error is None:
+                hard_error = StorageError(
+                    f"failed to read {key!r}: {type(exc).__name__}: {exc}"
+                )
+    if hard_error is not None:
+        raise hard_error
 
     # Re-order by input key sequence so dict iteration matches list order.
     return {k: out[k] for k in unique if k in out}

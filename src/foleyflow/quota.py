@@ -35,7 +35,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from foleyflow.ledger import iter_transactions, ledger_writable
+from foleyflow.ledger import endpoint_call_counts, iter_transactions, ledger_writable
 from foleyflow.providers.config import load_config
 
 DEFAULT_RESET_TZ = "America/Los_Angeles"
@@ -145,17 +145,12 @@ def get_quota(model_id: str, *, now: Optional[datetime] = None,
         now.astimezone(RESET_TZ).date(), datetime.min.time(), tzinfo=RESET_TZ
     ).timestamp()
 
-    per_minute = per_day = 0
-    for row in (rows if rows is not None else iter_transactions(ledger_path)):
-        if row.get("endpoint") != model_id:
-            continue
-        ts = row.get("timestamp")
-        if not isinstance(ts, (int, float)):
-            continue
-        if ts >= day_start:
-            per_day += 1
-        if ts >= minute_ago:
-            per_minute += 1
+    # Storage mode uses write-through timestamp aggregates (exact; failed
+    # calls counted). ``rows`` / ``ledger_path`` keep the scan path for
+    # unit tests and the get_all_quotas shared snapshot.
+    per_minute, per_day = endpoint_call_counts(
+        model_id, minute_ago=minute_ago, day_start=day_start,
+        rows=rows, ledger_path=ledger_path)
 
     return ModelQuota(
         model_id=model_id,
@@ -176,12 +171,18 @@ def get_all_quotas(*, now: Optional[datetime] = None,
     """Every model that declares a limit, worst status first so a UI can show
     the problem without sorting.
 
-    The ledger is read once and shared across models — against object storage
-    a per-model scan would be one listing + one GET per row, times every model
-    that declares a limit.
+    Storage mode answers from process-local exact timestamp aggregates after
+    one seed scan (or write-through after that). File-mode / explicit
+    ``ledger_path`` still reads the ledger once and shares the snapshot
+    across models.
     """
     config = load_config()
-    rows = iter_transactions(ledger_path)
+    # File / explicit path: one shared scan. Storage mode: leave rows=None so
+    # each get_quota hits the aggregate (seeded once inside endpoint_call_counts).
+    from foleyflow.ledger import uses_storage_ledger
+    rows: Optional[List[dict]] = None
+    if ledger_path is not None or not uses_storage_ledger():
+        rows = iter_transactions(ledger_path)
     quotas = [
         get_quota(model_id, now=now, ledger_path=ledger_path, rows=rows)
         for model_id, raw in config.get("models", {}).items()

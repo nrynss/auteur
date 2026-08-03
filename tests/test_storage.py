@@ -162,3 +162,34 @@ def test_get_bytes_many_propagates_storage_error(tmp_path):
 
     with pytest.raises(StorageError, match="simulated outage"):
         get_bytes_many(backend, ["ok.json", "bad.json"], max_workers=4)
+
+
+def test_route_pool_nested_multi_get_does_not_deadlock(tmp_path):
+    """Route tasks that call get_bytes_many must not share the multi-get pool.
+
+    Submitting nested multi-gets onto the same ThreadPoolExecutor as the
+    outer fan-out deadlocks when every worker waits on futures that cannot
+    start (phase-2 adversarial P0). Route pool + io pool are separate.
+    """
+    import time
+    from concurrent.futures import wait, FIRST_EXCEPTION
+
+    from foleyflow.storage.base import get_bytes_many, get_route_pool
+
+    backend = LocalBackend(str(tmp_path / "store"))
+    for i in range(8):
+        backend.put_bytes(f"k{i}.json", f"v{i}".encode())
+
+    keys = [f"k{i}.json" for i in range(8)]
+
+    def nested_multi_get(_i):
+        # Simulate get_state / project_spend work submitted on the route pool.
+        return get_bytes_many(backend, keys, max_workers=4)
+
+    pool = get_route_pool()
+    futs = [pool.submit(nested_multi_get, i) for i in range(4)]
+    done, not_done = wait(futs, timeout=5.0, return_when=FIRST_EXCEPTION)
+    assert not not_done, "nested multi-get via route pool deadlocked"
+    for fut in futs:
+        out = fut.result(timeout=0.1)
+        assert len(out) == 8
