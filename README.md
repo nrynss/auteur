@@ -56,8 +56,9 @@ installed as `foleyflow` too).
 | Self-hosted SFX worker — MOSS-SoundEffect v2 | Built (separate GPU process, bearer-auth) |
 | Control room UI — Svelte SPA served by the app, timeline editing, config view | Built |
 
-The build log and every decision behind it are itemised in
-[handoff.md](handoff.md).
+Every task in the build, and the reasoning behind each decision, is recorded in
+the archived engineering handoffs under
+[`docs/design/development/archives/`](docs/design/development/archives/).
 
 ## What is in it
 

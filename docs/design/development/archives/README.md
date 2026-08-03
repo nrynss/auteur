@@ -9,6 +9,8 @@ stands today.
 | `SPEC.md` | The build specification | Superseded as a product description by `auteur.md`; still the referent for the `SPEC.md §N` citations throughout `src/foleyflow/` |
 | `control-room.md` | The locked interface design direction | Its decisions shipped; still the referent for the `control-room.md §N` citations throughout `ui/src/` |
 | `control-room-mockup.html` | Static mockup behind that direction | Superseded by the real interface |
+| `handoff.md` | The engineering queue, tasks 1 to 23 | All 23 tasks are done. It is the record of what was built and why each decision went the way it did |
+| `handoff-task7.md` | Task 7's own handoff, the control room build | Task 7 shipped and its remaining unit was promoted into task 22. Cited by `scripts/latency_live.py` §7.18 for the pre-fix latency numbers |
 
 **These are historical.** Where they disagree with the code, the code is right.
 
