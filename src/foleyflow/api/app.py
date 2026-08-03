@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import tempfile
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
@@ -135,6 +137,46 @@ def _check_project_id(project_id: str) -> str:
         raise err.InvalidId(f"Not a valid project id: {project_id}",
                             detail={"project_id": project_id})
     return project_id
+
+
+def _project_cache_cost(backend, planned, *, variant_fn=None) -> dict:
+    """Probe the cache the way the render will see it: backend truth only.
+
+    The render's own stems directory is created fresh per run, so a projection
+    that trusted the shared CLI scratch (``work_dir()``) could count a stale
+    local file as a hit the bill never gets. Probing from an empty scratch
+    directory makes the projection exactly the prewarm probe: local miss, then
+    ``backend.exists``. Used by the mix and repair routes; the CLI's own
+    ``prewarm --dry-run`` deliberately keeps probing its real work dir.
+    """
+    from foleyflow.sfx_cache import project_mix_cost
+
+    probe_dir = tempfile.mkdtemp(prefix="foleyflow-probe-")
+    try:
+        return project_mix_cost(backend, probe_dir, planned,
+                                variant_fn=variant_fn)
+    finally:
+        shutil.rmtree(probe_dir, ignore_errors=True)
+
+
+def _repair_mix_tier(previous_tier: Optional[str], event_kind: str) -> str:
+    """The tier a repair must re-mix at.
+
+    The repair's promise is "this stem's bytes change, every other stem is
+    still served from cache" — which only holds when the re-mix plans the
+    same stems the mix it repairs did. Re-mixing a discrete project at
+    ``full`` would generate ambience/rhythmic/continuous stems the mix never
+    had: new billing and a changed soundtrack. So the re-mix runs at the
+    previous mix's tier, raised to whatever tier actually includes the target
+    event (rhythmic/continuous stems only exist at ``full``). No prior mix
+    falls back to ``full``, today's behaviour.
+    """
+    need = "discrete" if event_kind == "discrete" else "full"
+    order = {"ambience": 0, "discrete": 1, "full": 2}
+    previous = previous_tier or "full"
+    if previous not in order:
+        previous = "full"
+    return previous if order[previous] >= order[need] else need
 
 
 def create_app(store: Optional[ProjectStore] = None,
@@ -431,8 +473,6 @@ def create_app(store: Optional[ProjectStore] = None,
         from foleyflow.api.jobs import SlotTaken
         from foleyflow.assemble import plan_requests
         from foleyflow.ledger import project_spend
-        from foleyflow.sfx_cache import project_mix_cost
-        from foleyflow.workflow import work_dir
 
         _check_project_id(project_id)
         state = _load_state(store, project_id)
@@ -455,8 +495,10 @@ def create_app(store: Optional[ProjectStore] = None,
         if duration:
             try:
                 planned = plan_requests(timeline, duration, tier=body.tier)
-                projection = project_mix_cost(
-                    store.backend, work_dir(), planned)
+                # Probe from a fresh scratch dir: the render's stems dir is
+                # created per run and starts empty, so the projection must
+                # see backend truth, not stale files in the CLI scratch.
+                projection = _project_cache_cost(store.backend, planned)
             except (OSError, StorageError, ValueError, KeyError) as exc:
                 # Projection is advisory; a probe failure must not refuse the mix.
                 print(f"[api] mix projection unavailable: "
@@ -579,9 +621,8 @@ def create_app(store: Optional[ProjectStore] = None,
         from foleyflow.assemble import plan_requests
         from foleyflow.ledger import project_spend
         from foleyflow.routing import SfxRequest, clamp_duration, route_event
-        from foleyflow.sfx_cache import project_generation_cost, project_mix_cost
+        from foleyflow.sfx_cache import project_generation_cost
         from foleyflow.tiers import TierError, get_tier
-        from foleyflow.workflow import work_dir
 
         _check_project_id(project_id)
         state = _load_state(store, project_id)
@@ -618,13 +659,16 @@ def create_app(store: Optional[ProjectStore] = None,
                 duration_s=clamp_duration(tier.endpoint, request.duration_s),
                 category=request.category, tier=tier.name)
 
-        # The repair's render re-mixes at tier "full" with the target under a
-        # fresh variant nonce and every other stem at its plain address (see
-        # _repair_work). The consent figure is therefore the cache-miss
+        # The repair's render re-mixes at the tier of the mix it repairs
+        # (raised to whatever tier includes the target event), with the target
+        # under a fresh variant nonce and every other stem at its plain address
+        # (see _repair_work). The consent figure is therefore the cache-miss
         # projection of that exact plan: the target is a miss by construction,
         # and so is every stem the previous mix never cached. The placeholder
         # variant below can never collide with a real repair nonce (those are
         # "r" + run-id hex), and any fresh nonce probes as a miss anyway.
+        repair_tier = _repair_mix_tier(
+            (state.latest_mix or {}).get("tier"), event.kind)
         duration = (state.duration_s or state.project.duration_s
                     or timeline.duration)
         target = (request.endpoint, request.prompt,
@@ -634,9 +678,9 @@ def create_app(store: Optional[ProjectStore] = None,
                             "misses": None, "stem_count": None}
         if duration:
             try:
-                planned = plan_requests(timeline, duration, tier="full")
-                projection = project_mix_cost(
-                    store.backend, work_dir(), planned,
+                planned = plan_requests(timeline, duration, tier=repair_tier)
+                projection = _project_cache_cost(
+                    store.backend, planned,
                     variant_fn=lambda req: "pending" if (
                         req.endpoint, req.prompt,
                         round(req.duration_s, 2)) == target else "")
@@ -700,11 +744,11 @@ def create_app(store: Optional[ProjectStore] = None,
             run = runner.submit(
                 project_id, "repair",
                 _repair_work(store, project_id, version, event_index, request,
-                             body.note, body.provider),
+                             body.note, body.provider, repair_tier),
                 metadata={"event_index": event_index,
                           "event_name": event.name,
                           "endpoint": request.endpoint,
-                          "tier": request.tier,
+                          "tier": repair_tier,
                           "estimated_cost_usd": estimated,
                           "projected_cost_usd": estimated,
                           "cache_hits": hits,
@@ -2842,13 +2886,16 @@ def _export_work(store: ProjectStore, project_id: str, mix_run_id: str,
 
 def _repair_work(store: ProjectStore, project_id: str, version: int,
                  event_index: int, request, note: Optional[str],
-                 provider: Optional[str]):
+                 provider: Optional[str], tier: str):
     """The repair job body: a new timeline version, one regenerated stem, re-mix.
 
     ``request`` is the stem to regenerate, resolved (and possibly re-aimed at
     an approved alternative tier) at route time, so the estimate shown is the
     one actually spent. ``version`` is the immutable timeline the plan was
-    shown against — loading it here cannot race a newer plan.
+    shown against — loading it here cannot race a newer plan. ``tier`` is the
+    re-mix tier the estimate was quoted at (the previous mix's tier, raised to
+    include the target event) — using any other tier would bill a different
+    plan than the one the client confirmed.
 
     The plan bytes are unchanged; the new version number is the lineage
     marker. v2 is the generation the regenerated take belongs to, and the
@@ -2893,7 +2940,7 @@ def _repair_work(store: ProjectStore, project_id: str, version: int,
 
         staged = _fetch_source(store, project_id)
         result = render_mix(store, project_id, run=run, video_path=staged,
-                            tier="full", timeline_version=new_version,
+                            tier=tier, timeline_version=new_version,
                             variant_fn=variant_fn)
 
         store.append_event(
@@ -2911,7 +2958,8 @@ def _repair_work(store: ProjectStore, project_id: str, version: int,
             run, timeline_version=result.timeline_version,
             genblaze_run_id=result.genblaze_run_id,
             metadata={"event_index": event_index, "event_name": event.name,
-                      "variant": variant, "superseded": superseded,
+                      "tier": tier, "variant": variant,
+                      "superseded": superseded,
                       "provider": provider, "note": note,
                       "ledger_delta_usd": round(result.ledger_delta, 4),
                       "stem_count": len(result.stems),

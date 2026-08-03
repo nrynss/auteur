@@ -56,7 +56,7 @@
         ? `"${eventName}" (index ${eventIndex})`
         : `event index ${eventIndex}`;
     if (phase.cost != null && phase.cost > 0) {
-      return `Regenerate the stem for ${who} and re-mix. The amount below is the estimate the API returned. Confirming echoes it as confirm_cost_usd.`;
+      return `Regenerate the stem for ${who} and re-mix. The amount below is the estimate for the whole re-mix: a fresh take of this stem plus any other stems the re-mix still needs to generate. Confirming echoes it as confirm_cost_usd.`;
     }
     if (phase.cost === 0) {
       return `Regenerate the stem for ${who} and re-mix. Estimate $0.00. Free, no billable consent required.`;

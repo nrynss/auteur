@@ -534,8 +534,15 @@ request's price: a repair re-mixes the whole timeline, and the run bills every
 stem that is not cached at its own address — the target under its fresh variant
 nonce, plus whatever the previous mix never cached. So an empty cache quotes the
 full re-mix, and a fully cached re-mix quotes the target alone ($0.30 on the
-paid tier). The figure is a projection: a mid-flight fallback can change the
-bill, and the advisory budget never refuses work.
+paid tier). The re-mix runs at the tier of the mix it repairs (raised to
+whatever tier includes the target event, since rhythmic/continuous stems only
+exist at `full`), so a repair never bills tiers of stems that were not in the
+mix. The figure is a projection: a mid-flight fallback can change the bill, and
+the advisory budget never refuses work.
+
+The `422` refusal and the `202` body carry `cache_hits` / `cache_misses` /
+`projected_cost_usd` alongside `estimated_cost_usd`, so the client can say
+"3 of 5 stems will be regenerated, costing $0.90".
 
 `confirm_cost_usd` is required when the regeneration is billable and must match
 the estimate the client was shown. SPEC.md §9.4 requires the estimate be shown
@@ -556,7 +563,7 @@ requested event index either way.
 
 The `provider` field names a declared SFX tier to regenerate through; the
 request is re-aimed at that tier for the lineage. The quote is still the
-re-mix projection (the render plans the timeline at the active tier), so
+re-mix projection (the render plans the timeline at the repair tier), so
 `422 precondition_failed` fires when a billable regeneration is not confirmed
 (`confirm_cost_usd`); the project's advisory budget never refuses work.
 `400 invalid_request` for an out-of-range index or an unknown provider.

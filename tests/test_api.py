@@ -1665,13 +1665,15 @@ def _stub_repair_work(store, project, monkeypatch, captured):
     import foleyflow.api.app as app_mod
     from foleyflow.projects import EVENT_REPAIR_APPROVED
 
-    def _work(_store, _pid, version, event_index, request, note, provider):
+    def _work(_store, _pid, version, event_index, request, note, provider,
+              tier):
         def run_it(run):
             captured["version"] = version
             captured["event_index"] = event_index
             captured["request"] = request
             captured["note"] = note
             captured["provider"] = provider
+            captured["tier"] = tier
             # The real work allocates the new version; the stub does the same
             # so the lineage and version listing stay honest.
             timeline = _store.load_timeline(_pid, version)
@@ -1684,6 +1686,7 @@ def _stub_repair_work(store, project, monkeypatch, captured):
                                         "timeline_version": new_version})
             store.complete_run(run, timeline_version=new_version,
                                metadata={"event_index": event_index,
+                                         "tier": tier,
                                          "variant": "rX"})
         return run_it
 
@@ -1816,6 +1819,97 @@ def test_regenerate_provider_reroutes_to_an_approved_tier(
     assert captured["request"].endpoint == "openmoss/moss-soundeffect-v2"
 
 
+def test_regenerate_quotes_the_previous_mix_tier_not_always_full(
+        client, store, project, monkeypatch):
+    """A repair re-mixes at the tier of the mix it repairs, so a
+    discrete-tier project's repair must not quote (or bill) continuous stems
+    that were never in its mix: ambience + the discrete gunshot = 2 stems,
+    not the 3 the full plan would."""
+    store.save_timeline(project.id, _timeline())
+    store.record_mix(project.id, run_id="run_mix1", mix_key="k", video_key="v",
+                     tier="discrete", timeline_version=1,
+                     stem_count=2, generated_count=2)
+    captured = {}
+    _stub_repair_work(store, project, monkeypatch, captured)
+    monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+                    json={})
+    assert r.status_code == 422, r.text
+    detail = r.json()["error"]["detail"]
+    assert detail["estimated_cost_usd"] == pytest.approx(0.60)
+    assert detail["cache_misses"] == 2
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+                    json={"confirm_cost_usd": 0.60})
+    assert r.status_code == 202, r.text
+    assert r.json()["estimated_cost_usd"] == pytest.approx(0.60)
+    _await_run(client, project.id, r.json()["run_id"])
+    assert captured["tier"] == "discrete"
+
+
+def test_regenerate_of_a_continuous_stem_raises_a_discrete_mix_to_full(
+        client, store, project, monkeypatch):
+    """Continuous stems only exist at tier full: repairing one in a
+    discrete-tier project must quote (and re-mix at) full, or the target
+    event would not be in the plan at all."""
+    store.save_timeline(project.id, _timeline())
+    store.record_mix(project.id, run_id="run_mix1", mix_key="k", video_key="v",
+                     tier="discrete", timeline_version=1,
+                     stem_count=2, generated_count=2)
+    captured = {}
+    _stub_repair_work(store, project, monkeypatch, captured)
+    monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/0/regenerate",
+                    json={"confirm_cost_usd": 0.90})
+    assert r.status_code == 202, r.text
+    assert r.json()["estimated_cost_usd"] == pytest.approx(0.90)
+    _await_run(client, project.id, r.json()["run_id"])
+    assert captured["tier"] == "full"
+
+
+def test_repair_projection_ignores_stale_files_in_the_cli_scratch(
+        client, store, project, monkeypatch):
+    """The consent probe must see backend truth, not stale local files in the
+    shared CLI scratch (``work_dir()``): the render's own stems dir is created
+    fresh per run, so a file an interrupted ``foleyflow prewarm`` left behind
+    would otherwise flip a stem to a hit the bill never gets — underquoting
+    the consent figure."""
+    from foleyflow.routing import route_ambience
+    from foleyflow.sfx_cache import cache_object_key
+    from foleyflow.workflow import work_dir
+
+    store.save_timeline(project.id, _timeline())
+    _stub_repair_work(store, project, monkeypatch, {})
+    monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
+
+    ambience = route_ambience("desert wind", 15.04)
+    key = cache_object_key(ambience.endpoint, ambience.prompt,
+                           ambience.duration_s, "")
+    assert not store.backend.exists(key)  # backend genuinely cold
+
+    # Plant a stale WAV at the ambience's cache-address basename in the CLI
+    # scratch — exactly the shape an interrupted `foleyflow prewarm` leaves.
+    scratch = work_dir()
+    os.makedirs(scratch, exist_ok=True)
+    stale = os.path.join(scratch, os.path.basename(key))
+    _write_wav(stale, seconds=1.0)
+    try:
+        r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+                        json={})
+        assert r.status_code == 422, r.text
+        detail = r.json()["error"]["detail"]
+        # All three stems are backend misses: the stale local file must not
+        # count, or the quote would understate the bill.
+        assert detail["cache_hits"] == 0
+        assert detail["cache_misses"] == 3
+        assert detail["estimated_cost_usd"] == pytest.approx(0.90)
+    finally:
+        if os.path.exists(stale):
+            os.unlink(stale)
+
+
 def test_regenerate_quote_matches_the_run_bill_when_only_some_stems_are_cached(
         client, store, budget_ledger, monkeypatch, tmp_path):
     """The consent figure is the re-mix's cache-miss projection, and the run
@@ -1832,7 +1926,6 @@ def test_regenerate_quote_matches_the_run_bill_when_only_some_stems_are_cached(
 
     from foleyflow import render as render_mod
     from foleyflow import sfx_cache, stems
-    from foleyflow import workflow as workflow_mod
     from foleyflow.assemble import plan_requests
     from foleyflow.ledger import project_spend
     from foleyflow.qa import AudioMetrics
@@ -1883,11 +1976,6 @@ def test_regenerate_quote_matches_the_run_bill_when_only_some_stems_are_cached(
         lambda path: AudioMetrics(integrated_lufs=-14.2, true_peak_dbtp=-1.6,
                                   loudness_range_lu=5.0))
     monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
-
-    # Isolate the projection's work-dir probe from the shared /tmp scratch so
-    # no other test's stale local file can flip a stem to a hit.
-    scratch = tmp_path / "work"
-    monkeypatch.setattr(workflow_mod, "work_dir", lambda: str(scratch))
 
     project = store.create_project(title="A", input_key="in/source.mp4",
                                    source_sha256="a" * 64,

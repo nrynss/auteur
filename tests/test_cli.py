@@ -644,11 +644,13 @@ def test_regenerate_waits_and_reports_the_repaired_event(
 
     store.save_timeline(project.id, _timeline())
 
-    def _work(_store, _pid, version, event_index, request, note, provider):
+    def _work(_store, _pid, version, event_index, request, note, provider,
+              tier):
         def run_it(job):
             store.complete_run(job, timeline_version=version + 1,
                                metadata={"event_index": event_index,
                                          "event_name": request.prompt,
+                                         "tier": tier,
                                          "variant": "rX",
                                          "ledger_delta_usd": 0.0})
         return run_it

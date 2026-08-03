@@ -1132,8 +1132,11 @@ def cmd_prewarm(args) -> int:
         except StorageError as exc:
             return _fail(f"storage unavailable: {exc}")
 
-        # Shared probe with the mix route (task 9c) so dry-run and the 202
-        # projection cannot disagree about hits vs misses or miss cost.
+        # Local-work-dir probe, deliberately: this dry-run mirrors the CLI's
+        # own prewarm, which reads and writes the same work dir. The API's
+        # mix/repair projections probe backend truth from a fresh scratch dir
+        # instead, because a render's stems dir is always fresh (see
+        # _project_cache_cost in app.py).
         work = work_dir()
         try:
             projection = project_mix_cost(backend, work, requests)
