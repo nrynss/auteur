@@ -701,9 +701,9 @@ points at Regenerate.
   editing operation).
 - **Envelopes are stable under renumbering.** `EnvelopeCanvas` used the event
   index as its deterministic seed, so deleting one event redrew every later
-  one — read as "those sounds changed". It now seeds from the frozen mix seed
-  when present, else a stable name hash: an event's envelope depends on the
-  event, never its position.
+  one — read as "those sounds changed". It now seeds from a stable name hash:
+  an event's envelope depends on the event, never its position, and never its
+  mix seed (freezing one on first touch would flip the event's own shape).
 - **The preview debounces its reschedule.** Dragging while the preview plays
   fired stop+schedule per pointermove (a full BufferSource/GainNode rebuild
   ~60×/sec). The schedule swap is still immediate (cheap, buffer cache
@@ -715,6 +715,12 @@ points at Regenerate.
   edit end-to-end (fake-timer poll), explicit discard, keyboard resize, and
   `/ledger` under an unwritable ledger (rows still served, flag false so the
   UI fails closed).
+- **`iter_attributions` hands out copies.** record_attribution computes its
+  first-come claim count on the returned list, appending the speculative
+  override and sorting — mutating the shared cache object would leave a
+  phantom override behind when the durable write fails (money attributed on
+  a rescue that never landed). Every return path copies; a failed-write test
+  pins it.
 
 ## 7.11 Spend paths and run locking — M — **DONE**
 
@@ -858,9 +864,12 @@ to the explorer's LIST-metadata pagination).
 
 ## 7.17 Archive explorer — M
 
-**Depends on:** 7.16 for the ledger section; otherwise nothing.
+**Depends on:** nothing. (This previously read "7.16 for the ledger section",
+which is wrong now that 7.16 has landed: it shipped the per-project route only
+and explicitly assigned the bucket-wide one here, so there is no `/ledger` to
+consume — see "The bucket-wide ledger is this unit's" below.)
 **Files:** `docs/api.md` first, `storage/base.py` + `storage/b2.py` +
-`storage/local.py`, `api/app.py`, a new UI route.
+`storage/local.py`, `api/schemas.py`, `api/app.py`, a new UI route.
 
 A view of the **whole bucket**, not one project: every project, every object,
 and the versions of each artifact. The per-project view already exists — that
@@ -883,6 +892,28 @@ space: `timelines/timeline.v{n}.json`, `runs/{run_id}/…` per run, one manifest
 per export, `exports/latest.json` as the pointer. Group by those rather than
 asking the store for object versions.
 
+**The bucket-wide ledger is this unit's, not 7.16's.** 7.16 shipped
+`GET /projects/{id}/ledger` and deferred the global route to the explorer, so
+this unit builds it: a response model in `api/schemas.py` and a `GET /ledger`
+in `app.py` over the same `iter_transactions` snapshot, no project filter.
+Pagination follows §3.14's cursor and inherits the instability documented
+there.
+
+It is **not** the per-project table with the filter removed. The per-project
+endpoint resolves each row's owner from its `project_id` or a rescue override
+and drops anything matching neither, so a row belonging to no project is
+listed by no view in the product today and counted in no project's `/budget` —
+while still consuming the daily `/quota` it was always going to consume. That
+is the worst arrangement: the money is spent and the quota is gone, and the
+only trace is a row nothing reads. Orphaned rows are precisely what
+`record_attribution` exists to repair, and nothing surfaces the rows it would
+repair. A bucket-wide view is the only place they can appear, which makes this
+the natural home for the rescue affordance: list the unattributed rows, then
+claim them into a project from the row itself via the existing
+`POST /projects/{id}/attributions`. Note the shape this shares with the caveat
+below — both are about things in the bucket that belong to no project, and both
+are misread by default.
+
 **The provenance caveat is a display requirement, not a footnote.** The invariant
 is "cache keys are addresses, not provenance": the ~170 shared stems under
 `cache/` belong to no project, and a fallback-served clip is cached at the
@@ -895,8 +926,10 @@ the key.
 Signed URLs are handed out per row as the dossier does; the same TTL applies,
 so the explorer is browsable but never a durable public handle.
 
-**Acceptance:** the whole bucket is listable without a single HEAD, and the
-shared-cache section cannot be read as project provenance.
+**Acceptance:** the whole bucket is listable without a single HEAD; the
+shared-cache section cannot be read as project provenance; and every ledger row
+belonging to no project — invisible in the per-project view by construction —
+is listed here and claimable from the row.
 
 ## 7.18 Backend read latency — M — **DONE**
 
@@ -1012,9 +1045,11 @@ blanket component tests.
 
 # G. Still open
 
-- The archive explorer (7.17) — scoped 2026-08-03. **7.18 (read latency) is
-  DONE; 7.16 (ledger rows) is DONE.** 7.17 must not be built on the dossier's
-  HEAD-per-object mechanism; see the unit.
+- The archive explorer (7.17) — scoped 2026-08-03, re-scoped 2026-08-03 after
+  7.16 landed. **7.18 (read latency) is DONE; 7.16 (ledger rows) is DONE.**
+  7.17 must not be built on the dossier's HEAD-per-object mechanism, and it now
+  owns the bucket-wide `GET /ledger` that 7.16 deferred — the only view that
+  can show ledger rows belonging to no project. See the unit.
 - The states the mockup does not cover — loading, empty, error, the in-flight
   run lock, draft-versus-committed, and the director-mode diff drawn on the
   timeline itself. Listed in `docs/design/control-room.md` §9. These are design

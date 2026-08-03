@@ -1151,14 +1151,23 @@ def iter_attributions() -> List[dict]:
     ``record_attribution`` (the only writer), so the per-project ledger
     endpoint — which folds attributions into every page — does not pay a
     backend LIST per request. Staleness is bounded by the TTL, the same
-    contract the row cache already has."""
+    contract the row cache already has.
+
+    **Every return path hands out a COPY.** record_attribution computes its
+    first-come claim count on the list it gets — it appends the speculative
+    override and sorts — and a mutation of the shared cache object would
+    inject an override that was never written, attributing money on the
+    strength of a write that may not land (a failed rescue would leave the
+    phantom for the whole TTL). The list is small by this module's own
+    reasoning, so the copy is free; returning the cached object itself is
+    the bug this guards against."""
     global _attr_cache, _attr_cache_at, _attr_cache_epoch
     if _file_ledger_path() is not None:
         return []          # file mode keeps no attributions
 
     now = time.monotonic()
     if _attr_cache is not None and (now - _attr_cache_at) < _ATTR_CACHE_TTL_S:
-        return _attr_cache
+        return list(_attr_cache)
 
     from foleyflow.storage import get_backend, get_bytes_many
 
@@ -1190,8 +1199,8 @@ def iter_attributions() -> List[dict]:
         if _attr_cache_epoch == epoch_at_start:
             _attr_cache = out
             _attr_cache_at = time.monotonic()
-            return out
-    return out
+            return list(out)
+    return list(out)
 
 
 def _invalidate_attr_cache() -> None:

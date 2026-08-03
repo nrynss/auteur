@@ -2,14 +2,13 @@
   /** Envelope for a timeline event block — STRUCTURAL, not measured
    * (control-room.md §6: discrete one-shots get a transient-led decay, beds
    * and rhythmic events a sustained one; per-event peak data is not reachable
-   * until the edit model lands in 7.10). Seeded deterministically — the
-   * frozen mix seed when present, else a stable hash of the name — so the
-   * same event always draws the same shape AND deleting or reordering events
-   * does not redraw its neighbours (7.10 review: index-based seeds shifted
-   * every later envelope). Determinism, like the mix. */
+   * until the edit model lands in 7.10). Seeded from a stable hash of the
+   * name — never the event index (renumbering would redraw neighbours) and
+   * never the mix seed (freezing one on first touch would flip the event's
+   * own shape). Determinism, like the mix. */
   interface Props {
     kind: string;
-    /** Deterministic seed — stable across renumbering. */
+    /** Deterministic seed — stable across renumbering and touch. */
     seed: number;
   }
 

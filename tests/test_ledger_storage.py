@@ -705,6 +705,46 @@ def test_attribution_rescue_invalidates_spend_aggregate(storage_ledger):
     assert spend["total"] == pytest.approx(0.30)
 
 
+def test_failed_rescue_does_not_poison_the_attribution_cache(
+        storage_ledger, monkeypatch):
+    """record_attribution computes its first-come claim count on a COPY of
+    the cached override list. When the durable write fails (a network-class
+    error, not a retryable collision), the shared cache must not keep the
+    speculative override it was about to write — money attributed on the
+    strength of a write that never landed."""
+    import time as _time
+    from foleyflow.storage import StorageError
+
+    backend = storage_ledger
+    # An unattributed row the failed rescue would have claimed.
+    old = _time.time() - 3600
+    backend.put_bytes(
+        f"{ledger.LEDGER_PREFIX}u.json",
+        json.dumps({"endpoint": "gemini-2.5-flash", "params_hash": "u",
+                    "cost_estimate": 0.10, "success": True,
+                    "timestamp": old, "project_id": None}).encode())
+    ledger._invalidate_row_cache()
+
+    # Warm the cache: an empty override list (this call must not hand out
+    # the shared object — the mutation below is what the copy guards).
+    assert ledger.iter_attributions() == []
+
+    # The durable write fails with a non-retryable error: propagates
+    # immediately, no invalidation, no cache fix-up.
+    def failing_put(*a, **k):
+        raise StorageError("backend unreachable")
+
+    monkeypatch.setattr(backend, "put_if_absent", failing_put)
+    with pytest.raises(StorageError):
+        ledger.record_attribution("proj_A", before=old + 10)
+
+    # No phantom override may have entered the shared cache.
+    assert ledger.iter_attributions() == []
+
+    # And the row stays unattributed: no rescue ever landed.
+    assert ledger.project_spend("proj_A")["total"] == pytest.approx(0.0)
+
+
 def test_attr_cache_epoch_discards_a_scan_that_raced_a_rescue(storage_ledger,
                                                             monkeypatch):
     """A reader whose LIST completes just before a rescue PUT lands must not

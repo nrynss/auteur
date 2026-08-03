@@ -61,14 +61,17 @@ export function stableHash(s: string): number {
   return h;
 }
 
-/** The deterministic shape-seed for an event's structural envelope. Prefers
- * the frozen mix seed (for rhythmic events it IS the variation the sound was
- * rendered with); falls back to a name hash — two events with the same name
- * are the same sound, so identical envelopes are the honest read. */
+/** The deterministic shape-seed for an event's structural envelope: a stable
+ * hash of the name, nothing else. The mix seed is deliberately NOT used —
+ * freezing one onto a never-mixed rhythmic event at first touch would flip
+ * its own envelope (the same "the sound changed" misread the stability fix
+ * exists to remove), and the envelope is structural, not the audio. Two
+ * events with the same name are the same sound, so identical envelopes are
+ * the honest read. */
 export function envelopeSeed(
-  ev: Pick<TimelineEventOut, "name" | "seed">,
+  ev: Pick<TimelineEventOut, "name">,
 ): number {
-  return ev.seed ?? stableHash(ev.name);
+  return stableHash(ev.name);
 }
 
 /** Position an event on a lane. `minWidthPx` keeps a 50 ms click audible as a

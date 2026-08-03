@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { envelopeSeed, friendlyEventType, groupLanes, loudnessDelta, placeEvent, stableHash } from "./helpers";
+import { legacySeed } from "./seed";
 import type { TimelineEventOut } from "../api/projects";
 
 const ev = (partial: Partial<TimelineEventOut> & { index: number }): TimelineEventOut => ({
@@ -85,17 +86,23 @@ describe("friendlyEventType", () => {
 describe("envelopeSeed", () => {
   it("is stable across renumbering — deleting an event must not redraw its neighbours", () => {
     // The 7.10 review finding: index-based seeds shifted every later event's
-    // envelope on delete. The seed is the name hash (or the frozen mix seed),
-    // so an event's envelope depends on the event, never on its position.
+    // envelope on delete. The seed is the name hash, so an event's envelope
+    // depends on the event, never on its position.
     const at2 = ev({ index: 2, name: "gunshot blast" });
     const at7 = ev({ index: 7, name: "gunshot blast" });
     expect(envelopeSeed(at2)).toBe(envelopeSeed(at7));
     expect(stableHash("gunshot blast")).toBe(envelopeSeed(at2));
   });
 
-  it("prefers the frozen mix seed when present", () => {
-    expect(envelopeSeed(ev({ index: 0, seed: 12345 }))).toBe(12345);
-    expect(envelopeSeed(ev({ index: 0, seed: 0 }))).toBe(0); // 0 is frozen, not absent
+  it("is stable across a touch that freezes the mix seed", () => {
+    // The second-review follow-up: freezeSeedOnTouch writes a legacy mix seed
+    // onto a never-mixed rhythmic event at first touch. Using it for the
+    // envelope would flip the event's own shape at that moment — the exact
+    // "the sound changed" misread the stability fix exists to remove. The
+    // envelope is structural; the mix seed is deliberately ignored.
+    const before = ev({ index: 0, name: "church bell", kind: "rhythmic" });
+    const after = ev({ index: 0, name: "church bell", kind: "rhythmic", seed: legacySeed("church bell", 6.65) });
+    expect(envelopeSeed(after)).toBe(envelopeSeed(before));
   });
 
   it("distinguishes different sounds", () => {
