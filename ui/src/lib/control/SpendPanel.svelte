@@ -13,16 +13,33 @@
   import Evidence from "../components/Evidence.svelte";
   import Icon from "../components/Icon.svelte";
   import { formatCost } from "../format";
-  import type { BudgetResponse, QuotaResponse } from "../api/projects";
+  import type {
+    BudgetResponse,
+    LedgerRowsResponse,
+    QuotaResponse,
+  } from "../api/projects";
 
   interface Props {
     budget: BudgetResponse | null;
     quota: QuotaResponse | null;
     /** The fetch failed — distinct from "no data yet". */
     failed?: boolean;
+    /** Per-transaction audit trail (§3.14); null until first loaded. */
+    ledger?: LedgerRowsResponse | null;
+    ledgerLoading?: boolean;
+    onLedgerNewer?: () => void;
+    onLedgerOlder?: () => void;
   }
 
-  let { budget, quota, failed = false }: Props = $props();
+  let {
+    budget,
+    quota,
+    failed = false,
+    ledger = null,
+    ledgerLoading = false,
+    onLedgerNewer,
+    onLedgerOlder,
+  }: Props = $props();
 
   // Either source saying the ledger is unwritable poisons every figure.
   const ledgerBroken = $derived(
@@ -51,6 +68,17 @@
     if (status === "blocked") return "blocked";
     return "pending";
   }
+
+  /** Row timestamp at the precision an audit trail needs — date and minute,
+   * mono, UTC (the ledger's own clock). Full seconds on hover. */
+  function ledgerTime(ts: number): string {
+    const d = new Date(ts * 1000);
+    if (!Number.isFinite(d.getTime())) return "—";
+    return d.toISOString().slice(5, 16).replace("T", " ");
+  }
+
+  const ledgerShown = $derived(ledger != null && !ledgerBroken);
+  const ledgerAtStart = $derived(ledger == null || (ledger?.next_cursor ?? 0) <= 0);
 </script>
 
 <div class="panel-body">
@@ -166,6 +194,54 @@
         Daily request count — the binding constraint, not requests per minute.
         Counted from our own ledger, not a provider balance: Google exposes no
         remaining-balance field, so this is a guide and never authoritative.
+      </p>
+    {/if}
+
+    {#if ledgerShown && ledger}
+      <p class="eyebrow">Ledger — individual transactions</p>
+      <table class="rows ledger">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Endpoint</th>
+            <th class="r">Cost</th>
+            <th class="r">Result</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each ledger.rows as r, i (i)}
+            <tr>
+              <td class="k" title={new Date(r.timestamp * 1000).toISOString()}>{ledgerTime(r.timestamp)}</td>
+              <td class="k ep">{r.endpoint}</td>
+              <td class="r num">
+                {formatCost(r.cost_estimate)}
+                <span class="src">{r.cost_source === "actual" ? "actual" : "est"}</span>
+              </td>
+              <td class="s">
+                {#if r.success}
+                  <Chip state="ok" label="OK" />
+                {:else}
+                  <Chip state="blocked" label="Failed" detail={r.error ?? ""} />
+                {/if}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      <div class="ledger-foot">
+        <span class="count num">
+          {ledger.rows.length} of {ledger.total_count}
+          {#if ledgerLoading}<span class="dim">loading…</span>{/if}
+        </span>
+        <span class="spacer"></span>
+        <button class="mini" disabled={ledgerAtStart || ledgerLoading} onclick={onLedgerNewer}>newer</button>
+        <button class="mini" disabled={ledger.next_cursor == null || ledgerLoading} onclick={onLedgerOlder}>older</button>
+      </div>
+      <p class="note">
+        Failed calls are included — they may still have consumed provider
+        quota, and the totals above sum them too. Each row carries its own
+        <span class="src">est</span>/<span class="src">actual</span> source;
+        the Spend summary's numbers reconcile to these rows.
       </p>
     {/if}
   {/if}
@@ -309,5 +385,63 @@
   .rows .s {
     text-align: right;
     padding-left: 8px;
+  }
+
+  .rows .src {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--faint);
+    margin-left: 3px;
+  }
+
+  .rows .ep {
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ledger-foot {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .ledger-foot .count {
+    font-size: 10.5px;
+    color: var(--faint);
+  }
+
+  .ledger-foot .dim {
+    color: var(--faint);
+    margin-left: 4px;
+  }
+
+  .ledger-foot .spacer {
+    flex: 1;
+  }
+
+  .ledger-foot .mini {
+    font: inherit;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--dim);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 2px 8px;
+    cursor: pointer;
+  }
+
+  .ledger-foot .mini:hover:not(:disabled) {
+    color: var(--text);
+    border-color: var(--faint);
+  }
+
+  .ledger-foot .mini:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 </style>

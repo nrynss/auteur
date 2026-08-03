@@ -29,7 +29,7 @@ import time
 from dataclasses import dataclass, field, replace as dataclass_replace
 from typing import Any, Callable, Dict, List, Optional
 
-from foleyflow.assemble import assemble_timeline, plan_requests, write_mix
+from foleyflow.assemble import _event_seed, assemble_timeline, plan_requests, write_mix
 from foleyflow.ledger import summarize_ledger
 from foleyflow.mux import extract_audio, mux as mux_video
 from foleyflow.projects import ProjectStore, Run, utcnow
@@ -425,6 +425,13 @@ def stamp_source_durations(timeline, inventory: List[Dict[str, Any]], *,
     the widened discrete placement span (a later nudge of it is a free edit the
     stamp must not undo). `changed` is True only when something actually
     moved, so an unchanged re-mix allocates no version.
+
+    **Rhythmic events also have their mix `seed` stamped.** assemble draws the
+    tile-gain jitter from it, so recording the value this run used is what
+    makes a later nudge preserve the texture (7.10's acceptance). The stamped
+    version therefore renders byte-identically even if an event is nudged
+    afterwards — the seed is frozen, not recomputed from the new position.
+    Non-rhythmic events never consult the seed, so they keep it untouched.
     """
     by_key = {s.get("b2_key"): s for s in inventory if s.get("b2_key")}
     events = []
@@ -440,12 +447,21 @@ def stamp_source_durations(timeline, inventory: List[Dict[str, Any]], *,
             continue
         frozen = float(frozen)
         first_freeze = event.source_duration_s is None
+        # The mix seed is part of how a *rhythmic* event renders (assemble
+        # draws the tile-gain jitter from it), so the seed this run actually
+        # used is recorded the same way the duration and address are. That is
+        # what makes a later nudge translate instead of re-rolling the texture
+        # (7.10). Non-rhythmic events never consult the seed, so stamping one
+        # would be fabricated provenance (§A.3) — it stays as-is.
+        seed_used = (event.seed if event.seed is not None
+                     else _event_seed(event.name, event.start_time))
         updated = dataclass_replace(
             event,
             source_duration_s=frozen if first_freeze else event.source_duration_s,
             stem_key=stem["b2_key"],
             duration=(frozen if (first_freeze and event.kind == "discrete")
                       else event.duration),
+            seed=(seed_used if event.kind == "rhythmic" else event.seed),
         )
         if updated != event:
             changed = True

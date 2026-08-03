@@ -775,6 +775,95 @@ def test_stamp_leaves_events_without_a_recorded_stem_unfrozen():
     assert render.stamp_source_durations(timeline, []) == (timeline, False)
 
 
+def test_rhythmic_mix_seed_is_stamped_but_never_invented():
+    """The seed the render used is part of how a rhythmic event renders (tile
+    jitter), so a mix records it the same way it records the duration and
+    address — that is what makes a later nudge translate instead of re-rolling
+    (7.10). Non-rhythmic events never consult the seed, so stamping one would
+    be fabricated provenance (§A.3): it stays untouched."""
+    from foleyflow.routing import route_event
+    from foleyflow.sfx_cache import cache_object_key
+    from foleyflow.assemble import _event_seed
+
+    timeline = Timeline(duration=4.0, ambience="wind", events=[
+        Event(name="church bell tolling", start_time=1.0, duration=2.0,
+              intensity="med", kind="rhythmic", seed=None),
+        Event(name="gunshot", start_time=0.5, duration=0.8,
+              intensity="high", kind="discrete", seed=None),
+    ])
+
+    def inventory_for(ev):
+        request = route_event(ev)
+        return {"b2_key": cache_object_key(request.endpoint, request.prompt,
+                                            request.duration_s, ""),
+                "duration_s": request.duration_s}
+
+    stamped, changed = render.stamp_source_durations(
+        timeline, [inventory_for(timeline.events[0]),
+                   inventory_for(timeline.events[1])])
+    assert changed is True
+    # Rhythmic: the legacy seed the render would have used, recorded verbatim.
+    assert stamped.events[0].seed == _event_seed("church bell tolling", 1.0)
+    assert stamped.events[0].source_duration_s is not None
+    # Discrete: duration/address stamped, seed untouched (was None, stays None).
+    assert stamped.events[1].seed is None
+    assert stamped.events[1].source_duration_s is not None
+
+    # A frozen seed is preserved, not recomputed — a nudge of start_time must
+    # not re-roll the texture (7.1 acceptance at the render boundary). The
+    # nudged event is already stamped, so re-stamping is an identity: same
+    # seed, same address, nothing new to write.
+    nudged = dataclasses.replace(stamped.events[0], start_time=1.05)
+    again, changed2 = render.stamp_source_durations(
+        dataclasses.replace(timeline, events=[nudged, stamped.events[1]]),
+        [inventory_for(nudged), inventory_for(stamped.events[1])])
+    assert changed2 is False
+    assert again.events[0].seed == stamped.events[0].seed  # frozen, verbatim
+    assert again.events[0].start_time == 1.05              # the placement moved
+
+
+def test_mix_freeze_stamps_seed_and_remix_does_not_churn(store, project,
+                                                         fake_generation,
+                                                         stub_ffmpeg,
+                                                         tmp_path):
+    """End to end: the first mix writes the seed used for rhythmic events onto
+    the stamped version, and a re-mix of that version has nothing left to
+    stamp — no version churn, byte-identical audio."""
+    from foleyflow.assemble import _event_seed
+
+    video = str(tmp_path / "source.mp4")
+    _placeholder_video(video)
+    project_store = store
+    # The project fixture is all-discrete; add a rhythmic event so the seed
+    # stamp has something to record.
+    tl = store.load_timeline(project.id, 1)
+    tl = dataclasses.replace(tl, events=[
+        Event(name="church bell tolling", start_time=1.0, duration=2.0,
+              intensity="med", kind="rhythmic"),
+        *tl.events,
+    ])
+    store.save_timeline(project.id, tl)   # v2
+
+    first = render.render_mix(store, project.id, run=_run(store, project.id),
+                              video_path=video)
+    versions = store.list_timeline_versions(project.id)
+    stamped = store.load_timeline(project.id, versions[-1])
+    bell = next(e for e in stamped.events if e.kind == "rhythmic")
+    assert bell.seed == _event_seed("church bell tolling", 1.0)
+    assert bell.stem_key is not None
+    # Non-rhythmic events never get a fabricated seed.
+    assert all(e.kind == "rhythmic" or e.seed is None
+               for e in stamped.events)
+
+    # Re-mix: the stamped version already records everything — no new version.
+    second = render.render_mix(store, project.id, run=_run(store, project.id),
+                               video_path=video)
+    assert second.timeline_version == first.timeline_version
+    assert store.list_timeline_versions(project.id) == versions
+    assert (store.backend.get_bytes(store.mix_key(project.id, first.run_id))
+            == store.backend.get_bytes(store.mix_key(project.id, second.run_id)))
+
+
 def test_stamped_timeline_survives_the_round_trip(store, project,
                                                   fake_generation, stub_ffmpeg,
                                                   tmp_path):

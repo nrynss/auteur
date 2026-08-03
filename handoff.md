@@ -19,7 +19,7 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   **7 (control-room UI)** last. Tasks **9–17** are **DONE**.
 - CI (10), build identity (11), post-deploy smoke (12), doctor (13), live paid
   + fallback SFX (14), demo evidence (15), and Secret Manager (16) are in place.
-- `uv run pytest -q` → **722 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **730 passed, 1 skipped**. No provider credentials
   required for tests: the billed calls are stubbed at two seams,
   `stems.generate_many` and `sfx_cache.generate_canonical_wav`. Everything else
   — ffmpeg, the mix, the shared cache, storage, the Genblaze pipelines — runs
@@ -161,11 +161,33 @@ measured mix". Two honest enablers: stamped `Event.stem_key` (event→audio
 link, refreshed per run) and `GET /preview/stems/{key}` (same-origin stem
 streaming — B2 has no CORS). Transient hit-point ticks on the timeline
 ruler. Suite 718, npm test 62, svelte-check 0/0. Remaining: frontend chain
-from 7.10. **7.18 landed** (phase-2): write-through exact ledger aggregates
-for spend/quota, event-log state checkpoint, shared I/O thread pool; harness
-`scripts/latency_bench.py`. Earlier: concurrent multi-get, cached
-`ledger_writable`, single-flight row cache, cheap GET /qa, parallel project/
-budget I/O, concurrent dossier HEADs.
+from 7.10. **7.10 landed**: direct manipulation — drag to move, edge
+handles to resize (10 ms snap, ⌥ to override), arrow-key nudges (10/100/1 ms),
+inline rename and delete, all landing in a **persisted draft** (localStorage,
+restored on reload) that commits as exactly one new immutable version
+(`PUT /timeline`, whole document); version chips switch committed versions
+read-only and "Edit from here" re-forks the draft from any of them — undo is
+version switching, not a mutation stack. The editor freezes the mix `seed`
+onto any rhythmic event it touches at the base position (Python-exact sha256
+emulation — parity pinned against hashlib vectors, including the dyadic ties
+where JS `toFixed` would diverge), and the mix now stamps the seed it
+actually used for rhythmic events, so a nudge translates instead of
+re-rolling the texture. Renames on frozen content are refused at commit with
+the server's own explanation; a draft whose base went stale under a newer
+version offers to merge the latest's recorded freezes. The browser preview
+follows the draft, so the edit loop is free and instant. npm test 186,
+svelte-check 0/0. **7.18 landed** (phase-2): write-through exact ledger
+aggregates for spend/quota, event-log state checkpoint, shared I/O thread
+pool; harness `scripts/latency_bench.py`. Earlier: concurrent multi-get,
+cached `ledger_writable`, single-flight row cache, cheap GET /qa, parallel
+project/budget I/O, concurrent dossier HEADs. **7.16 landed**: the ledger
+rows endpoint `GET /projects/{id}/ledger` (docs/api.md §3.14) — per-project,
+paginated, newest-first audit trail behind `/budget`, failed rows included,
+rescue-claimed rows visible, reconciling with the summary; `iter_attributions`
+cached (10 s, invalidated by the one writer) so pages don't pay a LIST each.
+The Spend tab gains the "Ledger — individual transactions" table (est/actual
+per row, failed chips, newer/older pagination) behind the same fail-closed
+`ledger_writable` rule, loaded lazily on first open.
 
 The throwaway static dashboard (`api/static/index.html`) is deleted outright
 when 7.6 lands.

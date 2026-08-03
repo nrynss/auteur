@@ -866,21 +866,75 @@ from the pair; mono max-abs is recoverable as `max(abs(min[i]), abs(max[i]))`.
 
 ---
 
+### 3.14 Ledger rows
+
+```
+GET /api/v1/projects/{id}/ledger?limit=50&cursor=0
+```
+
+`200` — individual cost transactions for this project, newest first. `/budget`
+summarises; this is the audit trail so every number in the summary is traceable
+to a specific call.
+
+```json
+{
+  "project_id": "proj_01K…",
+  "total_count": 142,
+  "rows": [
+    {
+      "timestamp": 1753305781.234,
+      "endpoint": "gemini-2.5-flash",
+      "cost_estimate": 0.005,
+      "cost_source": "estimate",
+      "success": true,
+      "error": null,
+      "project_id": "proj_01K…",
+      "params_hash": "a1b2c3d4e5…"
+    }
+  ],
+  "next_cursor": 50,
+  "estimate": true,
+  "ledger_writable": true
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `total_count` | int | Total rows attributed to this project across all pages |
+| `next_cursor` | int\|null | Index for the next page; null when on the last page |
+| `rows` | list | Subset of rows, newest first |
+| `rows[].timestamp` | float | Unix seconds |
+| `rows[].cost_estimate` | float | Historical field name kept for backward compatibility |
+| `rows[].cost_source` | str | `"estimate"` or `"actual"` — whether the value came from the response |
+| `rows[].project_id` | str\|null | The project the row was written for; null when it was claimed by a rescue override (§3.11) rather than tagged at write time |
+| `rows[].params_hash` | str\|null | Hash of the call's arguments for deduplication visibility |
+| `estimate` | bool | Same flag as `/quota` — true, never false |
+| `ledger_writable` | bool | `/quota`'s flag: false means figures are fiction |
+
+**Failed rows are included.** A request that failed may still have consumed
+provider quota, and excluding it would produce a subset that does not reconcile
+with `/budget`.
+
+Rows written before project attribution existed, and rows written in a direct
+`foleyflow render` without `--project`, carry `project_id: null` in storage.
+A rescue override (§3.11) claims them; rows from that project fetch through the
+same override so they are visible here as well. Rows that belong to no project
+(no matching override) are not returned by this endpoint.
+
+**Pagination** is index-based on the sorted list. `cursor=0` is the first page.
+The response's `next_cursor` is the index one past the last returned row; pass
+it as `cursor` on the next request. Newer rows written between page fetches may
+shift results (the same bound as any pagination over append-only data where the
+cursor is not a stable key), but the full ledger is re-fetched from the backend
+at most every 10 s (the row cache TTL), so the window is bounded. The totals
+in `/budget` are always the authoritative figures.
+
+| Status | When |
+|---|---|
+| `404 project_not_found` | Unknown project |
+| `400 invalid_id` | Malformed project id |
+| `503 storage_unavailable` | Ledger backend unreachable |
+
+---
+
 ## 4. Concurrency
-
-Handler functions are synchronous (`def`, not `async def`) so Starlette runs
-them in a worker threadpool. Every call into storage, ffmpeg, or a provider
-blocks, and putting blocking work on the event loop would stall the whole
-server on one B2 round-trip.
-
-Long work does not run in the request at all. It is submitted to a background
-runner and the request returns `202`. Run state lives in the B2 event log, not
-in process memory, so a client polling a run gets the same answer regardless of
-which worker serves it.
-
-**Single-instance assumption.** The in-process job runner means concurrent runs
-are safe within one instance but not across several. The deployment target is a
-single Cloud Run instance, which matches SPEC.md's MVP scope, and `409
-already_running` is enforced per project. Scaling out needs an external queue —
-noted here so the constraint is visible in the contract rather than discovered
-later.

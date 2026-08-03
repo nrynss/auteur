@@ -31,6 +31,7 @@ def storage_ledger(tmp_path, monkeypatch):
     monkeypatch.setattr("foleyflow.storage.get_backend", lambda *a, **k: backend)
     ledger._invalidate_row_cache()
     ledger._invalidate_writable_cache()
+    ledger._invalidate_attr_cache()
     ledger.invalidate_project_spend_cache()
     return backend
 

@@ -173,6 +173,21 @@
     };
   });
 
+  // The preview follows the draft (unit 7.10): moving an event in the
+  // timeline re-schedules the real stems at the new offsets instantly, free,
+  // no server round trip. The engine's buffer cache is keyed by stem key, so
+  // this swaps the schedule without re-downloading audio. Mid-playback the
+  // stems restart at the current playhead so the move is heard, not deferred.
+  $effect(() => {
+    const items = previewItems;
+    if (active !== "preview" || !engine) return;
+    engine.setItems(items);
+    if (origEl && !origEl.paused) {
+      engine.stop();
+      engine.schedule();
+    }
+  });
+
   onDestroy(() => {
     engine?.dispose();
   });

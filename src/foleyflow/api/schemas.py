@@ -506,6 +506,37 @@ class QuotaResponse(BaseModel):
     models: List[ModelQuotaOut]
 
 
+# -- ledger rows ------------------------------------------------------------
+
+class LedgerRowOut(BaseModel):
+    """One cost transaction for the per-project audit trail (3.14).
+
+    Failed rows are included -- a request that failed may still have consumed
+    provider quota, and excluding it would produce a subset that does not
+    reconcile with /budget.
+    """
+
+    timestamp: float
+    endpoint: str
+    cost_estimate: float
+    cost_source: str          # "estimate" | "actual"
+    success: bool
+    error: Optional[str] = None
+    project_id: Optional[str] = None
+    params_hash: Optional[str] = None
+
+
+class LedgerRowsResponse(BaseModel):
+    """Paginated ledger rows for one project (3.14)."""
+
+    project_id: str
+    total_count: int
+    rows: List[LedgerRowOut]
+    next_cursor: Optional[int] = None
+    estimate: bool = True
+    ledger_writable: bool = True
+
+
 # -- waveform peaks ---------------------------------------------------------
 
 class PeaksResponse(BaseModel):

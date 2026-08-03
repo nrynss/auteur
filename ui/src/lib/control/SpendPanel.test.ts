@@ -94,3 +94,70 @@ it("distinguishes a failed fetch from no spend", () => {
   });
   expect(empty.body).toContain("No spend recorded yet");
 });
+
+// -- ledger rows (unit 7.16) ------------------------------------------------
+
+const LEDGER = {
+  project_id: "proj_TEST",
+  total_count: 3,
+  rows: [
+    {
+      timestamp: 1753305781.234,
+      endpoint: "gemini-2.5-flash",
+      cost_estimate: 0.005,
+      cost_source: "estimate",
+      success: true,
+      error: null,
+      project_id: "proj_TEST",
+      params_hash: "a1b2c3d4",
+    },
+    {
+      timestamp: 1753305780.0,
+      endpoint: "eleven_text_to_sound_v2",
+      cost_estimate: 0.3,
+      cost_source: "actual",
+      success: false,
+      error: "provider auth failed",
+      project_id: "proj_TEST",
+      params_hash: null,
+    },
+  ],
+  next_cursor: 2,
+  estimate: true,
+  ledger_writable: true,
+};
+
+it("renders ledger rows with their own source and result — failed included", () => {
+  const { body } = render(SpendPanel, {
+    props: {
+      budget: BUDGET,
+      quota: QUOTA,
+      ledger: LEDGER,
+    } as never,
+  });
+  expect(body).toContain("Ledger — individual transactions");
+  // The audit trail names the endpoint, the money, and how it was priced.
+  expect(body).toContain("eleven_text_to_sound_v2");
+  expect(body).toContain("$0.30");
+  expect(body).toContain("actual");
+  // A failed billable call is visible as a failure — never skipped, never
+  // substituted by a success.
+  expect(body).toContain("Failed");
+  expect(body).toContain("provider auth failed");
+  // Pagination controls exist and say how many rows there are.
+  expect(body).toContain("2 of 3");
+  expect(body).toContain("older");
+});
+
+it("withholds ledger rows too when the ledger is unwritable", () => {
+  const { body } = render(SpendPanel, {
+    props: {
+      budget: { ...BUDGET, ledger_writable: false },
+      quota: QUOTA,
+      ledger: LEDGER,
+    } as never,
+  });
+  expect(body).toContain("figures withheld");
+  expect(body).not.toContain("individual transactions");
+  expect(body).not.toContain("eleven_text_to_sound_v2");
+});

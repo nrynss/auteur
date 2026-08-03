@@ -120,6 +120,15 @@ _ROW_CACHE_TTL_S = 10.0
 _row_cache: Optional[List[dict]] = None
 _row_cache_at: float = 0.0
 _row_cache_epoch: int = 0
+
+# Attribution overrides are few and written only by record_attribution, so a
+# short TTL cache (same contract as the row cache) keeps the per-project
+# ledger endpoint from paying a backend LIST + multi-get on every page fetch
+# (7.18's dossier lesson: don't pay a LIST per request when the data is
+# append-only and bounded).
+_ATTR_CACHE_TTL_S = 10.0
+_attr_cache: Optional[List[dict]] = None
+_attr_cache_at: float = 0.0
 # Single-flight: concurrent _read_storage_rows callers share one in-flight
 # list+multi-get rather than stampeding the backend.
 _row_sf_lock = threading.Lock()
@@ -1128,15 +1137,28 @@ def _maybe_emit_budget_alerts(project_id: str, *, spend: Dict[str, float],
 
 def iter_attributions() -> List[dict]:
     """Rescue overrides, oldest first (by `before`). Each claims every ledger
-    row with no project_id whose timestamp precedes its `before`."""
+    row with no project_id whose timestamp precedes its `before`.
+
+    Cached for ``_ATTR_CACHE_TTL_S`` and invalidated by
+    ``record_attribution`` (the only writer), so the per-project ledger
+    endpoint — which folds attributions into every page — does not pay a
+    backend LIST per request. Staleness is bounded by the TTL, the same
+    contract the row cache already has."""
+    global _attr_cache, _attr_cache_at
     if _file_ledger_path() is not None:
         return []          # file mode keeps no attributions
+
+    now = time.monotonic()
+    if _attr_cache is not None and (now - _attr_cache_at) < _ATTR_CACHE_TTL_S:
+        return _attr_cache
 
     from foleyflow.storage import get_backend, get_bytes_many
 
     backend = get_backend()
     keys = list(backend.list_keys(ATTR_PREFIX))
     if not keys:
+        _attr_cache = []
+        _attr_cache_at = time.monotonic()
         return []
     blobs = get_bytes_many(backend, keys, skip_missing=True)
     out: List[dict] = []
@@ -1151,7 +1173,17 @@ def iter_attributions() -> List[dict]:
         if (isinstance(data, dict) and data.get("project_id")
                 and isinstance(data.get("before"), (int, float))):
             out.append(data)
-    return sorted(out, key=lambda a: float(a["before"]))
+    out.sort(key=lambda a: float(a["before"]))
+    _attr_cache = out
+    _attr_cache_at = time.monotonic()
+    return out
+
+
+def _invalidate_attr_cache() -> None:
+    """The one writer (record_attribution) drops the cached override list."""
+    global _attr_cache, _attr_cache_at
+    _attr_cache = None
+    _attr_cache_at = 0.0
 
 
 def _attribution_owner(row: dict, attributions: List[dict]) -> Optional[str]:
@@ -1224,8 +1256,10 @@ def record_attribution(project_id: str,
         try:
             get_backend().put_if_absent(key, body, content_type="application/json")
             # Adopted rows were never seen by the running total; drop it so
-            # the next alert check re-seeds from the full scan.
+            # the next alert check re-seeds from the full scan. The override
+            # list cache must go too — this rescue IS the change it caches.
             invalidate_project_spend_cache(project_id)
+            _invalidate_attr_cache()
             return claimed
         except PreconditionFailed as exc:
             last_err = exc

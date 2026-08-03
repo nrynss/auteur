@@ -6,6 +6,7 @@
   import { onMount } from "svelte";
 
   import BudgetChip from "./BudgetChip.svelte";
+  import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import DossierPanel from "./DossierPanel.svelte";
   import SpendPanel from "./SpendPanel.svelte";
   import EvidencePanel from "./EvidencePanel.svelte";
@@ -21,9 +22,20 @@
   import { ApiError } from "../api/client";
   import { quiet } from "./quiet";
   import {
+    buildCommit,
+    clearDraft,
+    forkDraft,
+    loadDraft,
+    missingFreezeCount,
+    rebaseDraft,
+    saveDraft,
+    type Draft,
+  } from "./draft";
+  import {
     getBudget,
     getDossier,
     getEvents,
+    getLedgerRows,
     getMixPeaks,
     getProject,
     getQa,
@@ -33,16 +45,19 @@
     getScenes,
     getTimeline,
     getTimelineVersions,
+    putTimeline,
     type BudgetResponse,
     type QuotaResponse,
     type DossierResponse,
     type EventOut,
+    type LedgerRowsResponse,
     type PeaksResponse,
     type ProjectDetail,
     type QaReportResponse,
     type RunAccepted,
     type RunOut,
     type SceneOut,
+    type TimelineEventOut,
     type TimelineResponse,
     type TimelineVersionsResponse,
   } from "../api/projects";
@@ -77,6 +92,11 @@
   let budget = $state<BudgetResponse | null>(null);
   let quota = $state<QuotaResponse | null>(null);
   let mixPeaks = $state<PeaksResponse | null>(null);
+  // -- 7.16 ledger rows: lazy on the Spend tab (never first-paint) ---------
+  let ledger = $state<LedgerRowsResponse | null>(null);
+  let ledgerRequested = $state(false);
+  let ledgerLoading = $state(false);
+  let ledgerCursor = $state(0);
 
   let status = $state<"loading" | "ready" | "error">("loading");
   let error = $state("");
@@ -93,8 +113,48 @@
   let statusLine = $state<string | null>(null);
   let actionError = $state<string | null>(null);
 
+  // -- 7.10: draft / versions ----------------------------------------------
+  let draft = $state<Draft | null>(null);
+  /** Whether the persisted draft has been restored for this mount. */
+  let draftRestoredOnce = $state(false);
+  /** Persistence is debounced: a drag fires onEdit per pointermove, and a
+   * synchronous localStorage write per frame is measurable jank for zero
+   * benefit. In-memory state is always current; only the crash-recovery copy
+   * lags by 200 ms. */
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function scheduleDraftSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      if (draft) saveDraft(id, draft);
+    }, 200);
+  }
+  /** What the timeline shows: "draft" (the draft, or latest when none yet)
+   * or a historical committed version (read-only — undo is version switching). */
+  let viewing = $state<number | "draft">("draft");
+  let historyTimeline = $state<TimelineResponse | null>(null);
+  let commitError = $state<string | null>(null);
+  let commitBusy = $state(false);
+  let draftNote = $state<string | null>(null);
+  let restoringVersion = $state<number | null>(null);
+  let confirmDiscard = $state(false);
+  /** Freezes the latest version has that this draft lacks — a commit would be
+   * refused, and the timeline changed underneath (mix/commit elsewhere). */
+  let draftStaleCount = $state(0);
+
   const locked = $derived(lock.kind === "locked");
   const displayRuns = $derived(mergeLiveRun(runs, liveRun));
+  const displayEvents = $derived<TimelineEventOut[]>(
+    viewing === "draft"
+      ? draft
+        ? (draft.events as unknown as TimelineEventOut[])
+        : (timeline?.events ?? [])
+      : (historyTimeline?.events ?? timeline?.events ?? []),
+  );
+  const showTimeline = $derived(
+    viewing === "draft" ? timeline : (historyTimeline ?? timeline),
+  );
 
   // `quiet` lives in quiet.ts, NOT here: written inline as a generic arrow,
   // Svelte's TS strip drops its parameter list and every fetch throws at
@@ -130,9 +190,18 @@
     });
     void quiet(getTimeline(id), onAncillaryFailure).then((r) => {
       timeline = r;
+      checkDraftStale();
     });
     void quiet(getTimelineVersions(id), onAncillaryFailure).then((r) => {
       versions = r;
+      checkDraftStale();
+      // Restore a persisted draft once the committed versions are known — a
+      // draft whose base version is gone must not be resurrected. Runs once:
+      // commits and post-run refreshes clear/preserve drafts deliberately.
+      if (!draftRestoredOnce) {
+        draftRestoredOnce = true;
+        restorePersistedDraft();
+      }
     });
     void quiet(getEvents(id), onAncillaryFailure).then((r) => {
       events = r?.events ?? [];
@@ -172,6 +241,35 @@
     if (dossierRequested) return;
     dossierRequested = true;
     dossier = await quiet(getDossier(id), onAncillaryFailure);
+  }
+
+  /** The ledger rows are the audit trail behind the Spend tab's totals —
+   * useful at the closing beat, noise at first paint, so they load on the
+   * tab's first open like the dossier. The server's row cache bounds the
+   * scan; pagination moves the cursor. */
+  async function ensureLedger() {
+    if (ledgerRequested) return;
+    ledgerRequested = true;
+    await refreshLedger();
+  }
+
+  async function refreshLedger() {
+    ledgerLoading = true;
+    const r = await quiet(getLedgerRows(id, ledgerCursor, 50), onAncillaryFailure);
+    if (r) ledger = r;
+    ledgerLoading = false;
+  }
+
+  function ledgerNewer() {
+    if (ledgerCursor <= 0) return;
+    ledgerCursor = 0;
+    void refreshLedger();
+  }
+
+  function ledgerOlder() {
+    if (ledger?.next_cursor == null) return;
+    ledgerCursor = ledger.next_cursor;
+    void refreshLedger();
   }
 
   /** Light poll: project + tracked/latest run. Stages land on get_run.
@@ -239,6 +337,10 @@
   async function refreshAfterRun() {
     try {
       await loadCore();
+      // A run bills new rows; the next Spend-tab open must see them.
+      ledger = null;
+      ledgerRequested = false;
+      ledgerCursor = 0;
       // Keep statusLine if it still names a projection; clear only blanks.
       // (Mix projection is set via onRunAccepted's optional line.)
     } catch (e) {
@@ -277,6 +379,176 @@
 
   function onActionError(message: string) {
     actionError = message;
+  }
+
+  // -- 7.10: draft editing / commit / version switching ---------------------
+
+  /** Every edit funnels through here: fork a draft from the latest committed
+   * version on the first edit, apply the pure operation, persist. Edits are
+   * free — nothing leaves the client until Commit. A no-op apply (an unchanged
+   * rename) must not fork a draft, so the fork is speculative until the
+   * operation actually changed something. */
+  function applyEdit(apply: (d: Draft) => Draft) {
+    if (locked || viewing !== "draft") return;
+    const base =
+      draft ?? (timeline ? forkDraft(timeline.version, timeline) : null);
+    if (!base) return;
+    const next = apply(base);
+    if (next === base) return;
+    draft = next;
+    commitError = null;
+    draftStaleCount = 0;
+    scheduleDraftSave();
+  }
+
+  async function commitDraft() {
+    if (!draft || !timeline || locked || commitBusy) return;
+    commitBusy = true;
+    commitError = null;
+    try {
+      const saved = await putTimeline(id, buildCommit(draft));
+      clearDraft(id);
+      if (saveTimer) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+      }
+      draft = null;
+      viewing = "draft";
+      historyTimeline = null;
+      draftStaleCount = 0;
+      draftNote = null;
+      timeline = saved;
+      const v = await quiet(getTimelineVersions(id), onAncillaryFailure);
+      if (v) versions = v;
+      const p = await quiet(getProject(id), onAncillaryFailure);
+      if (p) project = p;
+      statusLine =
+        `Committed v${saved.version} — one new immutable version, ` +
+        `${saved.events.length} events. Move and resize are free; the next ` +
+        `Regenerate or mix bills what it generates.`;
+    } catch (e) {
+      if (e instanceof ApiError) {
+        commitError =
+          Array.isArray(e.detail?.violations) &&
+          (e.detail.violations as string[]).length > 0
+            ? `The server refused this document: ${(e.detail.violations as string[]).join("; ")}`
+            : `The server refused this document: ${e.message}`;
+        // A run landed while the draft was open — the draft is stale now.
+        checkDraftStale();
+      } else {
+        commitError = e instanceof Error ? e.message : String(e);
+      }
+    } finally {
+      commitBusy = false;
+    }
+  }
+
+  async function viewVersion(v: number) {
+    if (viewing === v && historyTimeline) return;
+    // The latest version IS the editable draft view when no draft exists — a
+    // "historical" read-only view of it would be a pointless extra step.
+    if (!draft && v === (versions?.latest ?? v)) {
+      viewDraft();
+      return;
+    }
+    // Fetch BEFORE switching the view: the timeline must never show one
+    // version's content under another version's label. The committed versions
+    // are immutable, so the fetch is short — the chip click may lag a beat,
+    // and that beat is the honesty.
+    const fetched = await quiet(getTimeline(id, v), onAncillaryFailure);
+    if (!fetched) return;
+    historyTimeline = fetched;
+    viewing = v;
+    commitError = null;
+  }
+
+  function viewDraft() {
+    viewing = "draft";
+    historyTimeline = null;
+  }
+
+  /** Undo by version switching: re-fork the draft from a historical version.
+   * A dirty draft is replaced only with explicit confirmation. */
+  function requestRestore(v: number) {
+    if (!historyTimeline) return;
+    if (draft) {
+      restoringVersion = v;
+      return;
+    }
+    restoreFrom(v);
+  }
+
+  function restoreFrom(v: number) {
+    if (!historyTimeline) return;
+    draft = forkDraft(v, historyTimeline);
+    saveDraft(id, draft);
+    restoringVersion = null;
+    viewing = "draft";
+    historyTimeline = null;
+    draftStaleCount = 0;
+    commitError = null;
+    statusLine =
+      `Undo to v${v}: the draft now starts from that version's document. ` +
+      `Commit writes it as v${(timeline?.version ?? v) + 1} beside the others.`;
+  }
+
+  function requestDiscard() {
+    confirmDiscard = true;
+  }
+
+  function discardDraft() {
+    clearDraft(id);
+    draft = null;
+    confirmDiscard = false;
+    viewing = "draft";
+    historyTimeline = null;
+    draftStaleCount = 0;
+    commitError = null;
+    draftNote = null;
+    statusLine = "Draft discarded — the committed versions are untouched.";
+  }
+
+  /** The timeline moved underneath (a mix or commit landed elsewhere): the
+   * draft is missing the freezes the latest version records, so a commit
+   * would be refused. Importing the recorded freezes is a merge, not a lie. */
+  function rebaseDraftNow() {
+    if (!draft || !timeline) return;
+    draft = rebaseDraft(draft, timeline);
+    saveDraft(id, draft);
+    draftStaleCount = 0;
+    commitError = null;
+    statusLine =
+      `Merged v${timeline.version}'s recorded durations, addresses and seeds ` +
+      `into the draft — your placement edits are untouched.`;
+  }
+
+  function checkDraftStale() {
+    if (draft && timeline) {
+      draftStaleCount =
+        draft.baseVersion < timeline.version
+          ? missingFreezeCount(timeline, draft)
+          : 0;
+    } else {
+      draftStaleCount = 0;
+    }
+  }
+
+  /** Restore a persisted draft once the committed versions are known. */
+  function restorePersistedDraft() {
+    const restored = loadDraft(id);
+    if (!restored) return;
+    const known = versions?.versions ?? [];
+    if (!known.includes(restored.baseVersion)) {
+      // The base version no longer exists (it never happens — versions are
+      // immutable — but a corrupt store must not resurrect a phantom draft).
+      clearDraft(id);
+      draftNote = "A saved draft was discarded: its base version is gone.";
+      return;
+    }
+    draft = restored;
+    draftNote =
+      "Draft restored from a previous session — not committed.";
+    checkDraftStale();
   }
 
   onMount(() => {
@@ -393,6 +665,11 @@
         <span class="detail">{statusLine}</span>
       </div>
     {/if}
+    {#if draftNote}
+      <div class="banner info" role="status">
+        <span class="detail">{draftNote}</span>
+      </div>
+    {/if}
 
     <div class="stage">
       <section class="viewer">
@@ -401,7 +678,7 @@
             id={project.id}
             sourceUrl={project.source_url ?? null}
             mixUrl={project.mix_url ?? null}
-            events={timeline?.events ?? []}
+            events={displayEvents}
           />
         {:else}
           <ViewerPlaceholder />
@@ -427,8 +704,10 @@
               onclick={() => {
                 tab = t.key;
                 // The dossier is slow enough (a HEAD per object) that it is
-                // fetched on first open rather than at load.
+                // fetched on first open rather than at load; so are the
+                // ledger rows (the audit trail behind the Spend tab).
                 if (t.key === "dossier") void ensureDossier();
+                if (t.key === "spend") void ensureLedger();
               }}
             >
               {t.label}
@@ -448,7 +727,15 @@
           <EvidencePanel {qa} {scenes} />
         </div>
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-spend" id="tab-spend" hidden={tab !== "spend"}>
-          <SpendPanel {budget} {quota} failed={ancillaryFailed} />
+          <SpendPanel
+            {budget}
+            {quota}
+            failed={ancillaryFailed}
+            ledger={ledger}
+            ledgerLoading={ledgerLoading}
+            onLedgerNewer={ledgerNewer}
+            onLedgerOlder={ledgerOlder}
+          />
         </div>
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-history" id="tab-history" hidden={tab !== "history"}>
           <HistoryPanel {versions} runs={displayRuns} {events} {mixPeaks} mixRunId={project.mix_run_id ?? null} />
@@ -460,23 +747,64 @@
     </div>
 
     <Timeline
-      {timeline}
+      timeline={showTimeline}
       failed={ancillaryFailed}
       locked={locked}
+      draft={draft}
+      editable={!locked && viewing === "draft"}
+      versions={versions?.versions ?? null}
+      viewing={viewing}
       selectedIndex={selectedEventIndex}
       onselect={(i) => (selectedEventIndex = i)}
+      onEdit={applyEdit}
+      onCommit={() => void commitDraft()}
+      onView={(v) => {
+        if (typeof v === "number") void viewVersion(v);
+        else viewDraft();
+      }}
+      onRestoreFrom={(v) => requestRestore(v)}
+      onDiscardDraft={requestDiscard}
+      commitError={commitError}
+      staleCount={draftStaleCount}
+      onRebase={rebaseDraftNow}
+      commitPending={commitBusy}
     >
       {#snippet inspectorActions(ev)}
-        <RegenerateAction
-          projectId={id}
-          eventIndex={ev.index}
-          eventName={ev.name}
-          locked={locked}
-          onaccepted={onRunAccepted}
-          onerror={onActionError}
-        />
+        {#if !draft && viewing === "draft"}
+          <RegenerateAction
+            projectId={id}
+            eventIndex={ev.index}
+            eventName={ev.name}
+            locked={locked}
+            onaccepted={onRunAccepted}
+            onerror={onActionError}
+          />
+        {/if}
       {/snippet}
     </Timeline>
+
+    {#if restoringVersion != null && historyTimeline}
+      <ConfirmDialog
+        open={true}
+        title={`Restore v${restoringVersion} as the working draft?`}
+        body={`Your current draft's edits will be replaced by v${restoringVersion}'s document (the committed versions themselves are untouched). This is undo: commit then writes your new document as the next version.`}
+        confirmLabel="Replace draft"
+        danger
+        onconfirm={() => restoreFrom(restoringVersion as number)}
+        oncancel={() => (restoringVersion = null)}
+      />
+    {/if}
+    {#if confirmDiscard}
+      <ConfirmDialog
+        open={true}
+        title="Discard this draft?"
+        body="The draft's edits are lost — the committed versions are untouched. If you want to keep any of it, commit first."
+        confirmLabel="Discard draft"
+        danger
+        onconfirm={discardDraft}
+        oncancel={() => (confirmDiscard = false)}
+      />
+    {/if}
   </div>
 {/if}
 

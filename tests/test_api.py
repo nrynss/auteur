@@ -1643,6 +1643,7 @@ def budget_ledger(store, monkeypatch):
     monkeypatch.setattr(storage_mod, "get_backend", lambda *a, **k: store.backend)
     monkeypatch.setattr(ledger_mod, "_write_ok", True)
     ledger_mod._invalidate_row_cache()
+    ledger_mod._invalidate_attr_cache()
     ledger_mod.invalidate_project_spend_cache()
     return ledger_mod
 
@@ -2315,6 +2316,138 @@ def test_budget_read_503s_on_a_ledger_outage(client, store, project,
     r = client.get(f"{API_PREFIX}/projects/{project.id}/budget")
     assert r.status_code == 503
     assert r.json()["error"]["code"] == "storage_unavailable"
+
+
+# -- ledger rows (unit 7.16) -------------------------------------------------
+
+
+def test_ledger_rows_returns_project_transactions(client, store, budget_ledger):
+    """Every row written for this project comes back, newest first, failed
+    included."""
+    project = store.create_project(title="L", input_key="k", source_sha256="",
+                                   source_filename="l.mp4", budget_usd=1.0)
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.10)
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.20,
+           success=False, cost_source="actual")
+
+    body = client.get(f"{API_PREFIX}/projects/{project.id}/ledger").json()
+    assert body["project_id"] == project.id
+    assert body["total_count"] == 2
+    assert len(body["rows"]) == 2
+    # Newest first.
+    assert body["rows"][0]["cost_estimate"] == pytest.approx(0.20)
+    assert body["rows"][0]["success"] is False
+    assert body["rows"][0]["cost_source"] == "actual"
+    assert body["rows"][1]["cost_estimate"] == pytest.approx(0.10)
+    assert body["next_cursor"] is None  # all rows fit on one page
+    assert body["estimate"] is True
+    assert body["ledger_writable"] is True
+
+
+def test_ledger_rows_paginates(client, store, budget_ledger):
+    """Cursor pagination moves through the list."""
+    project = store.create_project(title="L", input_key="k", source_sha256="",
+                                   source_filename="l.mp4")
+    for i in range(5):
+        _spend(budget_ledger, project.id, "gemini-2.5-flash",
+               0.01 * (i + 1), success=True)
+
+    page1 = client.get(
+        f"{API_PREFIX}/projects/{project.id}/ledger?limit=2").json()
+    assert len(page1["rows"]) == 2
+    assert page1["total_count"] == 5
+    assert page1["next_cursor"] == 2
+
+    page2 = client.get(
+        f"{API_PREFIX}/projects/{project.id}/ledger?limit=2&cursor=2").json()
+    assert len(page2["rows"]) == 2
+    assert page2["next_cursor"] == 4
+
+    page3 = client.get(
+        f"{API_PREFIX}/projects/{project.id}/ledger?limit=2&cursor=4").json()
+    assert len(page3["rows"]) == 1
+    assert page3["next_cursor"] is None
+
+
+def test_ledger_rows_isolates_projects(client, store, budget_ledger):
+    """Rows from other projects are not visible."""
+    a = store.create_project(title="A", input_key="ka", source_sha256="",
+                             source_filename="a.mp4")
+    b = store.create_project(title="B", input_key="kb", source_sha256="",
+                             source_filename="b.mp4")
+    _spend(budget_ledger, a.id, "gemini-2.5-flash", 0.10)
+    _spend(budget_ledger, b.id, "gemini-2.5-flash", 0.20)
+
+    a_rows = client.get(f"{API_PREFIX}/projects/{a.id}/ledger").json()
+    assert a_rows["total_count"] == 1
+    assert a_rows["rows"][0]["cost_estimate"] == pytest.approx(0.10)
+
+    b_rows = client.get(f"{API_PREFIX}/projects/{b.id}/ledger").json()
+    assert b_rows["total_count"] == 1
+    assert b_rows["rows"][0]["cost_estimate"] == pytest.approx(0.20)
+
+
+def test_ledger_rows_includes_attributed_rows(client, store, budget_ledger):
+    """Rescued rows appear for the adopting project."""
+    import time as _time
+    import json as _json
+
+    project_a = store.create_project(title="A", input_key="ka",
+                                     source_sha256="", source_filename="a.mp4")
+    store.create_project(title="B", input_key="kb",
+                         source_sha256="", source_filename="b.mp4")
+    # An unattributed row, written in the past (storage mode stamps now, so
+    # write it directly with a controlled timestamp — the same pattern as
+    # test_attributions_rescue_unattributed_rows_into_the_budget).
+    old = _time.time() - 3600
+    store.backend.put_bytes(
+        f"ledger/rows-test.json",
+        _json.dumps({"endpoint": "gemini-2.5-flash", "params_hash": "h",
+                     "cost_estimate": 0.05, "cost_source": "estimate",
+                     "success": True, "error": None, "project_id": None,
+                     "timestamp": old}).encode())
+    budget_ledger._invalidate_row_cache()
+
+    # Before attribution: rows do not appear for either project.
+    a_before = client.get(
+        f"{API_PREFIX}/projects/{project_a.id}/ledger").json()
+    assert a_before["total_count"] == 0
+
+    # Rescue into project_a (before must not be in the future).
+    r = client.post(
+        f"{API_PREFIX}/projects/{project_a.id}/attributions",
+        json={"before": old + 10})
+    assert r.status_code == 201
+    budget_ledger.invalidate_project_spend_cache()
+
+    a_after = client.get(
+        f"{API_PREFIX}/projects/{project_a.id}/ledger").json()
+    assert a_after["total_count"] == 1
+    assert a_after["rows"][0]["cost_estimate"] == pytest.approx(0.05)
+
+
+def test_ledger_rows_reconciles_with_budget(client, store, budget_ledger):
+    """The total_count and row costs sum to the spend figure in /budget."""
+    project = store.create_project(title="R", input_key="k", source_sha256="",
+                                   source_filename="r.mp4", budget_usd=1.0)
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.05, success=True)
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.15,
+           success=False, cost_source="actual")
+
+    budget = client.get(
+        f"{API_PREFIX}/projects/{project.id}/budget").json()
+    rows = client.get(
+        f"{API_PREFIX}/projects/{project.id}/ledger").json()
+    assert rows["total_count"] == 2
+
+    row_sum = sum(r["cost_estimate"] for r in rows["rows"])
+    assert row_sum == pytest.approx(budget["spent"])
+
+
+def test_ledger_rows_404_on_unknown_project(client):
+    r = client.get(f"{API_PREFIX}/projects/proj_01ZZZZZZZZZZZZZZZZZZZZZZZZ/ledger")
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "project_not_found"
 
 
 # -- waveform peaks (unit 7.5) ----------------------------------------------

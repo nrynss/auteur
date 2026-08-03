@@ -634,7 +634,7 @@ passed / 1 skipped (handoff.md / SPEC.md updated); npm test 62; svelte-check
 0/0.
 milliseconds, exactly the resolution a director works at.
 
-## 7.10 Direct manipulation — L
+## 7.10 Direct manipulation — L — **DONE**
 
 **Depends on:** 7.2, 7.3, 7.8, 7.9.
 
@@ -649,6 +649,47 @@ billable.
 
 **Acceptance:** a director can nudge a rhythmic event repeatedly and hear only
 translation; committing produces exactly one new version.
+
+**Landed:** drag-to-move and edge-handle resize on the timeline blocks
+(10 ms snap per the mockup, ⌥-drag overrides; arrow keys nudge 10/100/1 ms), an
+inline rename and delete in the inspector — all edits land in a draft
+(`ui/src/lib/control/draft.ts` + `seed.ts`/`sha256.ts`), persisted to
+localStorage per project and restored on reload. Commit submits the whole
+`TimelineCommitRequest` and the server allocates exactly one new version;
+version chips in the timeline head switch committed versions read-only (the
+fetch lands before the view flips, so content is never shown under the wrong
+version's label), and "Edit from here" re-forks the draft from any version —
+undo is version switching (decision A.2.1). The draft is diffed against its
+base (no-op edits never fork one); a commit that would be refused because the
+timeline moved underneath (freezes the latest records that the draft lacks)
+offers a merge of the recorded freezes.
+
+**Seed freezing.** The editor writes the frozen mix seed onto any rhythmic
+event it touches, at the base position — the value assemble would always have
+rendered — so a nudge translates instead of re-rolling the tile texture.
+Non-rhythmic events are left untouched (design doc §7: a seed they never use
+would be noise). Two parity traps closed: `sha256.ts` ships a self-contained
+SHA-256 pinned against FIPS vectors, and `pyToFixed3` reproduces Python's
+round-half-even float formatting on the exact dyadic ties (q/16, odd q) where
+JS `toFixed` diverges — the whole legacy-seed function is pinned against ~30
+hashlib vectors including the tie values. **render.py stamps the seed the mix
+actually used** for rhythmic events at mix_freeze (same provenance pattern as
+`source_duration_s`/`stem_key`; non-rhythmic events get none — fabricated
+provenance is §A.3's rule), so a never-mixed event's first render records its
+seed and every later nudge preserves it. One commit, one new version: verified
+in the DOM tests (jsdom drag → commit → exactly one `PUT` body) and in
+`test_render.py` (remix of a stamped timeline allocates no version).
+
+**Renaming is the one billable-looking edit, and it is honest about it:** free
+to commit (it writes only the document), it re-routes the next generation by
+the new name — so the UI says so and leaves the actual bill to Regenerate's
+existing cost confirmation. On frozen content the commit itself refuses a
+rename (`400`, a different generation); the rename control explains that and
+points at Regenerate.
+
+**Not in this unit:** director mode (7.12), the full keyboard map and polish
+(7.14), and "reroll variation" UI. Intensity/kind edits are not surfaced
+(kind changes are free per 7.3 but the mockup's inspector does not show them).
 
 ## 7.11 Spend paths and run locking — M — **DONE**
 
@@ -720,7 +761,7 @@ withholds every number and says why. Either endpoint reporting it poisons both.
 Daily quota, not per-minute: `requests_per_day` is the binding constraint
 (`gemini-2.5-flash` allows 20/day), which is what matters before a demo.
 
-## 7.16 Ledger rows endpoint — S
+## 7.16 Ledger rows endpoint — S — **DONE**
 
 **Depends on:** nothing. **Files:** `docs/api.md` first, then `api/app.py`,
 `api/schemas.py`, `ledger.py`, tests. Then a section in the Spend tab (7.15).
@@ -740,6 +781,28 @@ can still have cost money).
 
 **Acceptance:** every row the summary counted is retrievable and the totals
 reconcile with `/budget`.
+
+**Landed:** `GET /projects/{id}/ledger?limit=50&cursor=N` (docs/api.md §3.14) —
+per-project, paginated, newest first, failed rows included, with the same
+ownership model as `project_spend` (direct tag or rescue override, first-come
+by `before`), so the rows reconcile with the summary by construction.
+Pagination is index-based on the sorted list (`next_cursor`); the row cache's
+10 s TTL bounds the scan per request. `LedgerRowOut`/`LedgerRowsResponse`
+carry the `estimate`/`ledger_writable` flags like `/budget` and `/quota`, so a
+UI fails closed the same way. 404 before the scan (`_load_state`), 503 on a
+storage outage. `iter_attributions` now caches for 10 s (invalidated by
+`record_attribution`, the only writer) so the endpoint does not pay a backend
+LIST per page — the 7.18 lesson applied to a new read path. Spend tab gains a
+"Ledger — individual transactions" table (when/endpoint/cost+source/result,
+failed rows as `Failed` chips with their error, est/actual tags per row,
+newer/older pagination, "2 of N" count) behind the same fail-closed
+`ledger_writable` rule, fetched lazily on the tab's first open. Tests: 6 API
+contract tests (rows, pagination, isolation, rescue adoption, reconciliation
+with /budget, 404) + 2 SpendPanel render tests.
+
+**Not in this unit:** the archive explorer (7.17), and a global `/ledger` route
+(the per-project view is what the Spend tab needs; a bucket-wide one belongs
+to the explorer's LIST-metadata pagination).
 
 ## 7.17 Archive explorer — M
 
@@ -897,8 +960,8 @@ blanket component tests.
 
 # G. Still open
 
-- The archive explorer and ledger rows (7.16–7.17) — scoped 2026-08-03.
-  **7.18 (read latency) is DONE.** 7.17 must not be built on the dossier's
+- The archive explorer (7.17) — scoped 2026-08-03. **7.18 (read latency) is
+  DONE; 7.16 (ledger rows) is DONE.** 7.17 must not be built on the dossier's
   HEAD-per-object mechanism; see the unit.
 - The states the mockup does not cover — loading, empty, error, the in-flight
   run lock, draft-versus-committed, and the director-mode diff drawn on the

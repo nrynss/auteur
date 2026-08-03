@@ -13,6 +13,7 @@ export type ReadinessItem = Schema["ReadinessItem"];
 export type SceneOut = Schema["SceneOut"];
 export type SceneListResponse = Schema["SceneListResponse"];
 export type TimelineResponse = Schema["TimelineResponse"];
+export type TimelineEventIn = Schema["TimelineEventIn"];
 export type TimelineEventOut = Schema["TimelineEventOut"];
 export type TimelineVersionsResponse = Schema["TimelineVersionsResponse"];
 export type EventOut = Schema["EventOut"];
@@ -25,6 +26,8 @@ export type DossierResponse = Schema["DossierResponse"];
 export type BudgetResponse = Schema["BudgetResponse"];
 export type PeaksResponse = Schema["PeaksResponse"];
 export type QuotaResponse = Schema["QuotaResponse"];
+export type LedgerRowOut = Schema["LedgerRowOut"];
+export type LedgerRowsResponse = Schema["LedgerRowsResponse"];
 
 const P = "/api/v1/projects";
 
@@ -36,12 +39,33 @@ export function getScenes(id: string): Promise<SceneListResponse> {
   return api<SceneListResponse>(`${P}/${id}/scenes`);
 }
 
-export function getTimeline(id: string): Promise<TimelineResponse> {
-  return api<TimelineResponse>(`${P}/${id}/timeline`);
+export function getTimeline(id: string, version?: number): Promise<TimelineResponse> {
+  const q = version != null ? `?version=${version}` : "";
+  return api<TimelineResponse>(`${P}/${id}/timeline${q}`);
 }
 
 export function getTimelineVersions(id: string): Promise<TimelineVersionsResponse> {
   return api<TimelineVersionsResponse>(`${P}/${id}/timeline/versions`);
+}
+
+// -- timeline commit (unit 7.10) ------------------------------------------
+// A commit submits the WHOLE timeline document and the server allocates one
+// new immutable version (docs/api.md §3.4). Synchronous storage write — free,
+// no run slot; 409 while a run is in flight, 400 with `detail.violations` on
+// a freeze-conservation violation.
+
+export type TimelineCommitRequest = Schema["TimelineCommitRequest"];
+
+/** Commit a draft as the next immutable version. */
+export function putTimeline(
+  id: string,
+  body: TimelineCommitRequest,
+): Promise<TimelineResponse> {
+  return api<TimelineResponse>(`${P}/${id}/timeline`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 export function getEvents(id: string): Promise<EventListResponse> {
@@ -63,6 +87,17 @@ export function getDossier(id: string): Promise<DossierResponse> {
 /** Model quota is global, not per project (docs/api.md §3.10). */
 export function getQuota(): Promise<QuotaResponse> {
   return api<QuotaResponse>("/api/v1/quota");
+}
+
+/** Individual cost transactions for this project, newest first (docs/api.md
+ * §3.14). Failed rows are included — they may still have consumed quota. */
+export function getLedgerRows(
+  id: string,
+  cursor = 0,
+  limit = 50,
+): Promise<LedgerRowsResponse> {
+  const q = new URLSearchParams({ cursor: String(cursor), limit: String(limit) });
+  return api<LedgerRowsResponse>(`${P}/${id}/ledger?${q}`);
 }
 
 export function getBudget(id: string): Promise<BudgetResponse> {

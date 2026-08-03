@@ -35,6 +35,13 @@ export class PreviewEngine {
     this.onFail = onFail;
   }
 
+  /** Swap the schedule in place (unit 7.10: the draft moved an event). The
+   * decoded-stem cache is keyed by stem key and survives — a nudge must not
+   * re-download audio, it must translate. The caller re-schedules after. */
+  setItems(items: PreviewItem[]): void {
+    this.items = items;
+  }
+
   private ensureCtx(): AudioContext {
     if (!this.ctx) {
       this.ctx = new AudioContext();

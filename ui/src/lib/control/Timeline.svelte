@@ -1,13 +1,27 @@
 <script lang="ts">
-  /** Read-only timeline (unit 7.8): ruler, kind-grouped lanes with event
-   * blocks (structural envelopes), and an inspector for the selected event.
-   * Editing is unit 7.10; nothing here mutates. The frame is resizable via
-   * the real separator grip (control-room.md §5).
-   * Unit 7.11: exposes selected event index + locked prop + regenerate slot. */
+  /** Timeline (units 7.8 + 7.10). Read-only rendering became a directly
+   * manipulated timeline: drag to move, edge handles to resize, arrow keys to
+   * nudge, inline rename, delete — all edits land in the draft via `onEdit`
+   * and cost nothing (they window the clip that already exists). Version
+   * chips switch committed versions (undo is version switching, decision
+   * A.2.1); a historical view is read-only with an explicit "Edit from here".
+   * 7.11: locked prop + selected index + regenerate slot. */
   import EnvelopeCanvas from "./EnvelopeCanvas.svelte";
   import { groupLanes, placeEvent } from "./helpers";
   import { timelineGrip } from "./timeline-grip";
   import { transientOffset } from "./preview";
+  import {
+    deleteEvent,
+    draftChanged,
+    moveEvent,
+    NUDGE_COARSE_S,
+    NUDGE_FINE_S,
+    NUDGE_S,
+    renameEvent,
+    resizeEnd,
+    resizeStart,
+    type Draft,
+  } from "./draft";
   import type { TimelineEventOut } from "../api/projects";
   import type { Snippet } from "svelte";
 
@@ -29,6 +43,30 @@
     onselect?: (index: number | null) => void;
     /** Inspector actions for the selected event (e.g. Regenerate, 7.11). */
     inspectorActions?: Snippet<[event: TimelineEventOut]>;
+    // -- 7.10 editing ------------------------------------------------------
+    /** The editable working copy; null while viewing committed only. */
+    draft?: Draft | null;
+    /** Interactions enabled: not locked, viewing the draft (or latest when no
+     * draft exists yet — the first edit forks one). */
+    editable?: boolean;
+    /** Committed versions for the chips. */
+    versions?: number[] | null;
+    /** What is being shown: the draft/latest, or a historical version. */
+    viewing?: number | "draft";
+    /** Apply an edit to the draft (parent forks/persists). */
+    onEdit?: (apply: (d: Draft) => Draft) => void;
+    onCommit?: () => void;
+    onView?: (v: number | "draft") => void;
+    onRestoreFrom?: (v: number) => void;
+    onDiscardDraft?: () => void;
+    /** Server refusal from the last commit attempt (freeze violations etc.). */
+    commitError?: string | null;
+    /** Freezes the latest version records that this draft lacks — the
+     * timeline changed underneath and a commit would be refused. */
+    staleCount?: number;
+    onRebase?: () => void;
+    /** A commit is in flight — the button disables until it settles. */
+    commitPending?: boolean;
   }
 
   let {
@@ -38,9 +76,23 @@
     selectedIndex = null,
     onselect,
     inspectorActions,
+    draft = null,
+    editable = false,
+    versions = null,
+    viewing = "draft" as number | "draft",
+    onEdit,
+    onCommit,
+    onView,
+    onRestoreFrom,
+    onDiscardDraft,
+    commitError = null,
+    staleCount = 0,
+    onRebase,
+    commitPending = false,
   }: Props = $props();
 
   const PPS = 64; // px per second — the ruler's working density
+
 
   let selected = $state<number | null>(null);
   let height = $state(236);
@@ -58,16 +110,140 @@
     onselect?.(index);
   }
 
-  const lanes = $derived(timeline ? groupLanes(timeline.events) : []);
-  const widthPx = $derived((timeline?.duration ?? 0) * PPS);
+  // The document on screen: the draft when one is being edited, else the
+  // committed version being viewed. DraftEvent is structurally a
+  // TimelineEventOut (same fields, mutable copies) — the preview, lanes and
+  // transient ticks all read through here, so the browser preview follows a
+  // nudge instantly ("hear only translation", free).
+  const display = $derived(
+    draft
+      ? {
+          version: draft.baseVersion,
+          duration: draft.duration,
+          ambience: draft.ambience,
+          events: draft.events as unknown as TimelineEventOut[],
+        }
+      : timeline,
+  );
+
+  const isDraftView = $derived(!!draft && viewing === "draft");
+  const isHistorical = $derived(typeof viewing === "number" && timeline !== null);
+  // Editing is live on the draft AND on the latest committed before a draft
+  // exists — the first edit forks one (applyEdit in ControlRoom). Only a
+  // historical view is off-limits.
+  const canEdit = $derived(editable && !locked && viewing === "draft" && display != null);
+
+  const lanes = $derived(display ? groupLanes(display.events) : []);
+  const widthPx = $derived((display?.duration ?? 0) * PPS);
   const ticks = $derived(
-    timeline
-      ? Array.from({ length: Math.ceil(timeline.duration) + 1 }, (_, i) => i)
+    display
+      ? Array.from({ length: Math.ceil(display.duration) + 1 }, (_, i) => i)
       : [],
   );
   const selectedEvent = $derived(
-    selected == null || !timeline ? null : (timeline.events.find((e) => e.index === selected) ?? null),
+    selected == null || !display
+      ? null
+      : (display.events.find((e) => e.index === selected) ?? null),
   );
+
+  // -- editing: move / resize / nudge --------------------------------------
+  type Gesture =
+    | { kind: "move"; index: number; startX: number; startTime: number }
+    | { kind: "resize-end"; index: number; startX: number; startTime: number; duration: number }
+    | { kind: "resize-start"; index: number; startX: number; startTime: number; duration: number };
+
+  let gesture = $state<Gesture | null>(null);
+
+  function beginMove(e: PointerEvent, ev: TimelineEventOut) {
+    if (!canEdit) return;
+    e.preventDefault();
+    gesture = {
+      kind: "move",
+      index: ev.index,
+      startX: e.clientX,
+      startTime: ev.start_time,
+    };
+    capturePointer(e);
+  }
+
+  function beginResize(e: PointerEvent, ev: TimelineEventOut, side: "start" | "end") {
+    if (!canEdit) return;
+    e.preventDefault();
+    e.stopPropagation();
+    gesture = {
+      kind: side === "end" ? "resize-end" : "resize-start",
+      index: ev.index,
+      startX: e.clientX,
+      startTime: ev.start_time,
+      duration: ev.duration,
+    };
+    capturePointer(e);
+  }
+
+  function capturePointer(e: PointerEvent) {
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      // jsdom / odd environments have no active pointer capture — the drag
+      // still works from the window-level move/up handlers on the element.
+    }
+  }
+
+  function onGestureMove(e: PointerEvent) {
+    const g = gesture;
+    if (!g || !onEdit) return;
+    const dx = (e.clientX - g.startX) / PPS;
+    const opts = { snap: !e.altKey };
+    if (g.kind === "move") {
+      onEdit((d) => moveEvent(d, g.index, g.startTime + dx, opts));
+    } else if (g.kind === "resize-end") {
+      onEdit((d) => resizeEnd(d, g.index, g.startTime + g.duration + dx, opts));
+    } else {
+      onEdit((d) => resizeStart(d, g.index, g.startTime + dx, opts));
+    }
+  }
+
+  function endGesture() {
+    gesture = null;
+  }
+
+  /** Arrow-key nudge on the selected block: ←/→ 10 ms, Shift 100 ms,
+   * Alt 1 ms — the same resolution a director works at. The step is applied
+   * to the draft's CURRENT position (not the closure's snapshot) so a fast
+   * repeat never double-applies a stale start. */
+  function onBlockKey(e: KeyboardEvent, ev: TimelineEventOut) {
+    if (!canEdit || !onEdit) return;
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const step = e.altKey ? NUDGE_FINE_S : e.shiftKey ? NUDGE_COARSE_S : NUDGE_S;
+    const dir = e.key === "ArrowLeft" ? -1 : 1;
+    const idx = ev.index;
+    onEdit((d) => {
+      const cur = d.events.find((x) => x.index === idx);
+      if (!cur) return d;
+      return moveEvent(d, idx, cur.start_time + dir * step, { snap: false });
+    });
+  }
+
+  // -- inspector: rename ---------------------------------------------------
+  let renaming = $state(false);
+  let renameValue = $state("");
+
+  function startRename() {
+    if (!selectedEvent || !canEdit) return;
+    const frozen = selectedEvent.source_duration_s != null;
+    if (frozen) return; // the commit refuses renames of generated content
+    renameValue = selectedEvent.name;
+    renaming = true;
+  }
+
+  function applyRename() {
+    if (!onEdit || selected == null) return;
+    const idx = selected;
+    const value = renameValue;
+    onEdit((d) => renameEvent(d, idx, value) ?? d);
+    renaming = false;
+  }
 
   // -- resize grip (a real separator; the action attaches listeners and
   //     ARIA programmatically — see timeline-grip.ts) -----------------------
@@ -81,7 +257,16 @@
       height += 12 * coarse;
     }
   }
-</script>
+
+  const nextVersion = $derived(
+    timeline ? timeline.version + 1 : null,
+  );
+
+  function draftChangedText(d: Draft): string {
+    return draftChanged(d)
+      ? "unsaved changes — commit writes one new version"
+      : "unchanged";
+  }</script>
 
 <section class="timeline" style={`height:${height}px`} aria-label="Timeline">
   <div
@@ -96,26 +281,109 @@
 
   <div class="head">
     <span class="title">Timeline</span>
-    {#if timeline}
-      <span class="ver num">v{timeline.version}</span>
+
+    {#if versions && versions.length > 0}
+      <div class="vers" role="group" aria-label="Timeline versions">
+        {#each versions as v (v)}
+          <button
+            type="button"
+            class="vchip num"
+            class:pressed={viewing === v ||
+              (viewing === "draft" && !draft && v === (versions[versions.length - 1]))}
+            aria-pressed={viewing === v ||
+              (viewing === "draft" && !draft && v === (versions[versions.length - 1]))}
+            title={v === versions[versions.length - 1]
+              ? `v${v} — latest committed version`
+              : `v${v} — earlier version (undo: view it, then edit from here)`}
+            onclick={() => onView?.(v)}
+          >
+            v{v}
+          </button>
+        {/each}
+        {#if draft}
+          <button
+            type="button"
+            class="vchip draft"
+            class:pressed={viewing === "draft"}
+            aria-pressed={viewing === "draft"}
+            title={`Draft — ${draftChangedText(draft)}`}
+            onclick={() => onView?.("draft")}
+          >
+            draft +1
+          </button>
+        {/if}
+      </div>
     {/if}
+
     <span class="spacer"></span>
-    {#if locked}
+
+    {#if isHistorical}
+      <span class="note historic">viewing v{viewing} — historical</span>
+      <button
+        type="button"
+        class="head-btn"
+        disabled={locked}
+        title={locked
+          ? "A run is in flight — editing is locked"
+          : `Restore v${viewing} as the working draft (undo to this version)`}
+        onclick={() => onRestoreFrom?.(viewing as number)}
+      >
+        Edit from here
+      </button>
+    {:else if canEdit}
+      <span class="note snap">snap 10 ms · ⌥ drag to override</span>
+      <span class="note free">move · resize · rename · delete free</span>
+    {:else if locked}
       <span class="note lock">run in flight — locked</span>
     {:else}
-      <span class="note">read-only — edits land in 7.10</span>
+      <span class="note">committed</span>
+    {/if}
+
+    {#if draft}
+      {#if isDraftView}
+        <button type="button" class="head-btn primary" disabled={locked || commitPending} onclick={onCommit} title={commitPending ? "Committing…" : "Write this draft as one new immutable version"}>
+          {commitPending ? "Committing…" : `Commit v${nextVersion ?? ""}`}
+        </button>
+        <button type="button" class="head-btn ghost" onclick={onDiscardDraft} title="Discard this draft — the committed versions are untouched">
+          Discard
+        </button>
+      {/if}
     {/if}
   </div>
+
+  {#if isDraftView && commitError}
+    <div class="headline err" role="alert">
+      <span class="word">Commit refused</span>
+      <span class="detail">{commitError}</span>
+    </div>
+  {/if}
+  {#if isDraftView && draft}
+    <div class="headline note">
+      <span class="detail">
+        Unsaved changes to <span class="num">v{draft.baseVersion}</span>
+        {#if staleCount > 0}
+          · the timeline moved underneath — latest is
+          <span class="num">v{versions?.[versions.length - 1] ?? "?"}</span> and
+          records {staleCount} frozen {staleCount === 1 ? "duration" : "durations"} this
+          draft is missing; the commit would be refused.
+          <button type="button" class="head-btn mini" onclick={onRebase}>
+            Merge recorded freezes from latest
+          </button>
+        {/if}
+        — commits write one new version; nothing is billed.
+      </span>
+    </div>
+  {/if}
 
   <div class="wrap">
     <div class="grid" style={`width:${Math.max(widthPx, 480)}px`}>
       <div class="ruler" style={`width:${Math.max(widthPx, 480)}px`}>
-        {#if timeline}
+        {#if display}
           {#each ticks as i}
             {@const major = i % 3 === 0}
-            {@const left = ((i / timeline.duration) * 100).toFixed(3)}
+            {@const left = ((i / display.duration) * 100).toFixed(3)}
             <i class="tick" class:major={major} style={`left:${left}%`}></i>
-            {#if major && i < timeline.duration}
+            {#if major && i < display.duration}
               <span class="tlabel num" style={`left:${left}%`}>{i}s</span>
             {/if}
           {/each}
@@ -125,7 +393,7 @@
                marker is bias-adjusted only and says so. -->
           {#each lanes.flatMap((l) => l.events) as ev (ev.index)}
             {#if ev.kind === "discrete"}
-              {@const t = (transientOffset(ev) / timeline.duration) * 100}
+              {@const t = (transientOffset(ev) / display.duration) * 100}
               <i
                 class="transient"
                 style={`left:${t.toFixed(3)}%`}
@@ -138,11 +406,19 @@
 
       {#if lanes.length === 0}
         <div class="empty">
-          <p>
-            {failed
-              ? "The timeline could not be loaded."
-              : "No timeline yet — analysis has not run."}
-          </p>
+          {#if isDraftView}
+            <p>
+              Every event was deleted — commit writes an empty document
+              (refused while the current version still has generated content;
+              deleting it explicitly is free).
+            </p>
+          {:else}
+            <p>
+              {failed
+                ? "The timeline could not be loaded."
+                : "No timeline yet — analysis has not run."}
+            </p>
+          {/if}
         </div>
       {:else}
         {#each lanes as lane}
@@ -154,17 +430,45 @@
             <div class="lane">
               {#each lane.events as ev}
                 {@const p = placeEvent(ev, PPS)}
-                <button
+                <div
                   class="block"
                   class:selected={selected === ev.index}
+                  class:draft={isDraftView}
                   style={`left:${p.leftPx}px;width:${p.widthPx}px`}
-                  aria-label={`${ev.name} — index ${ev.index}, starts at ${ev.start_time.toFixed(3)}s`}
+                  role="button"
+                  tabindex="0"
+                  aria-label={`${ev.name} — index ${ev.index}, starts at ${ev.start_time.toFixed(3)}s${canEdit ? " — drag to move, arrow keys to nudge" : ""}`}
                   aria-pressed={selected === ev.index}
+                  onpointerdown={(e) => beginMove(e, ev)}
+                  onpointermove={onGestureMove}
+                  onpointerup={endGesture}
+                  onpointercancel={endGesture}
+                  onkeydown={(e) => onBlockKey(e, ev)}
                   onclick={() => select(ev.index)}
                 >
                   <EnvelopeCanvas kind={ev.kind} seed={ev.index} />
                   <span class="bname">{ev.name}</span>
-                </button>
+                  {#if canEdit}
+                    <span
+                      class="handle h-l"
+                      role="separator"
+                      aria-label={`Resize ${ev.name} start — drag, ⌥ to override snap`}
+                      onpointerdown={(e) => beginResize(e, ev, "start")}
+                      onpointermove={onGestureMove}
+                      onpointerup={endGesture}
+                      onpointercancel={endGesture}
+                    ></span>
+                    <span
+                      class="handle h-r"
+                      role="separator"
+                      aria-label={`Resize ${ev.name} end — drag, ⌥ to override snap`}
+                      onpointerdown={(e) => beginResize(e, ev, "end")}
+                      onpointermove={onGestureMove}
+                      onpointerup={endGesture}
+                      onpointercancel={endGesture}
+                    ></span>
+                  {/if}
+                </div>
               {/each}
             </div>
           </div>
@@ -175,7 +479,40 @@
 
   <div class="inspector">
     {#if selectedEvent}
-      <div class="field"><span class="flabel">Event</span><span class="fval name">{selectedEvent.name}</span></div>
+      <div class="field">
+        <span class="flabel">Event</span>
+        {#if renaming}
+          <input
+            class="rename-input"
+            bind:value={renameValue}
+            aria-label="Event name"
+            onkeydown={(e) => {
+              if (e.key === "Enter") {
+                e.stopPropagation();
+                applyRename();
+              } else if (e.key === "Escape") {
+                e.stopPropagation();
+                renaming = false;
+              }
+            }}
+          />
+        {:else}
+          <span class="fval name">{selectedEvent.name}</span>
+        {/if}
+        {#if canEdit}
+          <button
+            type="button"
+            class="mini"
+            disabled={selectedEvent.source_duration_s != null}
+            title={selectedEvent.source_duration_s != null
+              ? "Frozen content — the commit refuses renames (a different generation); Regenerate re-rolls the audio instead"
+              : "Rename — free to commit; the next generation re-routes and re-prompts by the new name"}
+            onclick={startRename}
+          >
+            rename
+          </button>
+        {/if}
+      </div>
       <div class="field"><span class="flabel">Index</span><span class="fval num">{selectedEvent.index}</span></div>
       <div class="field"><span class="flabel">Start</span><span class="fval num">{selectedEvent.start_time.toFixed(3)}</span></div>
       <div class="field"><span class="flabel">Span</span><span class="fval num">{selectedEvent.duration.toFixed(3)}</span></div>
@@ -185,8 +522,25 @@
       </div>
       <div class="field"><span class="flabel">Kind</span><span class="fval">{selectedEvent.kind}</span></div>
       <div class="field"><span class="flabel">Intensity</span><span class="fval">{selectedEvent.intensity}</span></div>
-      {#if selectedEvent.seed != null}
+      {#if selectedEvent.kind === "rhythmic" && selectedEvent.seed != null}
         <div class="field"><span class="flabel">Mix seed</span><span class="fval num">{selectedEvent.seed}</span></div>
+      {/if}
+      {#if canEdit}
+        <span class="cost-tag">move · resize free</span>
+        <button
+          type="button"
+          class="mini danger"
+          title="Delete this event — free: the money for generated content is already spent"
+          onclick={() => {
+            if (selected == null || !onEdit) return;
+            const idx = selected;
+            onEdit((d) => deleteEvent(d, idx));
+            select(-1);
+            onselect?.(null);
+          }}
+        >
+          delete
+        </button>
       {/if}
       {#if inspectorActions}
         <span class="insp-actions">
@@ -243,6 +597,7 @@
     gap: 10px;
     padding: 7px 14px;
     border-bottom: 1px solid var(--line-soft);
+    flex-wrap: wrap;
   }
 
   .title {
@@ -250,9 +605,43 @@
     font-weight: var(--w-590);
   }
 
-  .ver {
-    color: var(--faint);
-    font-size: var(--text-11);
+  .vers {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .vchip {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 10.5px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--raised);
+    color: var(--dim);
+    cursor: pointer;
+  }
+
+  .vchip:hover {
+    border-color: var(--faint);
+  }
+
+  .vchip.pressed {
+    color: var(--text);
+    border-color: var(--accent);
+    background: var(--accent-q);
+  }
+
+  .vchip.draft {
+    border-style: dashed;
+    color: var(--warn);
+  }
+
+  .vchip.draft.pressed {
+    border-color: var(--warn);
+    background: var(--warn-q);
+    color: var(--text);
   }
 
   .spacer {
@@ -268,6 +657,80 @@
 
   .note.lock {
     color: var(--warn);
+  }
+
+  .note.historic {
+    color: var(--warn);
+  }
+
+  .note.snap,
+  .note.free {
+    text-transform: none;
+    letter-spacing: 0.01em;
+  }
+
+  .note.free {
+    color: var(--ok);
+  }
+
+  .head-btn {
+    font: inherit;
+    font-size: var(--text-11);
+    font-weight: var(--w-560);
+    padding: 4px 10px;
+    border-radius: var(--r);
+    border: 1px solid var(--line);
+    background: var(--raised);
+    color: var(--dim);
+    cursor: pointer;
+  }
+
+  .head-btn:hover:not(:disabled) {
+    border-color: var(--faint);
+    color: var(--text);
+  }
+
+  .head-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .head-btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--surface);
+  }
+
+  .head-btn.ghost {
+    background: transparent;
+  }
+
+  .headline {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 4px 14px;
+    font-size: var(--text-11);
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .headline.err {
+    background: color-mix(in srgb, var(--stop) 8%, var(--surface));
+  }
+
+  .headline.err .word {
+    font-weight: var(--w-590);
+    color: var(--stop);
+    flex: 0 0 auto;
+  }
+
+  .headline.note .detail {
+    color: var(--dim);
+  }
+
+  .headline .detail {
+    min-width: 0;
+    line-height: 1.4;
   }
 
   .insp-actions {
@@ -374,6 +837,8 @@
     cursor: pointer;
     display: flex;
     align-items: flex-end;
+    user-select: none;
+    touch-action: none;
   }
 
   .block:hover {
@@ -383,6 +848,15 @@
   .block.selected {
     border-color: var(--accent);
     box-shadow: 0 0 0 1px var(--accent);
+  }
+
+  .block.draft {
+    border-style: dashed;
+    border-color: var(--accent-q);
+  }
+
+  .block.draft.selected {
+    border-color: var(--accent);
   }
 
   .block .bname {
@@ -397,6 +871,50 @@
     text-overflow: ellipsis;
     text-align: left;
     pointer-events: none;
+  }
+
+  .handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 7px;
+    cursor: ew-resize;
+    z-index: 2;
+  }
+
+  .handle.h-l {
+    left: 0;
+  }
+
+  .handle.h-r {
+    right: 0;
+  }
+
+  .handle::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 2px;
+    width: 3px;
+    height: 16px;
+    margin-top: -8px;
+    border-radius: 2px;
+    background: transparent;
+    transition: background 0.08s;
+  }
+
+  .handle.h-r::after {
+    left: auto;
+    right: 2px;
+  }
+
+  .block:hover .handle::after,
+  .handle:hover::after {
+    background: var(--faint);
+  }
+
+  .block.selected .handle::after {
+    background: var(--accent);
   }
 
   .empty {
@@ -440,6 +958,54 @@
   .num {
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
+  }
+
+  .rename-input {
+    font: inherit;
+    font-size: var(--text-12);
+    padding: 1px 5px;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    background: var(--raised);
+    color: var(--text);
+    width: 180px;
+  }
+
+  .mini {
+    font: inherit;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--dim);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 6px;
+    cursor: pointer;
+  }
+
+  .mini:hover:not(:disabled) {
+    color: var(--text);
+    border-color: var(--faint);
+  }
+
+  .mini:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .mini.danger {
+    color: var(--stop);
+  }
+
+  .cost-tag {
+    font-size: 10px;
+    letter-spacing: 0.03em;
+    color: var(--ok);
+    border: 1px solid var(--ok-q);
+    background: var(--ok-q);
+    border-radius: 4px;
+    padding: 2px 6px;
   }
 
   .inspector .empty {

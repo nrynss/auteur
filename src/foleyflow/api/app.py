@@ -35,6 +35,8 @@ from foleyflow.api.schemas import (
     EventListResponse,
     EventOut,
     ExportRequest,
+    LedgerRowOut,
+    LedgerRowsResponse,
     HealthResponse,
     ModelQuotaOut,
     PeaksResponse,
@@ -1080,6 +1082,72 @@ def create_app(store: Optional[ProjectStore] = None,
             raise err.InvalidRequest(str(exc)) from exc
         return AttributionOut(project_id=project_id, before=before,
                               claimed=claimed)
+
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/ledger",
+             response_model=LedgerRowsResponse, tags=["projects"])
+    def get_ledger_rows(
+            project_id: str,
+            cursor: int = Query(default=0, ge=0),
+            limit: int = Query(default=50, ge=1, le=200)) -> LedgerRowsResponse:
+        """Individual cost transactions for this project (3.14).
+
+        /budget summarises; this is the audit trail so every number in the
+        summary is traceable to a specific call. Failed rows are included --
+        they may still have consumed quota. Pagination is index-based on the
+        sorted list; cursor=0 is the first page.
+        """
+        from foleyflow.ledger import (
+            iter_transactions, ledger_writable, iter_attributions,
+            _attribution_owner)
+
+        _check_project_id(project_id)
+        _load_state(store, project_id)  # 404 before scanning the ledger
+
+        try:
+            # Single scan through the cached row snapshot. Filter is O(n);
+            # the underlying list+multi-get already carries a 10s TTL.
+            all_rows = iter_transactions()
+            attributions = iter_attributions()
+        except StorageError as e:
+            raise err.StorageUnavailable(
+                "Cost ledger is unreachable") from e
+
+        # Filter to rows that belong to this project (direct attribution or
+        # rescue override). Same ownership model as project_spend.
+        project_rows = []
+        for row in all_rows:
+            owner = row.get("project_id")
+            if owner is None:
+                owner = _attribution_owner(row, attributions)
+            if owner != project_id:
+                continue
+            project_rows.append(row)
+
+        # Newest first (matching the /projects list order).
+        project_rows.sort(
+            key=lambda r: r.get("timestamp") or 0, reverse=True)
+
+        total = len(project_rows)
+        page = project_rows[cursor:cursor + limit]
+        next_cursor = cursor + len(page) if cursor + len(page) < total else None
+
+        writable = ledger_writable()
+        return LedgerRowsResponse(
+            project_id=project_id,
+            total_count=total,
+            rows=[LedgerRowOut(
+                timestamp=float(r.get("timestamp") or 0),
+                endpoint=r.get("endpoint") or "unknown",
+                cost_estimate=float(r.get("cost_estimate") or 0),
+                cost_source=r.get("cost_source") or "estimate",
+                success=bool(r.get("success")),
+                error=r.get("error"),
+                project_id=r.get("project_id"),
+                params_hash=r.get("params_hash"),
+            ) for r in page],
+            next_cursor=next_cursor,
+            ledger_writable=writable,
+        )
 
     return app
 
