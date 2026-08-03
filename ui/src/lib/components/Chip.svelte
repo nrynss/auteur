@@ -50,7 +50,7 @@
   };
 
   const word = $derived(label ?? WORDS[state]);
-  const accessible = $derived(detail ? `${word} — ${detail}` : word);
+  const accessible = $derived(detail ? `${word}: ${detail}` : word);
   const cls = $derived(
     [
       "chip",

@@ -36,10 +36,10 @@ describe("formatTimecode", () => {
   });
 
   it("renders absent values as a dash, never a fabricated number", () => {
-    expect(formatTimecode(null)).toBe("—");
-    expect(formatTimecode(undefined)).toBe("—");
-    expect(formatTimecode(Number.NaN)).toBe("—");
-    expect(formatTimecode(Number.POSITIVE_INFINITY)).toBe("—");
+    expect(formatTimecode(null)).toBe("n/a");
+    expect(formatTimecode(undefined)).toBe("n/a");
+    expect(formatTimecode(Number.NaN)).toBe("n/a");
+    expect(formatTimecode(Number.POSITIVE_INFINITY)).toBe("n/a");
   });
 });
 
@@ -51,8 +51,8 @@ describe("formatCost", () => {
   });
 
   it("renders absent costs as a dash", () => {
-    expect(formatCost(null)).toBe("—");
-    expect(formatCost(undefined)).toBe("—");
+    expect(formatCost(null)).toBe("n/a");
+    expect(formatCost(undefined)).toBe("n/a");
   });
 });
 
@@ -74,7 +74,7 @@ describe("formatSeconds", () => {
   });
 
   it("renders absent spans as a dash", () => {
-    expect(formatSeconds(null)).toBe("—");
-    expect(formatSeconds(Number.NaN)).toBe("—");
+    expect(formatSeconds(null)).toBe("n/a");
+    expect(formatSeconds(Number.NaN)).toBe("n/a");
   });
 });

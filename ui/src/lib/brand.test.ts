@@ -17,14 +17,14 @@ it("defaults to today's product name", () => {
 });
 
 it("default title template is the current one", () => {
-  expect(BRAND_TITLE_TEMPLATE).toBe("{name} — {page}");
+  expect(BRAND_TITLE_TEMPLATE).toBe("{name} · {page}");
 });
 
 it("formats page titles with the configured name and template", () => {
-  expect(brandPageTitle("Control room")).toBe("Auteur — Control room");
-  expect(brandPageTitle("New project")).toBe("Auteur — New project");
-  expect(brandPageTitle("Unclaimed")).toBe("Auteur — Unclaimed");
-  expect(brandPageTitle("Projects")).toBe("Auteur — Projects");
+  expect(brandPageTitle("Control room")).toBe("Auteur · Control room");
+  expect(brandPageTitle("New project")).toBe("Auteur · New project");
+  expect(brandPageTitle("Unclaimed")).toBe("Auteur · Unclaimed");
+  expect(brandPageTitle("Projects")).toBe("Auteur · Projects");
 });
 
 it("a rebranded template moves the name and page anywhere", () => {
@@ -39,9 +39,9 @@ it("replaces every placeholder occurrence, not just the first", () => {
   // a template that repeats a placeholder must render each occurrence.
   expect(
     formatPageTitle(
-      "{name} — {page} — {name}",
+      "{name} · {page} · {name}",
       "KinoPost",
       "Control room",
     ),
-  ).toBe("KinoPost — Control room — KinoPost");
+  ).toBe("KinoPost · Control room · KinoPost");
 });

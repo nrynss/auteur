@@ -63,7 +63,7 @@
     }
     if (accepted.cache_hits != null || accepted.cache_misses != null) {
       parts.push(
-        `cache ${accepted.cache_hits ?? "—"} hit / ${accepted.cache_misses ?? "—"} miss`,
+        `cache ${accepted.cache_hits ?? "n/a"} hit / ${accepted.cache_misses ?? "n/a"} miss`,
       );
     }
     if (
@@ -136,7 +136,7 @@
   <Button
     size="sm"
     disabled={locked}
-    help={locked ? "A run is in flight — editing is locked" : "Render every stem the timeline needs, mix, mux and re-measure QA"}
+    help={locked ? "A run is in flight. Editing is locked" : "Render every stem the timeline needs, mix, mux and re-measure QA"}
     onclick={openMix}
   >
     Mix
@@ -145,7 +145,7 @@
     size="sm"
     variant="primary"
     disabled={locked}
-    help={locked ? "A run is in flight — editing is locked" : "Publish the already-rendered mix — provenance manifest and the exports/latest pointer"}
+    help={locked ? "A run is in flight. Editing is locked" : "Publish the already-rendered mix: provenance manifest and the exports/latest pointer"}
     onclick={openExport}
   >
     Export
@@ -155,7 +155,7 @@
 <ConfirmDialog
   open={dialog.kind === "mix"}
   title="Start mix"
-  body="Render every stem the timeline needs, mix, mux against the source, and re-measure QA. Cost projection is returned when the run is accepted — it prices cache misses only and is not a bill."
+  body="Render every stem the timeline needs, mix, mux against the source, and re-measure QA. Cost projection is returned when the run is accepted. It prices cache misses only and is not a bill."
   amount={null}
   confirmLabel="Start mix"
   busy={busy}

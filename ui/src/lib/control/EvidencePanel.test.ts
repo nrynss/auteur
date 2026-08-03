@@ -66,3 +66,39 @@ it("renders continuity issues when the visual block exists", () => {
   });
   expect(body).toContain("continuity");
 });
+
+it("a failed QA fetch says failure, not 'not measured' — the empty state's claim would be false", () => {
+  // "No measurements yet — the mix has not been QA-measured" is a checkable
+  // claim and is false when the request simply failed. The failure branch
+  // names what failed instead.
+  const { body } = render(EvidencePanel, {
+    props: { qa: null, scenes: [], failed: true },
+  });
+  expect(body).toContain("QA measurements could not be loaded.");
+  expect(body).not.toContain("has not been QA-measured");
+  expect(body).not.toContain("has not been QA-measured");
+});
+
+it("failure never hides measurements that did load", () => {
+  const { body } = render(EvidencePanel, {
+    props: {
+      qa: {
+        run_id: "run_1",
+        overall_status: "ok",
+        audio: {
+          integrated_lufs: -21.4,
+          true_peak_dbtp: -1.0,
+          target_lufs: -14.0,
+          target_true_peak_dbtp: -1.0,
+          measured_run_id: "run_1",
+          measured: true,
+        },
+        visual: null,
+      } as never,
+      scenes: [],
+      failed: true,
+    },
+  });
+  expect(body).toContain("-21.4 LUFS");
+  expect(body).not.toContain("could not be loaded");
+});

@@ -248,7 +248,7 @@ it("withholds orphan rows when the ledger is unwritable", async () => {
     }),
   );
   const { target, app } = await mountScreen();
-  expect(target.textContent).toContain("Ledger unwritable — figures withheld");
+  expect(target.textContent).toContain("Ledger unwritable: figures withheld");
   // No money figure may survive (docs/api.md §3.10).
   expect(target.textContent).not.toContain("$0.30");
   expect(target.textContent).not.toContain("Claim into project");

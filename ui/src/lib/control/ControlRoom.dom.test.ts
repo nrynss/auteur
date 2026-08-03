@@ -171,6 +171,74 @@ it("a failed ancillary fetch says failure — never 'analysis has not run'", asy
   unmount(app);
 });
 
+it("a failed dossier fetch says failure — never a forever 'Composing…' and never absence", async () => {
+  // The regression class task 22's rule forbids, in the dossier's own wiring:
+  // the request was kicked off (dossierRequested) and died. The old loading
+  // derivation (`dossierRequested && dossier === null`) stayed true forever,
+  // so the panel read as work in progress against a dead request.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string | URL) => {
+      const path = (String(input).split("/proj_TEST")[1] ?? "").split("?")[0];
+      if (path === "") return jsonResponse(PROJECT);
+      if (path === "/dossier")
+        return jsonResponse({ error: { code: "storage_unavailable" } }, 500);
+      if (path in ROUTES) return jsonResponse(ROUTES[path]);
+      return jsonResponse({ error: { code: "not_found" } }, 404);
+    }),
+  );
+
+  const target = document.createElement("div");
+  document.body.appendChild(target);
+  const app = mount(ControlRoom, { target, props: { id: "proj_TEST" } });
+  for (let i = 0; i < 8; i += 1) await settle();
+
+  const dossierTab = [...target.querySelectorAll("button")].find((b) =>
+    (b.textContent ?? "").trim() === "Dossier",
+  )!;
+  dossierTab.click();
+  for (let i = 0; i < 8; i += 1) await settle();
+
+  const text = target.textContent ?? "";
+  expect(text).toContain("Dossier could not be loaded.");
+  // Neither the busy lie nor the absence lie may survive the failure.
+  expect(text).not.toContain("Composing the dossier:");
+  expect(text).not.toContain("No artifacts yet");
+  // And the failure is announced globally too.
+  expect(text).toContain("Some data failed to load");
+
+  unmount(app);
+});
+
+it("a 404 dossier is absence — 'No artifacts yet', not an error", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string | URL) => {
+      const path = (String(input).split("/proj_TEST")[1] ?? "").split("?")[0];
+      if (path === "") return jsonResponse(PROJECT);
+      if (path in ROUTES) return jsonResponse(ROUTES[path]);
+      return jsonResponse({ error: { code: "not_found" } }, 404);
+    }),
+  );
+
+  const target = document.createElement("div");
+  document.body.appendChild(target);
+  const app = mount(ControlRoom, { target, props: { id: "proj_TEST" } });
+  for (let i = 0; i < 8; i += 1) await settle();
+
+  const dossierTab = [...target.querySelectorAll("button")].find((b) =>
+    (b.textContent ?? "").trim() === "Dossier",
+  )!;
+  dossierTab.click();
+  for (let i = 0; i < 8; i += 1) await settle();
+
+  const text = target.textContent ?? "";
+  expect(text).toContain("No artifacts yet");
+  expect(text).not.toContain("could not be loaded");
+
+  unmount(app);
+});
+
 it("first paint does not wait on the slow calls, and the dossier is lazy", async () => {
   // The regression this pins: awaiting all eight ancillary fetches together
   // made first paint hostage to the slowest. Against a real bucket the

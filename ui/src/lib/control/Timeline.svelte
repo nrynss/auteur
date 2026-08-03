@@ -333,7 +333,7 @@
 
   function draftChangedText(d: Draft): string {
     return draftChanged(d)
-      ? "unsaved changes — commit writes one new version"
+      ? "unsaved changes: commit writes one new version"
       : "unchanged";
   }</script>
 
@@ -365,8 +365,8 @@
           >
             <Tooltip
               text={v === versions[versions.length - 1]
-                ? `v${v} — latest committed version`
-                : `v${v} — earlier version (undo: view it, then edit from here)`}
+                ? `v${v}: latest committed version`
+                : `v${v}: earlier version (undo: view it, then edit from here)`}
             >
               <span>v{v}</span>
             </Tooltip>
@@ -380,7 +380,7 @@
             aria-pressed={viewing === "draft"}
             onclick={() => onView?.("draft")}
           >
-            <Tooltip text={`Draft — ${draftChangedText(draft)}`}>
+            <Tooltip text={`Draft: ${draftChangedText(draft)}`}>
               <span>draft +1</span>
             </Tooltip>
           </button>
@@ -391,9 +391,9 @@
     <span class="spacer"></span>
 
     {#if isProposalView}
-      <span class="note proposal">proposal — ghosted old positions · nothing applied</span>
+      <span class="note proposal">proposal: ghosted old positions · nothing applied</span>
     {:else if isHistorical}
-      <span class="note historic">viewing v{viewing} — historical</span>
+      <span class="note historic">viewing v{viewing}: historical</span>
       <button
         type="button"
         class="head-btn"
@@ -402,7 +402,7 @@
       >
         <Tooltip
           text={locked
-            ? "A run is in flight — editing is locked"
+            ? "A run is in flight. Editing is locked"
             : `Restore v${viewing} as the working draft (undo to this version)`}
         >
           <span>Edit from here</span>
@@ -415,7 +415,7 @@
       </span>
       <span class="note free">move · resize · rename · delete free</span>
     {:else if locked}
-      <span class="note lock">run in flight — locked</span>
+      <span class="note lock">run in flight: locked</span>
     {:else}
       <span class="note">committed</span>
     {/if}
@@ -428,7 +428,7 @@
           </Tooltip>
         </button>
         <button type="button" class="head-btn ghost" onclick={onDiscardDraft}>
-          <Tooltip text="Discard this draft — the committed versions are untouched">
+          <Tooltip text="Discard this draft. The committed versions are untouched">
             <span>Discard</span>
           </Tooltip>
         </button>
@@ -458,7 +458,7 @@
       <span class="detail">
         Unsaved changes to <span class="num">v{draft.baseVersion}</span>
         {#if staleCount > 0}
-          · the timeline moved underneath — latest is
+          · the timeline moved underneath: latest is
           <span class="num">v{versions?.[versions.length - 1] ?? "?"}</span> and
           records {staleCount} frozen {staleCount === 1 ? "duration" : "durations"} this
           draft is missing; the commit would be refused.
@@ -466,7 +466,7 @@
             Merge recorded freezes from latest
           </button>
         {/if}
-        — commits write one new version; nothing is billed.
+        . Commits write one new version; nothing is billed.
       </span>
     </div>
   {/if}
@@ -504,7 +504,7 @@
         <div class="empty">
           {#if isDraftView}
             <p>
-              Every event was deleted — commit writes an empty document
+              Every event was deleted. Commit writes an empty document
               (refused while the current version still has generated content;
               deleting it explicitly is free).
             </p>
@@ -512,7 +512,7 @@
             <p>
               {failed
                 ? "The timeline could not be loaded."
-                : "No timeline yet — analysis has not run."}
+                : "No timeline yet. Analysis has not run."}
             </p>
           {/if}
         </div>
@@ -544,7 +544,7 @@
                   style={`left:${p.leftPx}px;width:${p.widthPx}px`}
                   role="button"
                   tabindex="0"
-                  aria-label={`${ev.name} — index ${ev.index}, starts at ${ev.start_time.toFixed(3)}s${canEdit ? " — drag to move, arrow keys to nudge" : ""}`}
+                  aria-label={`${ev.name}: index ${ev.index}, starts at ${ev.start_time.toFixed(3)}s${canEdit ? ". Drag to move, arrow keys to nudge" : ""}`}
                   aria-pressed={selected === ev.index}
                   onpointerdown={(e) => beginMove(e, ev)}
                   onpointermove={onGestureMove}
@@ -558,7 +558,7 @@
                   {#if canEdit}
                     <span
                       class="handle h-l"
-                      aria-label={`Resize ${ev.name} start — arrow keys to adjust, ⌥ for 1 ms`}
+                      aria-label={`Resize ${ev.name} start: arrow keys to adjust, ⌥ for 1 ms`}
                       use:resizeHandle={{
                         value: ev.start_time,
                         min: 0,
@@ -571,7 +571,7 @@
                     ></span>
                     <span
                       class="handle h-r"
-                      aria-label={`Resize ${ev.name} end — arrow keys to adjust, ⌥ for 1 ms`}
+                      aria-label={`Resize ${ev.name} end: arrow keys to adjust, ⌥ for 1 ms`}
                       use:resizeHandle={{
                         value: ev.start_time + ev.duration,
                         min: 0,
@@ -623,8 +623,8 @@
           >
             <Tooltip
               text={selectedEvent.source_duration_s != null
-                ? "Frozen content — the commit refuses renames (a different generation); Regenerate re-rolls the audio instead"
-                : "Rename — free to commit; the next generation re-routes and re-prompts by the new name"}
+                ? "Frozen content: the commit refuses renames (a different generation); Regenerate re-rolls the audio instead"
+                : "Rename: free to commit; the next generation re-routes and re-prompts by the new name"}
             >
               <span>rename</span>
             </Tooltip>
@@ -636,7 +636,7 @@
       <div class="field"><span class="flabel">Span</span><span class="fval num">{selectedEvent.duration.toFixed(3)}</span></div>
       <div class="field">
         <span class="flabel">Generated</span>
-        <span class="fval num">{selectedEvent.source_duration_s == null ? "—" : selectedEvent.source_duration_s.toFixed(3)}</span>
+        <span class="fval num">{selectedEvent.source_duration_s == null ? "n/a" : selectedEvent.source_duration_s.toFixed(3)}</span>
       </div>
       <div class="field"><span class="flabel">Kind</span><span class="fval">{selectedEvent.kind}</span></div>
       <div class="field"><span class="flabel">Intensity</span><span class="fval">{selectedEvent.intensity}</span></div>
@@ -656,7 +656,7 @@
             onselect?.(null);
           }}
         >
-          <Tooltip text="Delete this event — free: the money for generated content is already spent">
+          <Tooltip text="Delete this event. Free: the money for generated content is already spent">
             <span>delete</span>
           </Tooltip>
         </button>
@@ -667,7 +667,7 @@
         </span>
       {/if}
     {:else}
-      <p class="empty">No event selected — click a block.</p>
+      <p class="empty">No event selected. Click a block.</p>
     {/if}
   </div>
 </section>

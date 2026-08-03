@@ -18,7 +18,7 @@
 </script>
 
 {#if show && budget}
-  <Tooltip text={budget.ledger_writable ? undefined : "Costs not being recorded — these figures are fiction"}>
+  <Tooltip text={budget.ledger_writable ? undefined : "Costs not being recorded: these figures are fiction"}>
     <span class="budget">
       <span class="amt num">{formatCost(budget.spent)}</span>
       <span class="of">of</span>

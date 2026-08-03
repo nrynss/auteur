@@ -56,10 +56,10 @@
         ? `"${eventName}" (index ${eventIndex})`
         : `event index ${eventIndex}`;
     if (phase.cost != null && phase.cost > 0) {
-      return `Regenerate the stem for ${who} and re-mix. The amount below is the estimate the API returned — confirming echoes it as confirm_cost_usd.`;
+      return `Regenerate the stem for ${who} and re-mix. The amount below is the estimate the API returned. Confirming echoes it as confirm_cost_usd.`;
     }
     if (phase.cost === 0) {
-      return `Regenerate the stem for ${who} and re-mix. Estimate $0.00 — free, no billable consent required.`;
+      return `Regenerate the stem for ${who} and re-mix. Estimate $0.00. Free, no billable consent required.`;
     }
     return `Regenerate the stem for ${who} and re-mix. Confirming probes the cost: free work starts immediately; billable work will show the estimate for a second confirm.`;
   });
@@ -105,7 +105,7 @@
       if (result.status === "needs_confirm") {
         phase = { kind: "confirm", cost: result.estimatedCostUsd };
         onerror?.(
-          "Estimate changed — review the new amount before confirming again.",
+          "Estimate changed. Review the new amount before confirming again.",
         );
         return;
       }
@@ -131,7 +131,7 @@
   pending={busy && phase.kind === "idle"}
   help={
     locked
-      ? "A run is in flight — editing is locked"
+      ? "A run is in flight. Editing is locked"
       : eventIndex == null
         ? "Select a timeline event"
         : "Regenerate this event's stem by index"

@@ -308,7 +308,7 @@ it("discard leaves the timeline untouched", async () => {
   for (let i = 0; i < 8; i += 1) await settle();
 
   expect(target.querySelector(".lane .ghost")).toBeNull();
-  expect(target.textContent).toContain("Discarded — the timeline is untouched");
+  expect(target.textContent).toContain("Discarded. The timeline is untouched");
   // Back to committed positions, no draft.
   expect(target.textContent).not.toContain("draft +1");
   expect(committedBodies).toHaveLength(0);

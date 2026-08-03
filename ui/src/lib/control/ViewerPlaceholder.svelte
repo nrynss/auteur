@@ -7,7 +7,7 @@
 
 <div class="well">
   <div class="slot">
-    <span class="tag">video player — unit 7.9</span>
+    <span class="tag">video player (unit 7.9)</span>
     <p>
       Source, Foley mix, and the browser preview land here. Until then this
       area is an empty slot, not a placeholder pretending to be a player.

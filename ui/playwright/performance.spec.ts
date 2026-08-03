@@ -170,9 +170,9 @@ test("smoke soak: repeated overlay opens and tab switches stay clean and respons
     // Open and close the help overlay repeatedly — its window listeners
     // must be removed on close, not accumulated.
     await page.keyboard.type("?");
-    await expect(page.getByRole("dialog", { name: "Help — keys and terms" })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "Help: keys and terms" })).toBeVisible();
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("dialog", { name: "Help — keys and terms" })).toBeHidden();
+    await expect(page.getByRole("dialog", { name: "Help: keys and terms" })).toBeHidden();
 
     // Switch through every control-room tab.
     const count = await tabs.count();

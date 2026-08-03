@@ -115,7 +115,7 @@
   {:else if status === "error"}
     <Panel class="state-panel">
       <div class="state">
-        <p class="stop">Could not load projects — {message}</p>
+        <p class="stop">Could not load projects: {message}</p>
         <Button size="sm" onclick={() => load()}>Retry</Button>
       </div>
     </Panel>
@@ -158,13 +158,13 @@
               <Chip state={st.state} label={st.label} />
             </span>
             <span class="num num-col" role="cell">
-              {p.duration_s != null ? `${p.duration_s.toFixed(1)}s` : "—"}
+              {p.duration_s != null ? `${p.duration_s.toFixed(1)}s` : "n/a"}
             </span>
             <span class="num num-col" role="cell">
               {formatCost(p.budget_usd)}
             </span>
             <span class="file faint" role="cell">
-              <Tooltip text={p.source_filename}><span>{p.source_filename || "—"}</span></Tooltip>
+              <Tooltip text={p.source_filename}><span>{p.source_filename || "n/a"}</span></Tooltip>
             </span>
             <span class="created faint" role="cell">
               {formatCreatedAt(p.created_at)}

@@ -111,9 +111,9 @@
 
   const OUTCOME_LINES: Record<DirectorTurn["outcome"], string | null> = {
     reviewing: null,
-    applied: "Applied to the draft — ghosted blocks are gone; commit still writes one new version.",
-    discarded: "Discarded — the timeline is untouched.",
-    stale: "The timeline moved underneath — this proposal was cleared. Re-ask if you still want it.",
+    applied: "Applied to the draft. Ghosted blocks are gone; commit still writes one new version.",
+    discarded: "Discarded. The timeline is untouched.",
+    stale: "The timeline moved underneath. This proposal was cleared. Re-ask if you still want it.",
     noted: null,
     failed: null,
   };
@@ -122,7 +122,7 @@
 <section class="director" aria-label="Director mode">
   {#if turns.length === 0}
     <p class="empty">
-      Describe a change — "pull the gunshot back 80 ms", "move every footstep
+      Describe a change: "pull the gunshot back 80 ms", "move every footstep
       40 ms earlier". Each send is one {modelName()} call, recorded in the
       ledger; the proposal is never applied until you approve it.
     </p>
@@ -149,7 +149,7 @@
                   {#if turn.proposal.ledger_writable}
                     <span class="cost">call ~${turn.proposal.cost_usd.toFixed(4)} · moves free</span>
                   {:else}
-                    <span class="cost unwritable">call billed but not recorded — ledger unwritable</span>
+                    <span class="cost unwritable">call billed but not recorded: ledger unwritable</span>
                   {/if}
                 </header>
                 <ul>
@@ -172,8 +172,8 @@
                   >
                     <Tooltip
                       text={locked
-                        ? "A run is in flight — apply to the draft when it settles"
-                        : "Merge this proposal into the draft (an edit — commit still asks)"}
+                        ? "A run is in flight. Apply to the draft when it settles"
+                        : "Merge this proposal into the draft (an edit; commit still asks)"}
                     >
                       <span>Apply to draft</span>
                     </Tooltip>
@@ -203,7 +203,7 @@
     {#if busy}
       <div class="busy">
         <Spinner label="Proposing" />
-        <span class="dim">Proposing — one {modelName()} call through the ledger…</span>
+        <span class="dim">Proposing: one {modelName()} call through the ledger…</span>
       </div>
     {/if}
     <form
@@ -228,14 +228,14 @@
         class="hint"
         disabled={!canSend}
       >
-        <Tooltip text="Send — one billed director-model call">
+        <Tooltip text="Send: one billed director-model call">
           <span>⏎</span>
         </Tooltip>
       </button>
     </form>
     <p class="costline">
       One {modelName()} call per proposal, ledger-recorded and quota-counted.
-      The moves themselves are free — the same cached stems, placed elsewhere.
+      The moves themselves are free. The same cached stems, placed elsewhere.
     </p>
   </div>
 </section>

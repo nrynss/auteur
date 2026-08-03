@@ -10,12 +10,15 @@
      * HEAD per object and takes tens of seconds on a real bucket, so a
      * pending dossier must read as "working", never as "none". */
     loading?: boolean;
+    /** The fetch failed — a missing dossier is a failure, not absence.
+     * Loading must not stay stuck on "Composing…" when the request died. */
+    failed?: boolean;
   }
 
-  let { dossier, loading = false }: Props = $props();
+  let { dossier, loading = false, failed = false }: Props = $props();
 
   const fmtBytes = (n: number | null | undefined) => {
-    if (n == null) return "—";
+    if (n == null) return "n/a";
     if (n < 1024) return `${n} B`;
     if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
     return `${(n / (1024 * 1024)).toFixed(1)} MB`;
@@ -23,14 +26,16 @@
 
   const shortKey = (k: string) => (k.length > 44 ? `${k.slice(0, 20)}…${k.slice(-20)}` : k);
   const shortSha = (s: string | null | undefined) =>
-    s ? s.slice(0, 10) : "—";
+    s ? s.slice(0, 10) : "n/a";
 </script>
 
 <div class="panel-body">
-  {#if loading}
-    <p class="empty">Composing the dossier — one lookup per artifact…</p>
+  {#if failed}
+    <p class="empty">Dossier could not be loaded.</p>
+  {:else if loading}
+    <p class="empty">Composing the dossier: one lookup per artifact…</p>
   {:else if !dossier}
-    <p class="empty">No artifacts yet — mix, repair or export creates them.</p>
+    <p class="empty">No artifacts yet. Mix, repair or export creates them.</p>
   {:else}
     <p class="summary num">
       {dossier.artifact_count} artifacts · {fmtBytes(dossier.total_bytes)}

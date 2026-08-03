@@ -53,6 +53,23 @@
     }
   }
 
+  // Escape must close the overlay even when focus has not yet landed inside
+  // it (autofocus is one macrotask behind the open) or sits on the scrim —
+  // a modal that only closes when the right element happens to be focused
+  // is a trap. Window-level, like Tooltip's Escape. Tab stays contained by
+  // the dialog's own handler.
+  $effect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onclose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   function trapTab(e: KeyboardEvent) {
     const el = dialogEl;
     if (!el) return;
@@ -88,7 +105,7 @@
       onkeydown={onKeydown}
     >
       <header class="head">
-        <h2 id={titleId}>Help — keys and terms</h2>
+        <h2 id={titleId}>Help: keys and terms</h2>
         <button type="button" class="close" data-autofocus onclick={onclose} aria-label="Close help">
           ✕
         </button>
@@ -110,7 +127,7 @@
           </ul>
           <p class="note">
             <Kbd>?</Kbd> opens this overlay; <Kbd>Escape</Kbd> closes it and
-            every dialog. Arrows nudge at 10 ms — hold <Kbd>Shift</Kbd> for
+            every dialog. Arrows nudge at 10 ms. Hold <Kbd>Shift</Kbd> for
             100 ms, <Kbd>Alt</Kbd> for 1 ms.
           </p>
         </div>

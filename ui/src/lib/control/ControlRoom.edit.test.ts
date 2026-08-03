@@ -359,7 +359,7 @@ it("version chips switch to a read-only historical view and back", async () => {
   await settle();
 
   // Historical view: read-only, labelled, with the undo affordance.
-  expect(target.textContent).toContain("viewing v1 — historical");
+  expect(target.textContent).toContain("viewing v1: historical");
   const editFrom = [...target.querySelectorAll("button")].find((b) =>
     (b.textContent ?? "").includes("Edit from here"),
   )!;
@@ -639,7 +639,7 @@ it("discarding a draft is explicit and leaves the committed versions untouched",
   expect(localStorage.getItem("ff:draft:proj_EDIT")).toBeNull();
   // The committed version is untouched and still selectable.
   expect(target.textContent).toContain("v1");
-  expect(target.textContent).toContain("Draft discarded — the committed versions are untouched.");
+  expect(target.textContent).toContain("Draft discarded. The committed versions are untouched.");
 
   unmount(app);
 });
@@ -665,7 +665,7 @@ it("editing is disabled while a run is in flight", async () => {
   );
 
   const { target, app } = await mountRoom();
-  expect(target.textContent).toContain("run in flight — locked");
+  expect(target.textContent).toContain("run in flight: locked");
   const bell = [...target.querySelectorAll(".block")].find((b) =>
     (b.textContent ?? "").includes("church bell"),
   )!;

@@ -140,7 +140,7 @@ test("the ? overlay traps Tab while open and Escape returns focus", async ({ pag
   const hint = page.getByRole("button", { name: "keys & terms" });
   await hint.focus();
   await page.keyboard.type("?");
-  const overlay = page.getByRole("dialog", { name: "Help — keys and terms" });
+  const overlay = page.getByRole("dialog", { name: "Help: keys and terms" });
   await expect(overlay).toBeVisible();
 
   // Tab cycles inside the dialog and never escapes to the page behind it.

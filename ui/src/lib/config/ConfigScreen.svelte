@@ -74,13 +74,13 @@
           key: "build",
           label: "Deployed build identity",
           state: "warn",
-          detail: "unstamped process — cannot verify freshness",
+          detail: "unstamped process: cannot verify freshness",
         }
       : {
           key: "build",
           label: "Deployed build identity",
           state: "blocked",
-          detail: "unstamped deploy — no build identity",
+          detail: "unstamped deploy: no build identity",
         };
   });
 
@@ -103,7 +103,7 @@
       key: "brand",
       label: "Brand agreement",
       state: "blocked",
-      detail: `UI built as ${BRAND_NAME} but the API serves ${config.brand} — ` +
+      detail: `UI built as ${BRAND_NAME} but the API serves ${config.brand}: ` +
         "one deployment renders two names",
     };
   });
@@ -142,7 +142,7 @@
 <main>
   {#if error}
     <div class="state" role="alert">
-      <p class="stop">Could not load the deployment sheet — {error}</p>
+      <p class="stop">Could not load the deployment sheet: {error}</p>
       <Button variant="primary" size="sm" onclick={() => void load()}>
         Retry
       </Button>
@@ -161,9 +161,9 @@
     </ul>
     <p class="summary" class:stop={blockedCount > 0} role="status">
       {#if blockedCount === 0}
-        Deployment checks pass — this deployment is wired up.
+        Deployment checks pass. This deployment is wired up.
       {:else}
-        {blockedCount} {blockedCount === 1 ? "check" : "checks"} blocked — fix
+        {blockedCount} {blockedCount === 1 ? "check" : "checks"} blocked. Fix
         the STOP items before relying on it.
       {/if}
     </p>
@@ -176,11 +176,11 @@
       </div>
       <div class="field">
         <span class="flabel">git_sha</span>
-        <span class="fval num">{config.git_sha ?? "— (unstamped)"}</span>
+        <span class="fval num">{config.git_sha ?? "n/a (unstamped)"}</span>
       </div>
       <div class="field">
         <span class="flabel">built</span>
-        <span class="fval num">{config.build_time ?? "—"}</span>
+        <span class="fval num">{config.build_time ?? "n/a"}</span>
       </div>
     </div>
 
@@ -194,7 +194,7 @@
             <Chip state="ok" label="Configured" detail="vars present" />
           {:else}
             <span class="absent">
-              Absent{i.missing.length ? ` — ${i.missing.join(", ")}` : ""}
+              Absent{i.missing.length ? `: ${i.missing.join(", ")}` : ""}
             </span>
           {/if}
           {#if i.unresolved.length > 0}
@@ -207,7 +207,7 @@
     </ul>
 
     <p class="note">
-      Read-only — this screen reports variable <em>names</em> and presence,
+      Read-only. This screen reports variable <em>names</em> and presence,
       never values. Writing or rotating credentials stays a Secret Manager
       operation (scripts/setup_secrets.sh); the service deploys without
       authentication, so a mutation route here would be an open credential

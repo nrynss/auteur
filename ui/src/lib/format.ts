@@ -5,14 +5,14 @@
 
 /** "mm:ss.mmm" ("h:mm:ss.mmm" past the hour) — minutes always zero-padded
  * like the mockup's transport (00:11.420), so digits never jitter as the
- * playhead moves. Null/non-finite → "—" so a number that does not exist
+ * playhead moves. Null/non-finite → "n/a" so a number that does not exist
  * renders as an absent value, never a fake one. */
 export function formatTimecode(
   seconds: number | null | undefined,
   opts: { ms?: boolean; hours?: boolean } = {},
 ): string {
   const { ms = true, hours = false } = opts;
-  if (seconds == null || !Number.isFinite(seconds)) return "—";
+  if (seconds == null || !Number.isFinite(seconds)) return "n/a";
   const neg = seconds < 0 ? "-" : "";
   // Work in thousandths so rounding carries correctly (59.9996 → 1:00.000,
   // never 0:59.1000).
@@ -28,11 +28,11 @@ export function formatTimecode(
   return neg + out + (ms ? "." + String(milli).padStart(3, "0") : "");
 }
 
-/** "$0.30", "$1,234.56". Null → "—". Two decimals for budgets and totals. */
+/** "$0.30", "$1,234.56". Null → "n/a". Two decimals for budgets and totals. */
 export function formatCost(
   usd: number | null | undefined,
 ): string {
-  if (usd == null || !Number.isFinite(usd)) return "—";
+  if (usd == null || !Number.isFinite(usd)) return "n/a";
   return (
     "$" +
     usd.toLocaleString("en-US", {
@@ -46,7 +46,7 @@ export function formatCost(
  * Up to 6 fraction digits so 0.0375 stays "$0.0375", not "$0.04", and a
  * sub-cent billable amount never reads as "$0.00". */
 export function formatConfirmCost(usd: number | null | undefined): string {
-  if (usd == null || !Number.isFinite(usd)) return "—";
+  if (usd == null || !Number.isFinite(usd)) return "n/a";
   if (usd === 0) return "$0.00";
   // Prefer the shortest string that still equals the number when re-parsed,
   // but never fewer than 2 decimals for whole-cent amounts.
@@ -63,6 +63,6 @@ export function formatConfirmCost(usd: number | null | undefined): string {
  * format the mockup uses ("10.62", "03.20"). Scene spans are short, so
  * m:ss would be noise; this is the honest value the API reports. */
 export function formatSeconds(seconds: number | null | undefined): string {
-  if (seconds == null || !Number.isFinite(seconds)) return "—";
+  if (seconds == null || !Number.isFinite(seconds)) return "n/a";
   return seconds.toFixed(2).padStart(5, "0");
 }

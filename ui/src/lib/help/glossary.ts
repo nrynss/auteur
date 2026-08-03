@@ -45,7 +45,7 @@ export const GLOSSARY: Record<string, TermDef> = {
   },
   transient: {
     label: "transient",
-    def: "the onset of a one-shot sound — the hit point the playhead marks, not the event's start",
+    def: "the onset of a one-shot sound: the hit point the playhead marks, not the event's start",
     craft: true
   },
   // -- our terms, kept because a line defines them --------------------------
@@ -59,7 +59,7 @@ export const GLOSSARY: Record<string, TermDef> = {
   },
   unclaimed: {
     label: "unclaimed",
-    def: "material the system owns — money spent, storage used — that no project claims",
+    def: "material the system owns (money spent, storage used) that no project claims",
   },
   continuity: {
     label: "continuity",
@@ -94,7 +94,7 @@ export const GLOSSARY: Record<string, TermDef> = {
   },
   transactions: {
     label: "transactions",
-    def: "the record of each provider call and what it cost — the audit trail behind every spend figure",
+    def: "the record of each provider call and what it cost: the audit trail behind every spend figure",
   },
   usage: {
     label: "usage",

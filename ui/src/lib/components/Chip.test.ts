@@ -32,7 +32,7 @@ describe("Chip", () => {
     const { body } = render(Chip, {
       props: { state: "warn", detail: "7.4 LU under target" },
     });
-    expect(body).toContain("Warning — 7.4 LU under target");
+    expect(body).toContain("Warning: 7.4 LU under target");
   });
 
   it("honours an explicit label override", () => {

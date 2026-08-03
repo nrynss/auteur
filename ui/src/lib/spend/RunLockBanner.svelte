@@ -27,7 +27,7 @@
       {#if lock.currentStage}
         · stage <span class="stage">{lock.currentStage}</span>
       {/if}
-      — spend and edits disabled until it finishes
+      : spend and edits disabled until it finishes
     </span>
   </div>
 {:else if lock.kind === "stale"}

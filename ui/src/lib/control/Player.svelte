@@ -284,7 +284,7 @@
     {#if isPreview}
       <span class="preview-note" role="status">
         <span class="dot" aria-hidden="true"></span>
-        Browser preview — not the measured mix
+        Browser preview: not the measured mix
         {#if previewFailed > 0}
           · {previewFailed} stem{previewFailed === 1 ? "" : "s"} unavailable
         {/if}
@@ -432,6 +432,16 @@
     font-size: 10px;
     color: var(--faint);
     white-space: nowrap;
+  }
+
+  /* Narrow: the keyboard hint and the preview note are the first to go —
+   * the hint's discoverability lives in the `?` overlay, and the preview
+   * note's honesty ("not the measured mix") is restated on the button. */
+  @media (max-width: 640px) {
+    .hint,
+    .preview-note {
+      display: none;
+    }
   }
 
   .num {

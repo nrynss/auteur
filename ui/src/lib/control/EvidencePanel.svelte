@@ -12,9 +12,13 @@
   interface Props {
     qa: QaReportResponse | null;
     scenes: SceneOut[];
+    /** The QA fetch failed. "No measurements yet" is a checkable claim and
+     * is false when the request simply failed — the empty state must not
+     * assert a cause the screen cannot know. */
+    failed?: boolean;
   }
 
-  let { qa, scenes }: Props = $props();
+  let { qa, scenes, failed = false }: Props = $props();
 
   // Display scale for the bar, not a measured claim: LUFS over [-30, -10],
   // true peak over [-6, 0] dBTP. The numbers the screen shows are the real
@@ -30,7 +34,11 @@
 
 <div class="panel-body">
   {#if !qa || !qa.audio?.measured}
-    <p class="empty">No measurements yet — the mix has not been QA-measured.</p>
+    {#if failed}
+      <p class="empty">QA measurements could not be loaded.</p>
+    {:else}
+      <p class="empty">No measurements yet. The mix has not been QA-measured.</p>
+    {/if}
   {:else}
     <p class="eyebrow">Loudness</p>
 

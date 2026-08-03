@@ -18,9 +18,13 @@
     mixPeaks: PeaksResponse | null;
     /** The run the mix peaks were fetched for — the project's latest mix. */
     mixRunId: string | null;
+    /** An ancillary fetch failed. An empty section must not claim a cause
+     * it cannot know — "no versions yet" is a checkable claim and is false
+     * when the request simply failed. */
+    failed?: boolean;
   }
 
-  let { versions, runs, events, mixPeaks, mixRunId }: Props = $props();
+  let { versions, runs, events, mixPeaks, mixRunId, failed = false }: Props = $props();
 
   // Runs arrive oldest-first, so the latest mix is the LAST one.
   const mixes = $derived(runs.filter((r) => r.kind === "mix"));
@@ -38,19 +42,27 @@
       {/each}
     </div>
   {:else}
-    <p class="empty">No timeline versions yet — analysis creates the first.</p>
+    {#if failed}
+      <p class="empty">Timeline versions could not be loaded.</p>
+    {:else}
+      <p class="empty">No timeline versions yet. Analysis creates the first.</p>
+    {/if}
   {/if}
 
   <p class="eyebrow">Runs &amp; mixes</p>
   {#if runs.length === 0}
-    <p class="empty">No runs yet — mix, repair or export create one.</p>
+    {#if failed}
+      <p class="empty">Runs could not be loaded.</p>
+    {:else}
+      <p class="empty">No runs yet. Mix, repair or export create one.</p>
+    {/if}
   {:else}
     <ul class="runs">
       {#each runs as r (r.id)}
         <li class="run">
           <span class="kind">{r.kind}</span>
           <span class="meta num">
-            v{r.timeline_version ?? "—"} · {clock(r.created_at)}
+            v{r.timeline_version ?? "n/a"} · {clock(r.created_at)}
           </span>
           <span class="state">{r.status}</span>
           {#if r.error_code}
@@ -70,7 +82,11 @@
 
   <p class="eyebrow">Event log</p>
   {#if events.length === 0}
-    <p class="empty">No events yet — analysis and repairs populate the log.</p>
+    {#if failed}
+      <p class="empty">The event log could not be loaded.</p>
+    {:else}
+      <p class="empty">No events yet. Analysis and repairs populate the log.</p>
+    {/if}
   {:else}
     <ul class="events">
       {#each events as e (e.id)}

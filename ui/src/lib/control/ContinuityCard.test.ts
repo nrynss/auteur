@@ -73,4 +73,50 @@ describe("ContinuityCard", () => {
     // not the tabular-mono −21.4 LUFS treatment.
     expect(body).toMatch(/class="val[^"]*\sstatement(\s|")/);
   });
+
+  it("a scene missing from the list renders a placeholder and '—' luma, never a fabricated figure", () => {
+    // The scenes fetch can be thinner than the report (or stale): the card
+    // must still render the REPORT's own recorded detail, with the missing
+    // scene's thumbnail as a placeholder and its luma as absent — never a
+    // guessed number.
+    const { body } = render(ContinuityCard, {
+      props: {
+        issue: { ...issue, compared_with: "scene_99" },
+        threshold: 20,
+        scenes: [
+          {
+            id: "scene_05",
+            index: 4,
+            start_s: 10.625,
+            end_s: 15.042,
+            duration_s: 4.417,
+            stats: { mean_luma: 138.42 },
+          },
+        ],
+        runId: "run_abc123",
+      } as never,
+    });
+    // The recorded headline survives verbatim.
+    expect(body).toContain(
+      "mean luma jumps 31.8 between scene_04 (106.7) and scene_05 (138.4)",
+    );
+    // The missing scene's side is a placeholder with "n/a" luma.
+    expect(body).toContain("scene_99");
+    expect(body).toContain("luma n/a");
+    expect(body).toContain("138.4");
+  });
+
+  it("without a recorded detail the headline falls back to the confidence, then to a plain warning", () => {
+    const withConfidence = render(ContinuityCard, {
+      props: { issue: { ...issue, detail: null }, threshold: 20, scenes, runId: null },
+    });
+    expect(withConfidence.body).toContain("confidence 0.79");
+
+    const bare = render(ContinuityCard, {
+      props: { issue: { ...issue, detail: null, confidence: null }, threshold: 20, scenes, runId: null },
+    });
+    expect(bare.body).toContain("continuity warning");
+    // No number is invented when the report records none.
+    expect(bare.body).not.toContain("confidence");
+  });
 });

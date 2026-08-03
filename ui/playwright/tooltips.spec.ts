@@ -237,7 +237,7 @@ test("a tip inside a scrolling rail is never clipped", async ({ page }) => {
 test("? opens the keyboard map and glossary; Escape closes and restores focus", async ({ page }) => {
   await openControlRoom(page);
   await page.keyboard.type("?");
-  const overlay = page.getByRole("dialog", { name: "Help — keys and terms" });
+  const overlay = page.getByRole("dialog", { name: "Help: keys and terms" });
   await expect(overlay).toBeVisible();
   await expect(overlay).toContainText("Keyboard map");
   await expect(overlay).toContainText("Glossary");

@@ -28,7 +28,7 @@
 </script>
 
 <div class="gallery">
-  <h1 class="eyebrow">Primitives — dev only</h1>
+  <h1 class="eyebrow">Primitives (dev only)</h1>
 
   <section>
     <h2 class="eyebrow">Chips</h2>
@@ -42,7 +42,7 @@
   </section>
 
   <section>
-    <h2 class="eyebrow">Evidence — value + required source</h2>
+    <h2 class="eyebrow">Evidence: value + required source</h2>
     <Evidence
       label="Integrated loudness"
       value="−21.4 LUFS"

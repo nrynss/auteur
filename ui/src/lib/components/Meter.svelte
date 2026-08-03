@@ -8,7 +8,7 @@
 
   let { percent, label = "ready" }: Props = $props();
   const pct = $derived(percent == null ? 0 : Math.max(0, Math.min(100, percent)));
-  const shown = $derived(percent == null ? "—" : `${Math.round(percent)}%`);
+  const shown = $derived(percent == null ? "n/a" : `${Math.round(percent)}%`);
 </script>
 
 <div class="meter">

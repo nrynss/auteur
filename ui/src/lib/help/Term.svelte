@@ -18,7 +18,7 @@
 
 {#if def}
   <Tooltip text={def.def}>
-    <button type="button" class="term" aria-label={`${def.label} — ${def.def}`}>
+    <button type="button" class="term" aria-label={`${def.label}: ${def.def}`}>
       {def.label}
     </button>
   </Tooltip>

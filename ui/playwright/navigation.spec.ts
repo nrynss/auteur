@@ -147,7 +147,7 @@ test("control-room tabs switch content and aria-selected", async ({ page }) => {
 test("? opens help from the projects index too", async ({ page }) => {
   await openIndex(page);
   await page.keyboard.type("?");
-  await expect(page.getByRole("dialog", { name: "Help — keys and terms" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Help: keys and terms" })).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog", { name: "Help — keys and terms" })).toBeHidden();
+  await expect(page.getByRole("dialog", { name: "Help: keys and terms" })).toBeHidden();
 });

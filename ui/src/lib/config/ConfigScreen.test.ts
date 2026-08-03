@@ -124,7 +124,7 @@ it("an unstamped build is warn on a loopback origin, blocked on a remote one", a
     writable: true,
   });
   let { target, app } = await mountScreen();
-  expect(target.textContent).toContain("unstamped process — cannot verify freshness");
+  expect(target.textContent).toContain("unstamped process: cannot verify freshness");
   unmount(app);
 
   Object.defineProperty(window, "location", {
@@ -132,7 +132,7 @@ it("an unstamped build is warn on a loopback origin, blocked on a remote one", a
     writable: true,
   });
   ({ target, app } = await mountScreen());
-  expect(target.textContent).toContain("unstamped deploy — no build identity");
+  expect(target.textContent).toContain("unstamped deploy: no build identity");
   expect(target.textContent).toContain("1 check blocked");
   unmount(app);
 });

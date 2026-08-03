@@ -117,7 +117,7 @@
     canRetryUpload = !!projectId && !!createdResponse && !!file;
     if (projectId) {
       errorMessage =
-        "Cancelled. The project record exists — open its control room or retry the upload if the source never landed.";
+        "Cancelled. The project record exists. Open its control room or retry the upload if the source never landed.";
     } else {
       errorMessage = "Cancelled.";
     }
@@ -174,7 +174,7 @@
       if (e instanceof ApiError) {
         if (e.code === "precondition_failed") {
           fail(
-            "Upload confirmation failed — the object was not found in storage. " +
+            "Upload confirmation failed. The object was not found in storage. " +
               e.message,
             e.code,
             { retryUpload: true },
@@ -249,7 +249,7 @@
           ? analysis.estimated_cost_usd
           : null;
       phase = "done";
-      phaseDetail = "Analysis accepted — opening control room.";
+      phaseDetail = "Analysis accepted. Opening control room.";
       await sleep(600, signal);
       if (signal.aborted || userCancelled) {
         cancelledSurface();
@@ -277,7 +277,7 @@
         }
         if (e.code === "precondition_failed") {
           fail(
-            "Analysis refused — upload is not fully ingested yet. " + e.message,
+            "Analysis refused. Upload is not fully ingested yet. " + e.message,
             e.code,
           );
           return false;
@@ -443,7 +443,7 @@
   <div class="head">
     <h1>New project</h1>
     <p class="lede dim">
-      Title and source video. Bytes go straight to storage — never through the API.
+      Title and source video. Bytes go straight to storage. Never through the API.
     </p>
   </div>
 

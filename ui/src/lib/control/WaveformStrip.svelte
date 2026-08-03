@@ -46,9 +46,25 @@
     const onTheme = () => paint();
     window.addEventListener("resize", onResize);
     window.addEventListener("ff:theme-change", onTheme);
+    // A canvas mounted inside a hidden tab (the History panel is rendered
+    // hidden at load) paints at clientWidth 0 and never re-paints when the
+    // tab opens — opening a tab is not a resize. Re-paint whenever the
+    // element becomes visible, so the measured peaks are there when the
+    // director looks.
+    let io: IntersectionObserver | null = null;
+    if (typeof IntersectionObserver !== "undefined" && canvas) {
+      io = new IntersectionObserver(
+        (entries) => {
+          if (entries.some((e) => e.isIntersecting)) paint();
+        },
+        { threshold: 0.01 },
+      );
+      io.observe(canvas);
+    }
     return () => {
       window.removeEventListener("resize", onResize);
       window.removeEventListener("ff:theme-change", onTheme);
+      io?.disconnect();
     };
   });
 </script>

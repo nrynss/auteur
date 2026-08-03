@@ -24,7 +24,7 @@ export default defineConfig(({ mode }) => {
   // Same title template the SPA uses (ui/src/lib/brand.ts), so the static
   // pre-hydration <title> and the runtime titles can never drift apart under
   // a rebrand. replaceAll matches the SPA formatter's semantics.
-  const titleTemplate = env.VITE_BRAND_TITLE_TEMPLATE || "{name} — {page}";
+  const titleTemplate = env.VITE_BRAND_TITLE_TEMPLATE || "{name} · {page}";
   const staticTitle = titleTemplate
     .replaceAll("{name}", brandName)
     .replaceAll("{page}", "Control room");

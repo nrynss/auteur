@@ -55,7 +55,7 @@ export const BINDINGS: Binding[] = [
     id: "dialog-tab",
     scope: "Dialogs",
     keys: "Tab",
-    action: "move within the dialog — focus is contained while it is open",
+    action: "move within the dialog: focus is contained while it is open",
   },
   {
     id: "player-toggle",

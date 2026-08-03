@@ -99,6 +99,14 @@
   let dossier = $state<DossierResponse | null>(null);
   // Whether the (slow) dossier fetch has been kicked off for this load.
   let dossierRequested = $state(false);
+  // Whether that fetch failed — distinct from "not composed yet". A failure
+  // must stop the panel's "Composing…" state, or it would claim to be
+  // working forever against a dead request.
+  let dossierFailed = $state(false);
+  // Whether the fetch has COMPLETED (success or 404). A 404 is absence, not
+  // busy — without this, a done-but-empty dossier would stay on
+  // "Composing…" forever, the same lie as failure.
+  let dossierLoaded = $state(false);
   let budget = $state<BudgetResponse | null>(null);
   let quota = $state<QuotaResponse | null>(null);
   let mixPeaks = $state<PeaksResponse | null>(null);
@@ -197,6 +205,8 @@
     // leave empty rows labelled as permanent failure.
     ancillaryFailed = false;
     dossierRequested = false;
+    dossierFailed = false;
+    dossierLoaded = false;
     project = await getProject(id);
 
     void quiet(getScenes(id), onAncillaryFailure).then((r) => {
@@ -250,11 +260,24 @@
   /** The dossier composes every artifact in the project with a backend HEAD
    * per object — 56s on a real bucket. It is the closing-beat view, not
    * first-paint data, so it is fetched the first time its tab is opened and
-   * kept until the next reload. */
+   * kept until the next reload. A 404 is absence; anything else is a
+   * failure, which must terminate the panel's loading state rather than
+   * leave it claiming to compose forever. */
   async function ensureDossier() {
     if (dossierRequested) return;
     dossierRequested = true;
-    dossier = await quiet(getDossier(id), onAncillaryFailure);
+    try {
+      dossier = await getDossier(id);
+      dossierFailed = false;
+    } catch (e) {
+      const notFound = e instanceof ApiError && e.status === 404;
+      dossier = null;
+      // 404 is absence, not failure — but either way the fetch is DONE.
+      dossierFailed = !notFound;
+      if (dossierFailed) onAncillaryFailure(e);
+    } finally {
+      dossierLoaded = true;
+    }
   }
 
   /** The ledger rows are the audit trail behind the Spend tab's totals —
@@ -321,7 +344,7 @@
           return;
         }
         // Network / 5xx: keep last lock, keep tracking, try again next tick.
-        console.error("control room: getRun poll failed — holding lock", e);
+        console.error("control room: getRun poll failed (holding lock)", e);
         return;
       }
 
@@ -446,7 +469,7 @@
       const p = await quiet(getProject(id), onAncillaryFailure);
       if (p) project = p;
       statusLine =
-        `Committed v${saved.version} — one new immutable version, ` +
+        `Committed v${saved.version}: one new immutable version, ` +
         `${saved.events.length} events. Move and resize are free; the next ` +
         `Regenerate or mix bills what it generates.`;
     } catch (e) {
@@ -531,7 +554,7 @@
     commitError = null;
     draftNote = null;
     clearDirectorActive();
-    statusLine = "Draft discarded — the committed versions are untouched.";
+    statusLine = "Draft discarded. The committed versions are untouched.";
   }
 
   /** The timeline moved underneath (a mix or commit landed elsewhere): the
@@ -546,7 +569,7 @@
     clearDirectorActive();
     statusLine =
       `Merged v${timeline.version}'s recorded durations, addresses and seeds ` +
-      `into the draft — your placement edits are untouched.`;
+      `into the draft. Your placement edits are untouched.`;
   }
 
   function checkDraftStale() {
@@ -574,7 +597,7 @@
     }
     draft = restored;
     draftNote =
-      "Draft restored from a previous session — not committed.";
+      "Draft restored from a previous session, not committed.";
     checkDraftStale();
   }
 
@@ -657,7 +680,7 @@
       const message =
         e instanceof ApiError
           ? e.code === "quota_exhausted"
-            ? `The daily request budget for ${String(detail.model_id ?? "the director model")} is spent — the turn was not billed.`
+            ? `The daily request budget for ${String(detail.model_id ?? "the director model")} is spent. The turn was not billed.`
             : e.message
           : e instanceof Error
             ? e.message
@@ -703,7 +726,7 @@
     viewing = "draft";
     historyTimeline = null;
     statusLine =
-      `Proposal applied to the draft — ${p.edits.length} ` +
+      `Proposal applied to the draft: ${p.edits.length} ` +
       `${p.edits.length === 1 ? "event" : "events"} moved. Commit writes one ` +
       `new version; nothing was billed for the move.`;
   }
@@ -712,7 +735,7 @@
     const turn = directorActive;
     if (!turn) return;
     markDirectorTurn(turn, "discarded");
-    statusLine = "Proposal discarded — the timeline is untouched.";
+    statusLine = "Proposal discarded. The timeline is untouched.";
   }
 
   /** The display document changed underneath a proposal (a commit, a restore,
@@ -796,7 +819,7 @@
   </div>
 {:else if status === "error"}
   <div class="center">
-    <p class="stop">Could not load this project — {error}</p>
+    <p class="stop">Could not load this project: {error}</p>
   </div>
 {:else if project}
   <div class="app">
@@ -805,7 +828,7 @@
       <div class="proj">
         <h1>{project.title}</h1>
         <span class="ver num">
-          {project.source_filename} · {project.duration_s == null ? "—" : `${project.duration_s.toFixed(2)}s`} · {project.scene_count} scenes
+          {project.source_filename} · {project.duration_s == null ? "n/a" : `${project.duration_s.toFixed(2)}s`} · {project.scene_count} scenes
         </span>
       </div>
       <span class="spacer"></span>
@@ -866,7 +889,7 @@
       <aside class="rail">
         {#if ancillaryFailed}
           <p class="load-warn" role="status">
-            Some data failed to load — the empty rows below are a failure, not
+            Some data failed to load. The empty rows below are a failure, not
             absence. See the console.
           </p>
         {/if}
@@ -898,10 +921,11 @@
             runs={displayRuns}
             liveRun={liveRun}
             locked={locked}
+            failed={ancillaryFailed}
           />
         </div>
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-evidence" id="tab-evidence" hidden={tab !== "evidence"}>
-          <EvidencePanel {qa} {scenes} />
+          <EvidencePanel {qa} {scenes} failed={ancillaryFailed} />
         </div>
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-director" id="tab-director" hidden={tab !== "director"}>
           <DirectorPanel
@@ -930,10 +954,10 @@
           />
         </div>
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-history" id="tab-history" hidden={tab !== "history"}>
-          <HistoryPanel {versions} runs={displayRuns} {events} {mixPeaks} mixRunId={project.mix_run_id ?? null} />
+          <HistoryPanel {versions} runs={displayRuns} {events} {mixPeaks} mixRunId={project.mix_run_id ?? null} failed={ancillaryFailed} />
         </div>
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-dossier" id="tab-dossier" hidden={tab !== "dossier"}>
-          <DossierPanel {dossier} loading={dossierRequested && dossier === null} />
+          <DossierPanel {dossier} loading={dossierRequested && !dossierLoaded} failed={dossierFailed} />
         </div>
       </aside>
     </div>
@@ -991,7 +1015,7 @@
       <ConfirmDialog
         open={true}
         title="Discard this draft?"
-        body="The draft's edits are lost — the committed versions are untouched. If you want to keep any of it, commit first."
+        body="The draft's edits are lost. The committed versions are untouched. If you want to keep any of it, commit first."
         confirmLabel="Discard draft"
         danger
         onconfirm={discardDraft}
@@ -1128,6 +1152,7 @@
 
   .tabs {
     display: flex;
+    flex-wrap: wrap;
     gap: 2px;
     padding: 7px 10px 0;
     border-bottom: 1px solid var(--line);
@@ -1193,6 +1218,32 @@
     .stage {
       grid-template-columns: 1fr;
       grid-template-rows: auto 1fr;
+    }
+    /* The chrome's fixed items (meter, budget chip, actions, help, theme)
+     * add up past ~820px, and a flex row would rather crush the project
+     * title to zero width than overflow. Let it wrap: the title row stays
+     * readable and nothing is hidden. */
+    .chrome {
+      flex-wrap: wrap;
+      height: auto;
+      min-height: var(--chrome-h);
+      padding-top: 4px;
+      padding-bottom: 4px;
+    }
+  }
+
+  /* Narrow chrome: the readiness meter and the budget chip are the first
+   * to go — their numbers live in the Spend tab and the Readiness panel,
+   * and at 480px they would push the theme toggle past the viewport edge.
+   * The core controls (Mix, Export, help, theme) stay. */
+  @media (max-width: 640px) {
+    .chrome {
+      gap: 8px;
+    }
+    .chrome :global(.meter),
+    .chrome :global(.budget),
+    .sep {
+      display: none;
     }
   }
 </style>

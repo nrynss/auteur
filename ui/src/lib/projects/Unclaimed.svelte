@@ -92,7 +92,7 @@
 
   function ledgerTime(ts: number): string {
     const d = new Date(ts * 1000);
-    if (!Number.isFinite(d.getTime())) return "—";
+    if (!Number.isFinite(d.getTime())) return "n/a";
     return d.toISOString().slice(5, 16).replace("T", " ");
   }
 
@@ -161,7 +161,7 @@
       const result = await attributeOrphanRows(pid);
       statusLine =
         `Claimed ${result.claimed} orphan ${result.claimed === 1 ? "row" : "rows"} into ` +
-        `${pid} — the money now reconciles into that project's budget.`;
+        `${pid}. The money now reconciles into that project's budget.`;
       dialog = null;
       await loadAll();
     } catch (e) {
@@ -218,7 +218,7 @@
       );
       statusLine = result.repaired
         ? `Adopted ${result.project.id} and repaired its unreadable record.`
-        : `Adopted ${result.project.id} — its artifacts are reachable again.`;
+        : `Adopted ${result.project.id}. Its artifacts are reachable again.`;
       dialog = null;
       await loadAll();
     } catch (e) {
@@ -237,7 +237,7 @@
   <header class="chrome">
     <div class="proj">
       <h1><Term term="unclaimed" /></h1>
-      <span class="sub">material this system owns that no project claims — money spent, storage held, addresses shared</span>
+      <span class="sub">material this system owns that no project claims: money spent, storage held, addresses shared</span>
     </div>
     <span class="spacer"></span>
     <HelpHint />
@@ -255,7 +255,7 @@
     </div>
   {/if}
   {#if failed}
-    <p class="stop">Could not load the archive — see the console.</p>
+    <p class="stop">Could not load the archive. See the console.</p>
   {:else if !ledger || !projects || !cache}
     <div class="center"><Spinner label="Loading archive" /><span class="dim">Loading archive…</span></div>
   {:else}
@@ -268,7 +268,7 @@
         <div class="fiction" role="alert">
           <span class="head">
             <Icon name="alert" size={12} />
-            <span class="word">Ledger unwritable — figures withheld</span>
+            <span class="word">Ledger unwritable: figures withheld</span>
           </span>
           <p>
             Nothing is being recorded, so every spend figure would read zero no
@@ -277,7 +277,7 @@
           </p>
         </div>
       {:else if ledger.total_count === 0}
-        <p class="empty">Every row has an owner — nothing to claim.</p>
+        <p class="empty">Every row has an owner. Nothing to claim.</p>
       {:else}
         <p class="note">
           Money spent and daily usage consumed that no project’s budget counts. Claiming
@@ -311,7 +311,7 @@
         </table>
         <div class="foot">
           <span class="count num">
-            {ledger.rows.length} of {ledger.total_count}{busy ? " — working…" : ""}
+            {ledger.rows.length} of {ledger.total_count}{busy ? " (working…)" : ""}
           </span>
           <span class="spacer"></span>
           <Button size="sm" variant="ghost" disabled={!canGoNewerLedger || busy} onclick={ledgerNewer}>newer</Button>
@@ -332,8 +332,8 @@
         <p class="empty">Every project prefix has a readable record.</p>
       {:else}
         <p class="note">
-          Artifacts that still cost storage while the whole product cannot see them —
-          no <span class="k">project.json</span>, so no route finds them. Adoption writes
+          Artifacts that still cost storage while the whole product cannot see them.
+          No <span class="k">project.json</span>, so no route finds them. Adoption writes
           the record for the prefix's own id; nothing is copied or moved.
         </p>
         <table class="rows">
@@ -348,7 +348,7 @@
                 <td class="r num">{p.total_bytes}</td>
                 <td class="s">
                   {#if p.unreadable}
-                    <Chip state="warn" label="Unreadable record" detail="exists but does not parse — adoption replaces it, recorded" />
+                    <Chip state="warn" label="Unreadable record" detail="exists but does not parse. Adoption replaces it, recorded" />
                   {/if}
                 </td>
                 <td class="s">
@@ -369,7 +369,7 @@
       <div class="fiction caveat" role="note">
         <span class="head">
           <Icon name="alert" size={12} />
-          <span class="word">These are not orphans — and they are never claimable</span>
+          <span class="word">These are not orphans, and they are never claimable</span>
         </span>
         <p>
           A cache key is <span class="k">sha256(endpoint, prompt, duration)</span>: an
@@ -429,7 +429,7 @@
           }}
         >
           {#each d.projects as p (p.id)}
-            <option value={p.id}>{p.title} — {p.id}</option>
+            <option value={p.id}>{p.title}: {p.id}</option>
           {/each}
         </select>
       {/snippet}
@@ -455,7 +455,7 @@
       open={true}
       title={`Adopt ${d.prefix.project_id}?`}
       body={d.prefix.unreadable
-        ? "This prefix holds a project.json that does not parse. Adoption replaces it with a new record — the one deliberate overwrite — recorded in the event log. The artifacts underneath become reachable again."
+        ? "This prefix holds a project.json that does not parse. Adoption replaces it with a new record (the one deliberate overwrite), recorded in the event log. The artifacts underneath become reachable again."
         : "Writes the project record for this prefix's own id. The artifacts underneath become reachable through every normal screen; nothing is copied or moved."}
       confirmLabel={busy ? "Adopting…" : "Adopt"}
       busy={busy}

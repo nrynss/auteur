@@ -92,7 +92,7 @@ export function loudnessDelta(
   measured: number | null | undefined,
   target: number,
 ): string {
-  if (measured == null) return "—";
+  if (measured == null) return "n/a";
   const delta = measured - target; // negative = under target
   if (Math.abs(delta) < 0.05) return "at target";
   return delta < 0
@@ -111,5 +111,5 @@ export function friendlyEventType(type: string): string {
 }
 
 export function friendlyActor(actor: string): string {
-  return actor === "system" ? "system" : actor || "—";
+  return actor === "system" ? "system" : actor || "n/a";
 }

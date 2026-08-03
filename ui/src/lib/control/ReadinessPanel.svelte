@@ -15,9 +15,13 @@
     /** Live mid-flight run from the poller (merged into runs by ControlRoom). */
     liveRun?: RunOut | null;
     locked?: boolean;
+    /** The run list fetch failed. An absent run section must not read as
+     * "nothing ever ran" — that is a checkable claim and is false when the
+     * request simply failed. */
+    failed?: boolean;
   }
 
-  let { project, runs, liveRun = null, locked = false }: Props = $props();
+  let { project, runs, liveRun = null, locked = false, failed = false }: Props = $props();
 
   // Prefer an explicitly tracked live run; else the most recent stage-bearing
   // run; else the most recent run overall (export may have no stages).
@@ -72,6 +76,8 @@
     {:else if locked && liveRun}
       <p class="empty">Stages will appear as they complete.</p>
     {/if}
+  {:else if failed}
+    <p class="empty">Run status could not be loaded.</p>
   {/if}
 </div>
 

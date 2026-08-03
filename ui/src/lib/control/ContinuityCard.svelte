@@ -51,7 +51,7 @@
 </script>
 
 <Evidence
-  label={`${issue.compared_with ?? "—"} → ${issue.scene_id ?? "—"}`}
+  label={`${issue.compared_with ?? "n/a"} → ${issue.scene_id ?? "n/a"}`}
   value={recorded}
   source={source}
   sourcePhrase="recorded at"
@@ -66,8 +66,8 @@
           <span class="ph" aria-hidden="true"></span>
         {/if}
         <figcaption class="num">
-          <span>{issue.compared_with ?? "—"}</span>
-          <span>luma {a == null ? "—" : a.toFixed(1)}</span>
+          <span>{issue.compared_with ?? "n/a"}</span>
+          <span>luma {a == null ? "n/a" : a.toFixed(1)}</span>
         </figcaption>
       </figure>
       <figure>
@@ -77,8 +77,8 @@
           <span class="ph" aria-hidden="true"></span>
         {/if}
         <figcaption class="num">
-          <span>{issue.scene_id ?? "—"}</span>
-          <span>luma {b == null ? "—" : b.toFixed(1)}</span>
+          <span>{issue.scene_id ?? "n/a"}</span>
+          <span>luma {b == null ? "n/a" : b.toFixed(1)}</span>
         </figcaption>
       </figure>
     </div>
@@ -88,7 +88,7 @@
       below is from the scene analysis. Threshold
       <b class="num">{threshold.toFixed(1)}</b>
       {#if confidence != null}, confidence <b class="num">{confidence}</b>{/if}.
-      Nothing has been corrected — decide whether the difference is intentional.
+      Nothing has been corrected. Decide whether the difference is intentional.
     </p>
   {/snippet}
 </Evidence>

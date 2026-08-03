@@ -82,7 +82,7 @@
    * mono, UTC (the ledger's own clock). Full seconds on hover. */
   function ledgerTime(ts: number): string {
     const d = new Date(ts * 1000);
-    if (!Number.isFinite(d.getTime())) return "—";
+    if (!Number.isFinite(d.getTime())) return "n/a";
     return d.toISOString().slice(5, 16).replace("T", " ");
   }
 
@@ -97,7 +97,7 @@
     <div class="fiction" role="alert">
       <span class="head">
         <Icon name="alert" size={12} />
-        <span class="word">Costs not being recorded — figures withheld</span>
+        <span class="word">Costs not being recorded: figures withheld</span>
       </span>
       <p>
         Nothing is being recorded, so every spend figure would read zero no
@@ -105,7 +105,7 @@
         they are absent ones, so they are not shown
         (<span class="k">docs/api.md §3.10</span>).
       </p>
-      <p>Fix storage writes, then reload — the ledger is append-only and nothing already recorded is lost.</p>
+      <p>Fix storage writes, then reload. The ledger is append-only and nothing already recorded is lost.</p>
     </div>
   {:else if !budget && !quota}
     <p class="empty">No spend recorded yet.</p>
@@ -124,8 +124,8 @@
               <i style={`width:${actualPct}%`}></i>
             </div>
             <div class="legend">
-              <span><b class="num">{formatCost(budget.spent_actual)}</b> actual — the provider reported a cost</span>
-              <span class="dim"><b class="num">{formatCost(budget.spent_estimated)}</b> estimated — priced from providers.toml</span>
+              <span><b class="num">{formatCost(budget.spent_actual)}</b> actual: the provider reported a cost</span>
+              <span class="dim"><b class="num">{formatCost(budget.spent_estimated)}</b> estimated: priced from providers.toml</span>
             </div>
             {#if budget.budget_usd != null}
               <p class="note">
@@ -134,7 +134,7 @@
                 budget grounds; billable repair still needs explicit consent.
               </p>
             {:else}
-              <p class="note">No budget set — spend is tracked, not capped.</p>
+              <p class="note">No budget set. Spend is tracked, not capped.</p>
             {/if}
           </div>
         {/snippet}
@@ -172,7 +172,7 @@
     {/if}
 
     {#if models.length > 0}
-      <p class="eyebrow"><Term term="usage" /> — all projects</p>
+      <p class="eyebrow"><Term term="usage" /> · all projects</p>
       <table class="rows">
         <thead>
           <tr>
@@ -192,14 +192,14 @@
               <!-- requests_per_day is the binding constraint, not RPM:
                    gemini-2.5-flash allows 20/day (providers.toml). -->
               <td class="r num">{m.per_day.used}</td>
-              <td class="r num">{m.per_day.remaining ?? "—"}</td>
+              <td class="r num">{m.per_day.remaining ?? "n/a"}</td>
               <td class="s"><Chip state={quotaState(m.status)} label={m.status} /></td>
             </tr>
           {/each}
         </tbody>
       </table>
       <p class="note">
-        Daily request count — the binding constraint, not requests per minute.
+        Daily request count: the binding constraint, not requests per minute.
         Counted from our own ledger, not a provider balance: Google exposes no
         remaining-balance field, so this is a guide and never authoritative.
       </p>
@@ -246,7 +246,7 @@
         <button class="mini" disabled={!canGoOlder || ledgerLoading} onclick={onLedgerOlder}>older</button>
       </div>
       <p class="note">
-        Failed calls are included — they may still have consumed provider
+        Failed calls are included. They may still have consumed provider
         quota, and the totals above sum them too. Each row carries its own
         <span class="src">est</span>/<span class="src">actual</span> source;
         the Spend summary's numbers reconcile to these rows.

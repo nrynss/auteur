@@ -67,8 +67,8 @@ describe("loudnessDelta", () => {
   });
 
   it("renders absent measurements as a dash", () => {
-    expect(loudnessDelta(null, -14)).toBe("—");
-    expect(loudnessDelta(undefined, -14)).toBe("—");
+    expect(loudnessDelta(null, -14)).toBe("n/a");
+    expect(loudnessDelta(undefined, -14)).toBe("n/a");
   });
 });
 

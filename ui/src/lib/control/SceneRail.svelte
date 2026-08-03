@@ -20,7 +20,7 @@
 <div class="rail" role="group" aria-label="Scenes">
   {#if scenes.length === 0}
     <span class="empty">
-      {failed ? "Scenes could not be loaded." : "No scenes yet — analysis has not run."}
+      {failed ? "Scenes could not be loaded." : "No scenes yet. Analysis has not run."}
     </span>
   {:else}
     {#each scenes as s (s.id)}

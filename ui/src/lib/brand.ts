@@ -6,7 +6,7 @@
  * build renders byte-identical in appearance to before this existed):
  *
  *   VITE_BRAND_NAME             the product name               ("Auteur")
- *   VITE_BRAND_TITLE_TEMPLATE   "{name} — {page}"              (default)
+ *   VITE_BRAND_TITLE_TEMPLATE   "{name} · {page}"              (default)
  *   VITE_BRAND_FAVICON          any href — data URI or public  (default:
  *                               path under /public              inline SVG mark)
  *
@@ -26,12 +26,12 @@ export const BRAND_NAME: string =
   import.meta.env.VITE_BRAND_NAME || "Auteur";
 
 export const BRAND_TITLE_TEMPLATE: string =
-  import.meta.env.VITE_BRAND_TITLE_TEMPLATE || "{name} — {page}";
+  import.meta.env.VITE_BRAND_TITLE_TEMPLATE || "{name} · {page}";
 
-/** "Control room" → "Auteur — Control room". Pure so the template
+/** "Control room" → "Auteur · Control room". Pure so the template
  * mechanics are unit-testable; a rebranded template moves the name and page
  * anywhere ("{name} · {page}"). replaceAll, not replace: a template that
- * repeats a placeholder ("{name} — {page} — {name}") must render every
+ * repeats a placeholder ("{name} · {page} · {name}") must render every
  * occurrence, and a template without placeholders is a legal — if odd —
  * config used verbatim. */
 export function formatPageTitle(
