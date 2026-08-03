@@ -56,6 +56,10 @@ class ModelSpec:
     prompt_field: Optional[str] = None
     duration_field: Optional[str] = None
     duration_type: Optional[str] = None     # "int" | "float"
+    # Daily hard cap in USD for the workspace, driven by the ElevenLabs
+    # usage analytics (foleyflow.elevenlabs.cap_status). None or <= 0 = off;
+    # when set, billable work against the paid tier is refused past the cap.
+    hard_cap_usd: Optional[float] = None
     extra_arguments: Dict[str, Any] = field(default_factory=dict)
 
 

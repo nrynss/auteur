@@ -66,6 +66,18 @@ def _isolate_ambient_deploy_config(tmp_path, monkeypatch):
     from foleyflow.projects import invalidate_event_log_cache
     invalidate_event_log_cache()
 
+    # The ElevenLabs usage adapter must never reach api.elevenlabs.io from the
+    # offline suite. Pin the HTTP seam so a test that forgets to stub
+    # `elevenlabs.today_usage` degrades to the ledger fallback instead of
+    # spending network I/O (and never spends money).
+    import foleyflow.elevenlabs as elevenlabs
+
+    def _offline_usage_post(path: str, payload: dict) -> dict:
+        raise elevenlabs.ElevenLabsUsageError(
+            f"offline: usage fetch would POST {path} (conftest pin)")
+
+    monkeypatch.setattr(elevenlabs, "_http_post", _offline_usage_post)
+
     yield
 
     # Event-log cache is scope-keyed; clear still keeps suite tidy across

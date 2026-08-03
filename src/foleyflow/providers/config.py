@@ -177,6 +177,7 @@ def get_model_spec(model_id: str, *, _config: Optional[dict] = None) -> ModelSpe
         prompt_field=raw.get("prompt_field"),
         duration_field=raw.get("duration_field"),
         duration_type=raw.get("duration_type"),
+        hard_cap_usd=raw.get("hard_cap_usd"),
         extra_arguments=raw.get("extra_arguments", {}),
     )
 

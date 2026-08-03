@@ -89,6 +89,13 @@ duration_max_s = 30.0
 prompt_field = "prompt"
 duration_field = "duration_seconds"
 duration_type = "float"
+# Daily hard cap in USD (the workspace analytics figure, used as USD), driven
+# by foleyflow.elevenlabs.cap_status. This is a DEMO GUARD, not the advisory
+# project budget: once today's real ElevenLabs spend crosses it, billable
+# regenerate/mix work is refused with 429 spend_cap_reached until the next
+# UTC midnight. Set to 0 to disable. Measured demo days: $1.76 and $5.27
+# (2026-08-02/03), so 15 leaves a full day of headroom while capping blowout.
+hard_cap_usd = 15.0
 
 [models."fal-ai/mmaudio-v2/text-to-audio"]
 adapter = "fal"

@@ -174,6 +174,30 @@ class QuotaExhausted(ApiError):
         )
 
 
+class SpendCapReached(ApiError):
+    """The paid SFX tier's daily dollar cap is spent (a hard stop, unlike the
+    advisory project budget).
+
+    Measured from the ElevenLabs workspace analytics (the real bill, not the
+    ledger's estimates); ``resets_at`` is the next UTC midnight. The demo
+    must never silently run out of credits, so once the cap is crossed the
+    billable entry points refuse until it resets — free reads and the
+    advisory budget are unaffected.
+    """
+
+    status_code = 429
+    code = "spend_cap_reached"
+
+    def __init__(self, model_id: str, *, cap_usd: Optional[float] = None,
+                 spend_usd: Optional[float] = None,
+                 resets_at: Optional[str] = None):
+        super().__init__(
+            f"Daily spend cap for {model_id} is reached",
+            detail={"model_id": model_id, "cap_usd": cap_usd,
+                    "spend_usd": spend_usd, "resets_at": resets_at},
+        )
+
+
 class ProviderError(ApiError):
     status_code = 502
     code = "provider_error"
