@@ -26,6 +26,8 @@ export type DossierResponse = Schema["DossierResponse"];
 export type BudgetResponse = Schema["BudgetResponse"];
 export type PeaksResponse = Schema["PeaksResponse"];
 export type QuotaResponse = Schema["QuotaResponse"];
+export type ConfigResponse = Schema["ConfigResponse"];
+export type IntegrationOut = Schema["IntegrationOut"];
 export type LedgerRowOut = Schema["LedgerRowOut"];
 export type LedgerRowsResponse = Schema["LedgerRowsResponse"];
 export type AttributionOut = Schema["AttributionOut"];
@@ -116,6 +118,15 @@ export function getDossier(id: string): Promise<DossierResponse> {
 /** Model quota is global, not per project (docs/api.md §3.10). */
 export function getQuota(): Promise<QuotaResponse> {
   return api<QuotaResponse>("/api/v1/quota");
+}
+
+// -- read-only deployment configuration (task 20, docs/api.md §3.17) --------
+// One read-only sheet: the same checks `foleyflow doctor` prints, the baked
+// build identity, and which integrations are configured — presence only,
+// never a credential value.
+
+export function getConfig(): Promise<ConfigResponse> {
+  return api<ConfigResponse>("/api/v1/config");
 }
 
 /** Individual cost transactions for this project, newest first (docs/api.md

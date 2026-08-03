@@ -31,6 +31,7 @@ from foleyflow.api.schemas import (
     BudgetModelOut,
     BudgetResponse,
     BudgetThresholdOut,
+    ConfigResponse,
     CreateProjectRequest,
     CreateProjectResponse,
     DirectorEditOut,
@@ -45,6 +46,7 @@ from foleyflow.api.schemas import (
     LedgerRowOut,
     LedgerRowsResponse,
     HealthResponse,
+    IntegrationOut,
     ModelQuotaOut,
     PeaksResponse,
     ProjectDetail,
@@ -1149,6 +1151,47 @@ def create_app(store: Optional[ProjectStore] = None,
             ledger_writable=ledger_writable(),
             models=[ModelQuotaOut(**q.to_dict()) for q in get_all_quotas()])
 
+    @app.get(f"{API_PREFIX}/config", response_model=ConfigResponse,
+             tags=["meta"])
+    def config() -> ConfigResponse:
+        """The read-only deployment sheet (task 20, docs/api.md §3.17): is
+        this deployment wired up correctly? Same verdicts as `foleyflow
+        doctor`, the baked build identity, and which integrations are
+        configured — presence only, never a credential value (the service
+        deploys --allow-unauthenticated, so a value-echoing route would be an
+        open credential endpoint; rotation stays a Secret Manager operation).
+        """
+        from foleyflow.api.integrations import integration_status
+        from foleyflow.ledger import ledger_writable
+        from foleyflow.quota import get_all_quotas
+
+        # The storage probe and the worker probe are the same ones /health
+        # runs; the worker is always probed here (doctor's rule — a platform-
+        # ok API with an unplugged GPU is not wired up).
+        try:
+            store.backend.exists("health/probe")
+            storage = "ok"
+        except Exception:
+            storage = "unavailable"
+        worker = _worker_health()
+
+        quota_models = [q.to_dict() for q in get_all_quotas()]
+        checks = _config_checks(
+            worker=worker, storage=storage,
+            ledger_writable=ledger_writable(),
+            quota_models=quota_models)
+
+        return ConfigResponse(
+            ok=not any(c["state"] == "blocked" for c in checks),
+            version=VERSION,
+            brand=BRAND_NAME,
+            git_sha=GIT_SHA,
+            build_time=BUILD_TIME,
+            checks=[ReadinessItem(**c) for c in checks],
+            integrations=[IntegrationOut(**row)
+                          for row in integration_status()],
+        )
+
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/budget",
              response_model=BudgetResponse, tags=["projects"])
     def get_budget(project_id: str) -> BudgetResponse:
@@ -1543,6 +1586,122 @@ def _worker_health() -> WorkerHealth:
         auth_required=payload.get("auth_required"),
         auth_configured=payload.get("auth_configured"),
     )
+
+
+def _config_checks(*, worker: WorkerHealth, storage: str,
+                   ledger_writable: bool, quota_models: list) -> list:
+    """The read-only config screen's verdict rows (task 20, docs/api.md
+    §3.17) — the same checks `foleyflow doctor` prints, with the same states
+    and the same fail-closed rules, so the screen and the CLI cannot drift:
+
+    - storage blocked on anything but "ok";
+    - ledger_writable must be STRICTLY true (when false, every spend figure
+      is fiction, §3.10);
+    - a worker that requires a bearer token this deployment lacks is blocked
+      even though /health reads healthy;
+    - ANY quota-blocked model is a STOP (not only the default analysis VLM);
+    - otherwise the default VLM's usage decides warn vs ok.
+
+    The API check is self-referential by construction (the page was served by
+    this API), so it reports the health verdict as evidence rather than a
+    reachability claim.
+    """
+    from foleyflow.analyze import DEFAULT_MODEL
+
+    checks: list = []
+
+    api_state = "ok" if storage == "ok" else "degraded"
+    checks.append({
+        "key": "api", "label": "API reachable", "state": "ok",
+        "detail": f"status={api_state} version={VERSION}",
+    })
+
+    if storage == "ok":
+        checks.append({"key": "storage", "label": "storage ok",
+                        "state": "ok"})
+    else:
+        checks.append({
+            "key": "storage", "label": "storage ok", "state": "blocked",
+            "detail": f"storage={storage!r} — reads/writes will fail",
+        })
+
+    w = worker or WorkerHealth(status="unknown")
+    wstatus = w.status
+    if wstatus is None:
+        checks.append({"key": "worker", "label": "worker", "state": "blocked",
+                        "detail": "no worker probe in config assembly"})
+    elif wstatus == "ok":
+        bits = [wstatus]
+        if w.device:
+            bits.append(w.device)
+        if w.tier:
+            bits.append(f"tier={w.tier}")
+        detail = "  ".join(bits)
+        if w.auth_required and w.auth_configured is False:
+            checks.append({
+                "key": "worker", "label": "worker", "state": "blocked",
+                "detail": f"{detail} — auth required but "
+                           "FOLEYFLOW_SFX_WORKER_TOKEN unset",
+            })
+        else:
+            checks.append({"key": "worker", "label": "worker",
+                            "state": "ok", "detail": detail})
+    elif wstatus == "not_applicable":
+        checks.append({
+            "key": "worker", "label": "worker", "state": "warn",
+            "detail": f"n/a (tier {w.tier or '?'} is a hosted API)",
+        })
+    elif wstatus == "loading":
+        checks.append({
+            "key": "worker", "label": "worker", "state": "blocked",
+            "detail": "model still loading — generations will 503 until ready",
+        })
+    else:
+        detail = w.detail or wstatus
+        checks.append({
+            "key": "worker", "label": "worker", "state": "blocked",
+            "detail": f"{wstatus}: {detail}" if detail != wstatus
+                      else str(wstatus),
+        })
+
+    if ledger_writable is True:
+        checks.append({"key": "ledger", "label": "ledger writable",
+                        "state": "ok"})
+    else:
+        checks.append({
+            "key": "ledger", "label": "ledger writable", "state": "blocked",
+            "detail": f"ledger_writable={ledger_writable!r} — "
+                       "spend figures are fiction",
+        })
+
+    blocked = [m for m in quota_models
+               if (m.get("status") or "ok") == "blocked"]
+    models = {m.get("model_id"): m for m in quota_models if m.get("model_id")}
+    analysis = models.get(DEFAULT_MODEL)
+    if blocked:
+        names = ", ".join(m.get("model_id") or "?" for m in blocked)
+        checks.append({"key": "quota", "label": "quota", "state": "blocked",
+                        "detail": f"blocked model(s): {names}"})
+    elif analysis is None:
+        checks.append({
+            "key": "quota", "label": "quota", "state": "ok",
+            "detail": "no limit declared for the default analysis model",
+        })
+    else:
+        day = analysis.get("per_day") or {}
+        used, limit = day.get("used"), day.get("limit")
+        usage = (f"{used}/{limit} today" if limit is not None
+                 else f"{used} today (no daily limit)")
+        status = analysis.get("status") or "ok"
+        label = f"quota ({DEFAULT_MODEL})"
+        if status == "warn":
+            checks.append({"key": "quota", "label": label, "state": "warn",
+                            "detail": f"{usage} — nearing the estimated limit"})
+        else:
+            checks.append({"key": "quota", "label": label, "state": "ok",
+                            "detail": usage})
+
+    return checks
 
 
 def _stages_by_run(store: ProjectStore, project_id: str) -> dict:

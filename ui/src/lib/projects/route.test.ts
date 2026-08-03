@@ -34,4 +34,10 @@ describe("parseRoute", () => {
     expect(parseRoute("/unclaimed")).toEqual({ name: "unclaimed" });
     expect(parseRoute("/unclaimed/")).toEqual({ name: "unclaimed" });
   });
+
+  it("maps /config to the deployment sheet", () => {
+    expect(parseRoute("/config")).toEqual({ name: "config" });
+    expect(parseRoute("/config/")).toEqual({ name: "config" });
+    expect(parseRoute("/configure")).toEqual({ name: "home" });
+  });
 });

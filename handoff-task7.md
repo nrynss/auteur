@@ -834,12 +834,18 @@ confirm → kick off analysis. No UI exists for any of this today.
 
 **Landed (7.13):** `ui/src/lib/projects/` — index, create form, presigned PUT with real XHR progress, confirm upload, poll ingest, kick analyze. Routes: `/`, `/projects/new`, `/projects/{id}`.
 
-## 7.14 Polish — M
+## 7.14 Polish — **MOVED to `handoff.md` task 22**
 
-**Depends on:** everything.
+Every other unit in this file is done, so polish is no longer a sub-task of
+building the control room — it is the pass over a finished one, and it now
+covers routes this file never scoped (the unclaimed archive) plus screens that
+do not exist yet (the configuration view, task 21). It also has to follow the
+rename (task 20) so its copy pass happens once.
 
-Accessibility pass, keyboard map, empty and error states, the pass that decides
-whether it reads as a tool.
+Scoped properly in `handoff.md` task 22: the keyboard map that was never
+assembled, focus order, loading/empty/error states made consistent, contrast in
+both themes, one voice for the copy, and an automated accessibility check in CI
+so the pass does not decay. Do not build it from this stub.
 
 ## 7.15 Spend tab — S — **DONE**
 

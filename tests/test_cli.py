@@ -236,6 +236,41 @@ def test_doctor_json_mode(client, capsys, monkeypatch):
     assert worker["state"] in ("ok", "warn", "blocked")
 
 
+def test_config_screen_rows_match_doctor(client, capsys, monkeypatch):
+    """Task 20 acceptance, enforced mechanically: the read-only config screen
+    shows the same checks `foleyflow doctor` prints, with the same verdicts.
+    Run both against the same app and compare the five shared rows.
+
+    (The build row is not shared: doctor compares the deployed SHA against the
+    operator's local HEAD, which a browser cannot; the screen renders the
+    deployed identity with doctor's origin-based severity instead. The cache
+    row is CLI-only — it probes the operator's local storage for a timeline
+    file.)
+    """
+    from foleyflow.api.app import API_PREFIX
+
+    monkeypatch.setattr("foleyflow.cli._local_git_head", lambda: None)
+    # Local base_url so the unstamped build row is WARN, not STOP — the rows
+    # under comparison are the five shared deployment checks.
+    monkeypatch.setattr(client, "base_url", "http://127.0.0.1:8000")
+    assert run(client, "--json", "doctor") == EXIT_OK
+    doctor = json.loads(capsys.readouterr().out)
+
+    # The CLI's own client wraps the in-process TestClient (fixture) — hit
+    # the same app through it.
+    r = client._http.get(f"{client.base_url}{API_PREFIX}/config")
+    assert r.status_code == 200, r.text
+    config = r.json()
+
+    doctor_by_key = {c["key"]: c for c in doctor["checks"]}
+    config_by_key = {c["key"]: c for c in config["checks"]}
+    for key in ("api", "storage", "worker", "ledger", "quota"):
+        assert config_by_key[key]["state"] == doctor_by_key[key]["state"], key
+        assert config_by_key[key]["label"] == doctor_by_key[key]["label"], key
+        assert config_by_key[key].get("detail") == \
+            doctor_by_key[key].get("detail"), key
+
+
 def test_doctor_timeline_cold_cache_is_warn_not_stop(
         client, capsys, monkeypatch, timeline_file, prewarm_backend):
     """Misses are demo risk (WARN), not a hard fail — prewarm first."""

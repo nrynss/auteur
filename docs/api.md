@@ -1137,4 +1137,87 @@ commit's existing merge affordance does not already handle.
 
 ---
 
+### 3.17 Deployment configuration — read-only
+
+```
+GET /api/v1/config
+```
+
+`200` — one read-only sheet answering "is this deployment wired up
+correctly?": the same verdicts `foleyflow doctor` computes from `/health` and
+`/quota` (API, storage, worker, ledger writability, quota), the deployed build
+identity, and which integrations are configured.
+
+```json
+{
+  "ok": false,
+  "version": "0.1.0",
+  "brand": "FoleyFlow",
+  "git_sha": "deadbeefcafebabe0123456789abcdef01234567",
+  "build_time": "2026-08-02T12:00:00Z",
+  "checks": [
+    {"key": "api", "label": "API reachable", "state": "ok", "detail": "status=ok version=0.1.0"},
+    {"key": "storage", "label": "storage ok", "state": "blocked", "detail": "storage='unavailable' — reads/writes will fail"},
+    {"key": "worker", "label": "worker", "state": "blocked", "detail": "unreachable: connection refused"},
+    {"key": "ledger", "label": "ledger writable", "state": "blocked", "detail": "ledger_writable=False — spend figures are fiction"},
+    {"key": "quota", "label": "quota", "state": "blocked", "detail": "blocked model(s): gemini-2.5-flash"}
+  ],
+  "integrations": [
+    {"key": "b2", "label": "Backblaze B2 storage", "source": "secret-manager", "configured": true, "env": ["B2_APPLICATION_KEY", "B2_KEY_ID"], "missing": [], "unresolved": []},
+    {"key": "gemini", "label": "Gemini analysis (scene VLM)", "source": "secret-manager", "configured": false, "env": ["GEMINI_API_KEY", "GOOGLE_API_KEY"], "missing": ["GEMINI_API_KEY"], "unresolved": []}
+  ]
+}
+```
+
+**Read-only, and that is the point.** The service deploys
+`--allow-unauthenticated` with no authentication anywhere in the app, so a
+mutation route would be an open credential endpoint. This endpoint only
+reads; writing or rotating credentials stays a Secret Manager operation
+(scripts/setup_secrets.sh) until authentication exists. **No credential
+value ever appears** — `integrations[].env` carries variable *names* only,
+and presence is a boolean. A variable whose value is a literal Secret Manager
+reference (`projects/{p}/secrets/{s}/versions/{n}` — the classic mistake of
+putting the reference in `env.public.yaml` instead of letting Cloud Run
+resolve it) is reported in `unresolved` by name, never by value.
+
+`checks` are the same rows `foleyflow doctor` prints, with the same states
+and the same fail-closed rules: `ledger_writable` must be strictly `true`
+(§3.10 — when false, every spend figure is fiction); any quota-blocked model
+is a STOP; a worker that requires a bearer token this deployment lacks is a
+STOP even though `/health` reads healthy. The worker is always probed (the
+same `?worker=true` probe doctor uses), never skipped. `ok` is true exactly
+when no check is `blocked` — scoped to the server-computed checks
+(api/storage/worker/ledger/quota); the build row is rendered by the screen,
+not the server (below).
+
+`git_sha`/`build_time` are the baked build stamp (`null` when unstamped — a
+local process). The screen shows them as the deployed identity; the
+CLI-only "deployed build matches local HEAD" comparison (`foleyflow doctor`)
+needs the operator's local checkout and cannot be answered by a browser, so
+an unstamped process renders the same origin-based severity doctor uses:
+`warn` on a loopback origin, `blocked` on a non-local one.
+
+`brand` is the API's runtime product name (`FOLEYFLOW_BRAND_NAME`, task 19),
+the one `/docs` and the UI-not-built page render. The screen compares it
+against the UI bundle's own build-time name and reports a disagreement as a
+blocked "brand agreement" row: a deployment whose build-time and runtime
+brand disagree renders as two different products, which is exactly the
+confusion this screen exists to remove. A name is not a credential, so it
+may travel.
+
+`integrations[].source` is the deployment contract, not a runtime
+provenance claim: `secret-manager` for the vars `deploy.sh`/`setup_secrets.sh`
+bind via `--set-secrets` (B2 key pair, Gemini, ElevenLabs, the SFX worker
+token), `env` for everything `env.public.yaml` carries (OpenAI, fal, the SFX
+worker URL). A self-hosting deployment that mounts a secret differently still
+sees the contract label, so the screen is honest that this is the product's
+binding, not a value inspection.
+
+| HTTP | `code` | When |
+|---|---|---|
+| 200 | — | The sheet assembled |
+| 503 | `storage_unavailable` | Storage cannot answer the probe |
+
+---
+
 ## 4. Concurrency

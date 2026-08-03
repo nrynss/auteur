@@ -16,14 +16,16 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   `docs/api.md` is written ahead of the code and treated as source of truth;
   every endpoint in it is live and covered by tests.
 - Task numbers are the current queue; DONE items keep their titles. Remaining:
-  **20** (rename to Auteur), **21** (configuration view), **7.14** (the
-  control room's polish pass), then **22** (repo and image identity) once
-  nothing else is in flight. Tasks **9–19** are **DONE**. `docs/roadmap.md` is
-  the product document describing the two futures 18–21 enable; it is not an
-  engineering plan and carries no task numbers.
+  **20** (rename to Auteur), **21** (configuration view), **22** (polish),
+  then **23** (repo and image identity) once nothing else is in flight. Tasks
+  **1–19** are **DONE**, including **7** — the control room is complete, and
+  its polish pass was promoted out of `handoff-task7.md` into task 22 rather
+  than staying a sub-unit of a finished build. `docs/roadmap.md` is the product
+  document describing the two futures 18–21 enable; it is not an engineering
+  plan and carries no task numbers.
 - CI (10), build identity (11), post-deploy smoke (12), doctor (13), live paid
   + fallback SFX (14), demo evidence (15), and Secret Manager (16) are in place.
-- `uv run pytest -q` → **783 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **798 passed, 1 skipped**. No provider credentials
   required for tests: the billed calls are stubbed at two seams,
   `stems.generate_many` and `sfx_cache.generate_canonical_wav`. Everything else
   — ffmpeg, the mix, the shared cache, storage, the Genblaze pipelines — runs
@@ -130,7 +132,7 @@ will. Project-less rows are never stranded: `POST /projects/{id}/attributions`
 unattributed rows written before a time, first-come by `before` so a row can
 never land in two projects.
 
-## 7. Control room UI — L — **see `handoff-task7.md`** (in progress)
+## 7. Control room UI — L — **see `handoff-task7.md`** — **DONE**
 
 SPEC §6.1, and the only thing left. Scoped in full in its own file because it
 outgrew a section: it is not a status page but a director's tool — a directly
@@ -387,6 +389,30 @@ brand-neutral or never rendered. Externalise only what a user sees.
 of the default name anywhere in the served UI, and the default build is
 byte-identical in appearance to today.
 
+**Landed:** `ui/src/lib/brand.ts` (`BRAND_NAME`, `BRAND_TITLE_TEMPLATE`, a pure
+`formatPageTitle`, and `brandPageTitle`) reading `VITE_BRAND_*` at build time;
+`vite.config.ts` injects the static `<title>` and favicon from the same
+template so pre-hydration and runtime titles cannot drift; the Dockerfile UI
+stage takes `VITE_BRAND_*` build args. Ten rendered strings, not the eight
+scoped here — Director mode's two chat sender labels landed after this file
+list was written and render the name too.
+
+CI enforces the acceptance at the **bundle** level, which is the only place it
+is real: `import.meta.env` overrides cannot be exercised from vitest, so the
+job builds twice and greps `api/static/` — the default build must carry the
+brand and the exact default title, the rebranded build must contain zero
+occurrences of it.
+
+**Review follow-up (landed):** the brand also shipped from the *server*, which
+the bundle grep does not cover — `FastAPI(title=...)` (served at
+`/openapi.json` and rendered on `/docs`) and the "UI not built" fallback page,
+which is what a self-hosting partner sees exactly when their build failed.
+Both now read `FOLEYFLOW_BRAND_NAME` via `api/brand.py`, the same import-time
+contract as `GIT_SHA`. Separately, `formatPageTitle` used `String.replace`
+with a string pattern, which substitutes only the first occurrence — a
+`{name} — {page} — {name}` template rendered the second placeholder
+literally; `replaceAll` throughout, pinned by a test.
+
 **Landed (19):** `ui/src/lib/brand.ts` — `BRAND_NAME`, `BRAND_TITLE_TEMPLATE`
 and `brandPageTitle(page)` read `VITE_BRAND_NAME` / `VITE_BRAND_TITLE_TEMPLATE`
 at build time (Vite statically replaces `import.meta.env.VITE_BRAND_*`), with
@@ -515,14 +541,202 @@ and CI proves a rebranded build carries no trace of the default. A hardcoded
 name here would fail that job, and this screen is one a white-label operator
 looks at first.
 
+**Report the brand configuration, and detect a split one.** Task 19 left the
+name configured in two places by two mechanisms at two different times:
+`VITE_BRAND_NAME` is baked into the bundle at `docker build`, and
+`FOLEYFLOW_BRAND_NAME` is read from the environment at runtime
+(`api/brand.py`). A rebranding deployment must set both, and they are separated
+by a deploy step — so setting one and forgetting the other is the *normal*
+failure, not an exotic one. Set only the build arg and `/docs` plus the
+UI-not-built page keep the old name; set only the env var and the entire SPA
+does. Nothing detects it today.
+
+The check is cheap and needs no new mechanism: the SPA already knows its own
+compiled-in `BRAND_NAME`, so it compares that against the value the API
+reports and says so when they disagree. Same shape as `doctor`'s `git_sha`
+versus local HEAD, and the same reason — a deployment that half-applied a
+change should say so rather than look fine from one angle.
+
 **Acceptance:** every check `foleyflow doctor` performs is visible in the UI
 with the same verdict, no credential value appears in any response or in the
-rendered page, and CI's rebrand job still finds zero occurrences of the
-default brand in the built output.
+rendered page, a deployment whose build-time and runtime brand disagree is
+reported as such rather than rendering as two different products, and CI's
+rebrand job still finds zero occurrences of the default brand in the built
+output.
 
-## 22. Repo and image identity — S
+**Landed (21):** `GET /api/v1/config` (docs/api.md §3.17) + a `/config` route
+rendering `ui/src/lib/config/ConfigScreen.svelte`.
 
-**Depends on:** 20. **Files:** `pyproject.toml` (`[project.scripts]`),
+- **One read-only sheet, same verdicts as doctor — enforced mechanically, not
+  asserted in prose.** The endpoint computes the five shared checks
+  (api/storage/worker/ledger/quota) with doctor's exact rules — a strict-`true`
+  `ledger_writable` (§3.10's "spend figures are fiction"), ANY quota-blocked
+  model as a STOP, a worker that demands a bearer token this deployment lacks
+  as a STOP even though `/health` reads healthy — and a parity test runs
+  `foleyflow doctor --json` and `/config` against the same app and requires
+  identical key/state/label/detail for every shared row. `ok` is true exactly
+  when no server check is blocked.
+- **Integrations with presence-only, never a value.**
+  `src/foleyflow/api/integrations.py` declares each integration (B2, Gemini,
+  OpenAI, ElevenLabs, fal, SFX worker URL, SFX worker token), its env var
+  names, and its contract source — `secret-manager` for the vars
+  `deploy.sh`/`setup_secrets.sh` bind via `--set-secrets`, `env` for
+  `env.public.yaml` — and reports `configured`/`missing`/`unresolved` with
+  NAMES only. A var whose value is a literal Secret Manager reference
+  (`projects/{p}/secrets/{s}/versions/{n}` — the classic mistake of putting
+  the reference in env.public.yaml) is detected by shape (numeric version or
+  `latest`) and called out by name. The "no credential value" acceptance is
+  tested both sides: the API test sets real-looking secrets and asserts the
+  body carries none, and the UI test pins the page never renders them.
+- **Build identity, browser-honest.** The screen shows deployed `git_sha`/
+  `build_time` from the stamp, with doctor's origin-based severity when
+  unstamped (warn on a loopback origin, blocked on a non-local one). The
+  CLI's "matches local HEAD" comparison stays CLI-only — a browser is not a
+  git checkout — and the optional cache-coverage probe stays CLI-only too (it
+  reads the operator's local storage for a timeline file); both are stated in
+  the docs.
+- **Brand agreement (this section's own acceptance clause).** The response
+  carries the API's runtime name (`FOLEYFLOW_BRAND_NAME` — the name `/docs`
+  and the UI-not-built page render); the screen compares it against the UI
+  bundle's compiled-in `BRAND_NAME` and renders a blocked "brand agreement"
+  row naming both when they disagree — a deployment that half-applied a
+  rebrand renders as two different products, and this is where it says so.
+- **The screen** reuses `ChecklistRow` for the checks (the readiness rows), a
+  neutral "Absent" tag for missing integrations (never overloading a semantic
+  chip state), the source as a plain tag, monospace numerics, and a
+  read-only note stating rotation stays a Secret Manager operation.
+- **Tests:** 15 API contract/verdict tests (storage down, worker unreachable,
+  worker auth-missing, ledger unwritable, quota blocked/warn, integration
+  presence + any-of keys, unresolved-reference detection, never-a-value,
+  brand in the payload) + 1 doctor↔config parity test + 9 ConfigScreen render
+  tests (checks, integrations, unresolved reference, unstamped-build
+  severity, brand agreement + disagreement, never-a-value) + route tests.
+
+## 22. Polish — L
+
+**Depends on:** 20 (the rename, so copy is written once) and 21 (the
+configuration view is a screen this pass covers). **Files:** every route and
+component under `ui/src`, a new tooltip component and a glossary module,
+`docs/design/control-room.md`, CI.
+
+**Sized L, not M.** It began as a pass over existing surfaces; it now also
+builds two things that do not exist — a real tooltip/popover and the glossary
+behind it — and a terminology review touches every rendered string. That is a
+build in its own right, and calling it M would have under-planned the last
+task before a demo.
+
+Promoted out of `handoff-task7.md`, where it sat as unit 7.14 behind a
+one-line stub. The control room is otherwise complete — timeline editing,
+A/B preview, spend paths, director mode, the unclaimed archive — so this is
+no longer a sub-task of building it. **This is the pass that decides whether
+it reads as a tool**, and it is the last thing between the app and a demo.
+
+Four routes are in scope: the projects index (`/`), create (`/projects/new`),
+the control room (`/projects/{id}`), and the unclaimed archive (`/unclaimed`).
+
+**The keyboard map, which does not exist.** Bindings were added per unit and
+never assembled: arrow nudges on a timeline block (10 ms, Shift 100 ms, Alt
+1 ms), arrows on the resize handles, arrows on the panel grip, Enter/Escape in
+inline rename, and the dialogs' own focus rules. Nothing tells a director any
+of this exists. The `Kbd` component was built in 7.7 **for exactly this** and
+is used nowhere outside `PrimitivesGallery.svelte` — a component built for a
+hint line and a keyboard map, with neither ever built. This unit writes the
+map, makes it reachable (`?` is the convention), and adds the hint line the
+component was designed for. A binding that is not in the map is a bug in one
+of the two.
+
+**Focus order.** `docs/design/control-room.md` §9 lists it as open, and it has
+stayed open. Tab through each route: the order must follow the visual order,
+nothing interactive may be unreachable, and nothing may trap focus except a
+dialog that means to.
+
+**Loading, empty, and error states, made consistent.** §9 asked for these per
+panel and each unit answered locally, so the vocabulary drifted. The rule this
+codebase already enforces is the hard part and is not negotiable: **an error
+must never render as emptiness.** `ControlRoom` says so explicitly — an empty
+timeline must not claim analysis has not run — and `ancillaryFailed` exists to
+keep that honest. Extend the same discipline uniformly: every panel has three
+defined states, an error names what failed, and an empty state says what would
+fill it.
+
+**Contrast and both themes.** 97 tokens on `:root`, redefined for dark and for
+the explicit toggle. Verify AA against every foreground/background pair a
+component actually produces, in both, and fix by moving tokens rather than
+patching components.
+
+**Copy, once, in one voice.** The product's differentiator is that it does not
+overstate — measurements not verdicts, absent data rendered absent, money
+stated before it is spent. The copy accumulated across a dozen units by
+different hands. Read all of it in one sitting and make it sound like one
+product. This is why the unit depends on 20: writing the copy before the
+rename means reading it twice.
+
+**Terminology — precision is not comprehension.** This product speaks a dense
+private vocabulary, and a census of what it renders shows how dense: *ledger*
+38 times, *unclaimed* 16, *dossier* 15, *readiness* 7, *quota* 6, *continuity*
+6, *envelope* 4, *transient* 1 — plus stems, drift, freeze, draft, commit,
+version, attribution and spend. Three different registers are mixed. Some are
+real craft terms a sound editor knows cold (*stems*, *mix*, *transient*). Some
+are ours and defined nowhere (*readiness*, *dossier*, *unclaimed*). Some are
+engineering that leaked through the API into the interface (*ledger*,
+*attribution*, *quota*). The evidence-first rule is about not overstating; it
+was never a licence to be obscure, and a term the reader cannot decode is not
+more honest than a plain one — it just moves the failure.
+
+Go through every rendered term and decide one of three things: keep it because
+the audience genuinely knows it, keep it and define it, or rename it. Craft
+terms stay. Ours stay only if a one-line definition earns them. Engineering
+terms that name an internal mechanism rather than a thing the user has should
+be renamed — a director has costs and spending, not a *ledger*.
+
+**Help and hover tips — the mechanism is currently the wrong one.** There is no
+tooltip component, and help is delivered through native `title=` attributes,
+several carrying substantive multi-line explanations: *"Delete this event —
+free: the money for generated content is already spent"*, *"Send — one billed
+director-model call"*. Native `title` never appears on keyboard focus, does not
+exist on touch, cannot be styled, is delayed, and is inconsistently announced
+by screen readers. So the product's **cost geometry — the thing it is proudest
+of — is being explained through the least accessible mechanism available.**
+
+Build a real tooltip/popover: focus- and hover-triggered, dismissible,
+`aria-describedby`-wired, positioned so it never covers what it explains. Then
+a definition lives in one place and is reused — the glossary entry, the
+tooltip, and the help overlay all read from the same source, so a term cannot
+be defined two ways. Pair it with the keyboard map behind `?` as one help
+surface rather than two.
+
+**Copy stays inline; the glossary does not.** There is no strings or i18n
+module today — every string lives in its component, which is the right default
+for Svelte and keeps a component readable. **Do not externalise all copy as
+part of this pass:** extracting several hundred strings is churn that buys
+nothing for a copy read-through, and if translation is ever wanted it is its
+own unit with its own tooling. What *should* be centralised is narrower and
+different: the **defined terms** — one module holding each term's label and
+one-line definition, consumed by the tooltips, the glossary and the help
+overlay. That is shared content, not scattered copy.
+
+**Also worth a look, no promises attached:** behaviour at narrow widths (the
+control room is a fixed `100vh` layout with a resizable timeline frame);
+`prefers-reduced-motion` against the spinner and transitions; and the timeline
+with an unusually dense event list.
+
+**Not in this unit:** new features, new endpoints, new panels. If polish
+uncovers something missing, it becomes its own task rather than growing this
+one.
+
+**Acceptance:** every interactive control on all four routes is reachable and
+operable by keyboard, and the documented map matches the bindings exactly;
+every panel has a defined loading, empty and error state, with error
+distinguishable from empty; every term in the glossary is defined once and
+reachable from where it is used, and no rendered term is undefined; help is
+available to a keyboard user without a pointer, and no `title=` attribute
+carries information available nowhere else; contrast passes AA in both themes;
+no console errors or unhandled rejections on any route; and CI runs an
+automated accessibility check (there is none today) so the pass does not decay.
+
+## 23. Repo and image identity — S
+
+**Depends on:** 20, and best done after 22. **Files:** `pyproject.toml` (`[project.scripts]`),
 `Dockerfile`, `scripts/deploy.sh`, `scripts/smoke_deploy.py`, `README.md`.
 
 The operator-facing half of the rename, deliberately separated because it is

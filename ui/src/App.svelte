@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
 
   import { brandPageTitle } from "./lib/brand";
+  import ConfigScreen from "./lib/config/ConfigScreen.svelte";
   import ControlRoom from "./lib/control/ControlRoom.svelte";
   import PrimitivesGallery from "./lib/PrimitivesGallery.svelte";
   import CreateProject from "./lib/projects/CreateProject.svelte";
@@ -23,7 +24,9 @@
         ? brandPageTitle("Control room")
         : route.name === "unclaimed"
           ? brandPageTitle("Unclaimed")
-          : brandPageTitle("Projects"),
+          : route.name === "config"
+            ? brandPageTitle("Configuration")
+            : brandPageTitle("Projects"),
   );
 
   function go(path: string) {
@@ -47,6 +50,8 @@
   <CreateProject onNavigate={go} />
 {:else if route.name === "unclaimed"}
   <Unclaimed onNavigate={go} />
+{:else if route.name === "config"}
+  <ConfigScreen onNavigate={go} />
 {:else}
   <ProjectsIndex onNavigate={go} />
   {#if import.meta.env.DEV}

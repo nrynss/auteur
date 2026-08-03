@@ -5,15 +5,18 @@ export type Route =
   | { name: "home" }
   | { name: "create" }
   | { name: "project"; id: string }
-  | { name: "unclaimed" };
+  | { name: "unclaimed" }
+  | { name: "config" };
 
 /** Parse a pathname into a route. `/projects/new` is create; any other
  * `/projects/{id}` is the control room; `/unclaimed` is the archive of
- * material no project claims (unit 7.17). Everything else is the index. */
+ * material no project claims (unit 7.17); `/config` is the read-only
+ * deployment sheet (task 20). Everything else is the index. */
 export function parseRoute(pathname: string): Route {
   const path = pathname.replace(/\/+$/, "") || "/";
   if (path === "/projects/new") return { name: "create" };
   if (path === "/unclaimed") return { name: "unclaimed" };
+  if (path === "/config") return { name: "config" };
   const m = path.match(/^\/projects\/([^/]+)$/);
   if (m) return { name: "project", id: decodeURIComponent(m[1]) };
   return { name: "home" };

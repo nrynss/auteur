@@ -791,3 +791,40 @@ class HealthResponse(BaseModel):
     git_sha: Optional[str] = None
     build_time: Optional[str] = None  # ISO8601 UTC
     worker: Optional[WorkerHealth] = None
+
+
+# -- read-only deployment configuration (task 20, docs/api.md §3.17) --------
+
+class IntegrationOut(BaseModel):
+    """One integration's presence. `env` carries variable NAMES only, never
+    values; `missing` names what is absent; `unresolved` names vars whose
+    value is a literal Secret Manager reference (a real misconfiguration,
+    reported by name, never echoed). `source` is the deployment contract
+    (secret-manager via deploy.sh --set-secrets, or plain env)."""
+
+    key: str
+    label: str
+    source: str            # secret-manager | env
+    configured: bool
+    env: List[str]
+    missing: List[str]
+    unresolved: List[str]
+
+
+class ConfigResponse(BaseModel):
+    """The read-only deployment sheet: the same checks `foleyflow doctor`
+    prints (same states, same fail-closed rules), the baked build identity,
+    and integration presence. `ok` is true exactly when no check is blocked.
+    `git_sha`/`build_time` are null on an unstamped (local) process; `brand`
+    is the API's runtime product name (FOLEYFLOW_BRAND_NAME) — the screen
+    compares it against the UI's build-time name and reports a disagreement
+    as a blocked row (a deployment whose two halves disagree renders as two
+    products). A name is not a credential."""
+
+    ok: bool
+    version: str
+    brand: str
+    git_sha: Optional[str] = None
+    build_time: Optional[str] = None
+    checks: List[ReadinessItem]
+    integrations: List[IntegrationOut]
