@@ -788,6 +788,15 @@ deploy and smoke scripts. **Do it when nothing else is in flight** — it
 unblocks no other work, so there is no cost to waiting and a real cost to
 doing it while several agents are committing.
 
+**Casing: every identifier is lowercase `auteur`. Capitalised `Auteur` is
+prose only** — the rendered product name, and nothing else. That covers the
+console script, the Docker image and repository name, any tag, and the B2
+prefix if it is ever changed. For the image this is not a convention but a
+hard requirement: Docker rejects a repository name containing uppercase
+(`invalid reference format: repository name must be lowercase`), so
+`-t Auteur .` fails outright. This task's title says "Auteur" because it names
+the product; nothing it types into a shell does.
+
 - The GitHub repository name and the Docker image name, with `deploy.sh` and
   the post-deploy smoke check following.
 - **The CLI gains `auteur` and keeps `foleyflow` as an alias.** Both entries in
