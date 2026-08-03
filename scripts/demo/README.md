@@ -71,12 +71,13 @@ Project ids and the clip list live in **one place**: `inventory.json`
 | `04_director` | primary | yes* | Director tab cost geometry / empty composer |
 | `05_listen` | primary | yes | Foley mix play + brief Original A/B |
 | `07_nudge` | primary | yes | Drag + Shift+arrow draft nudge (no Commit) |
-| `08_spend` | primary | yes | Budget, thresholds, transactions (warm seed; spent may be $0) |
+| `08_spend` | primary | yes | Budget, thresholds, transactions (seed carries real spend: $3.24 of $5.00, 6 rows, 50% threshold crossed) |
 | `09_evidence` | primary | yes | Loudness / true peak / shot-to-shot |
 | `10_dossier` | primary | yes | Artifacts inventory with sizes |
 
-Cards (`02_name`, `03_chapter_director`, `06_chapter_cost`, `11_end`) and VO
-are produced elsewhere.
+Cards (`02_name`, `03_chapter_director`, `06_chapter_cost`, `11_end`) live under
+gitignored `demo/cards/` — see **`demo/cards/README.md`** and **`demo/README.md`**.
+VO script: `demo/vo-script.md`. Re-render cards: `node demo/cards/render.mjs`.
 
 ### `04_director` — the one that costs if you get it wrong
 
@@ -91,6 +92,29 @@ To film ghost → approve later: pre-bake on a warm project in a **separate,
 explicit** session (you approve the spend), leave the proposal on screen, and
 add a clip that only performs Apply/Discard — or ask before enabling a live
 send in the harness. Do not invent a ghost diff.
+
+## The viewer must be loaded before a take starts
+
+`openProject` holds every beat until the `<video>` reports `readyState >= 4`
+(HAVE_ENOUGH_DATA) and fails the clip after 120 s rather than filming a stalled
+player. Without that gate the viewer stutters to black mid-take and the clip is
+useless.
+
+Two things make this necessary, and both are worth knowing before changing it:
+
+- The source is ~25 MB over ~15 s. Browsers stream video as many ranged GETs,
+  and ranged reads from B2 measure ~0.9 MB/s against ~6.2 MB/s for a single
+  full GET, because each range pays a fixed round trip.
+- Presigned URLs used to be re-signed on every call, so the browser's cache
+  never applied and the download restarted on every render. Fixed in the app
+  (`B2Backend.signed_url` now holds a URL stable for half its expiry) — if that
+  ever regresses, this gate starts timing out and that is the first place to
+  look.
+
+Do **not** additionally require `buffered.end` to reach `duration`. Browsers
+stop fetching once they are confident and often never fill the last seconds
+until playback asks for them, so that condition never becomes true and every
+take hangs for the full timeout.
 
 ## recordVideo pins (re-shoot if missed)
 
@@ -124,6 +148,21 @@ done
 
 # Ledger: run.mjs prints before/after total_count; both must match.
 # Unreadable ledger (HTTP/network) fails the session — fail closed, not null===null.
+```
+
+**Then look at a frame from every clip. A green run proves nothing about
+pixels.** Both times footage was wasted here, the harness reported success: once
+the viewer was black for the whole take, once the recording was 30 fps CFR of an
+empty region. Frame count, duration and exit code were all correct in both
+cases.
+
+```bash
+for f in demo/product/*.webm; do
+  d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f")
+  ffmpeg -v error -y -ss "$(python3 -c "print(f'{float('$d')*0.6:.1f}')")" \
+    -i "$f" -frames:v 1 "/tmp/$(basename "$f" .webm).png"
+done
+# Open /tmp/*.png. The viewer must show picture, not black.
 ```
 
 Failed takes land under `demo/product/.tmp/{id}.failed.webm` and **do not**

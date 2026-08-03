@@ -177,9 +177,15 @@ config edit, not a code change.
 All three SFX tiers are invoked through Genblaze, so choosing one is a config
 edit (`[sfx_tiers] active`, or `$FOLEYFLOW_SFX_TIER`) and not a different code
 path. `paid` falls back to `fallback` on error; `test` deliberately does not
-escalate to a paid API. The default is `test`, which is also what keeps the
-shared B2 stem cache warm — the cache is keyed on the endpoint, so switching
-tiers means generating fresh clips under fresh keys.
+escalate to a paid API. `providers.toml` ships `test` as the default, which is
+also what keeps the shared B2 stem cache warm — the cache is keyed on the
+endpoint, so switching tiers means generating fresh clips under fresh keys.
+
+**The deployed service is not on that default.** `env.public.yaml` sets
+`FOLEYFLOW_SFX_TIER: "paid"`, so <https://auteur.nryn.dev> generates hero foley
+through ElevenLabs and bills for it. The env var wins over the TOML, and the
+free `test` tier is the right default for local work and the offline suite —
+not for a deployment meant to show the real thing.
 
 See the archived spec ([`docs/design/development/archives/SPEC.md`](docs/design/development/archives/SPEC.md))
 §9.1 for why routing is "free local vs paid hero sound" rather than "which paid

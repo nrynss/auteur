@@ -242,7 +242,7 @@ function printList(only) {
   }
   console.log("");
   console.log(
-    "Not captured here (cards / VO elsewhere): 02_name, 03_chapter_director, 06_chapter_cost, 11_end",
+    "Not captured here (cards under demo/cards/): 02_name, 03_chapter_director, 06_chapter_cost, 11_end",
   );
   console.log(
     "04_director: free panel only — ghost/approve needs a billed director turn (not run by default).",

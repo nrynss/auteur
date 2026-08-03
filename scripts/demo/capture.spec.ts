@@ -262,9 +262,12 @@ async function waitForViewerBuffered(page: Page): Promise<void> {
         if (v.error) return true; // surfaced below, not silently waited on
         if (!v.duration || Number.isNaN(v.duration)) return false;
         if (v.buffered.length === 0) return false;
-        const end = v.buffered.end(v.buffered.length - 1);
-        // HAVE_ENOUGH_DATA and the whole range within a frame of the end.
-        return v.readyState >= 4 && end >= v.duration - 0.05;
+        // HAVE_ENOUGH_DATA is the browser's own statement that it can play to
+        // the end without stalling. Do NOT also demand buffered.end reach the
+        // duration: browsers stop fetching once they are confident and often
+        // never fill the last seconds until playback asks for them, so that
+        // condition simply never becomes true and the gate hangs.
+        return v.readyState >= 4;
       },
       undefined,
       { timeout: 120_000, polling: 500 },
@@ -288,7 +291,7 @@ async function waitForViewerBuffered(page: Page): Promise<void> {
   }
   if (!buffered) {
     throw new Error(
-      `viewer not fully buffered after 120s: readyState=${state?.readyState} ` +
+      `viewer never reached HAVE_ENOUGH_DATA in 120s: readyState=${state?.readyState} ` +
         `buffered=${state?.bufferedEnd?.toFixed(2)}/${state?.duration?.toFixed(2)}s. ` +
         `The take would stutter to black — re-run rather than film it.`,
     );
