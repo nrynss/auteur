@@ -2981,3 +2981,243 @@ def test_budget_reports_an_unwritable_ledger(client, store, project):
         assert r2.json()["spent"] == 0.0
     finally:
         ledger._write_ok = True
+
+
+# -- unclaimed (unit 7.17) ---------------------------------------------------
+
+def _orphan_prefix(store, project_id, files=None):
+    """Write artifacts under projects/{id}/ with NO project.json — the shape
+    a crashed create_project leaves behind."""
+    import time as _time
+    payloads = files or {
+        f"projects/{project_id}/timelines/timeline.v1.json": b'{"events":[]}',
+        f"projects/{project_id}/runs/run_1/mix.wav": b"mix-bytes",
+    }
+    for key, data in payloads.items():
+        store.backend.put_bytes(key, data)
+    return project_id
+
+
+def test_unclaimed_ledger_lists_only_rows_no_project_claims(client, store,
+                                                            budget_ledger):
+    """An unattributed row with no rescue override is the unit's subject; a
+    row tagged to a project or claimed by a rescue is not."""
+    import time as _time
+
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4")
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.10)   # owned
+    old = _time.time() - 3600
+    store.backend.put_bytes(
+        "ledger/orphan1.json",
+        json.dumps({"endpoint": "gemini-2.5-flash", "params_hash": "o1",
+                    "cost_estimate": 0.30, "success": True,
+                    "timestamp": old, "project_id": None}).encode())
+    store.backend.put_bytes(
+        "ledger/orphan2.json",
+        json.dumps({"endpoint": "eleven_text_to_sound_v2", "params_hash": "o2",
+                    "cost_estimate": 0.05, "success": False,
+                    "error": "auth failure", "timestamp": old + 1,
+                    "project_id": None}).encode())
+    budget_ledger._invalidate_row_cache()
+
+    body = client.get(f"{API_PREFIX}/unclaimed/ledger").json()
+    assert body["total_count"] == 2
+    assert [r["params_hash"] for r in body["rows"]] == ["o2", "o1"]  # newest first
+    assert body["rows"][1]["cost_estimate"] == pytest.approx(0.30)
+    assert body["rows"][0]["success"] is False   # failed rows stay visible
+    assert body["rows"][0]["error"] == "auth failure"
+    # A signed URL to the immutable record — inspectable, never durable.
+    assert body["rows"][0]["url"].startswith("file:///")
+    assert body["ledger_writable"] is True
+
+    # A rescue override claims both rows → the unclaimed view empties and the
+    # project's budget absorbs them (the acceptance's reconciliation).
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/attributions",
+                    json={"before": old + 10})
+    assert r.status_code == 201
+    budget_ledger.invalidate_project_spend_cache()
+    assert client.get(f"{API_PREFIX}/unclaimed/ledger").json()["total_count"] == 0
+    budget = client.get(
+        f"{API_PREFIX}/projects/{project.id}/budget").json()
+    assert budget["spent"] == pytest.approx(0.45)   # 0.10 + 0.30 + 0.05
+
+
+def test_unclaimed_ledger_paginates_and_reports_unwritable(client, store,
+                                                           budget_ledger,
+                                                           monkeypatch):
+    import foleyflow.ledger as ledger_mod
+
+    for i in range(3):
+        store.backend.put_bytes(
+            f"ledger/orphan{i}.json",
+            json.dumps({"endpoint": "gemini-2.5-flash", "params_hash": f"o{i}",
+                        "cost_estimate": 0.01, "success": True,
+                        "timestamp": 1000 + i, "project_id": None}).encode())
+    budget_ledger._invalidate_row_cache()
+
+    page1 = client.get(f"{API_PREFIX}/unclaimed/ledger?limit=2").json()
+    assert len(page1["rows"]) == 2
+    assert page1["next_cursor"] == 2
+    page2 = client.get(
+        f"{API_PREFIX}/unclaimed/ledger?limit=2&cursor=2").json()
+    assert len(page2["rows"]) == 1
+    assert page2["next_cursor"] is None
+
+    # Same fail-closed flag as /budget and /quota: the UI must withhold.
+    monkeypatch.setattr(ledger_mod, "ledger_writable", lambda *a, **k: False)
+    body = client.get(f"{API_PREFIX}/unclaimed/ledger").json()
+    assert body["ledger_writable"] is False
+
+
+def test_unclaimed_projects_lists_orphan_prefixes_and_skips_live_ones(
+        client, store):
+    """A prefix with no readable project.json is invisible to the whole
+    product while its artifacts still cost storage — listed here with what
+    they cost. A live project's prefix is not listed."""
+    live = store.create_project(title="Live", input_key="k", source_sha256="",
+                                source_filename="l.mp4")
+    orphan = _orphan_prefix(store, "proj_01ARPHAN000000000000000000")
+    # An unreadable record object: present but not parseable.
+    unreadable = _orphan_prefix(store, "proj_01BR0K3N000000000000000000", files={
+        "projects/proj_01BR0K3N000000000000000000/project.json": b"{not json",
+        "projects/proj_01BR0K3N000000000000000000/timelines/timeline.v1.json": b"{}",
+    })
+
+    body = client.get(f"{API_PREFIX}/unclaimed/projects").json()
+    ids = {p["project_id"]: p for p in body["projects"]}
+    assert live.id not in ids            # readable record → not ours
+    assert orphan in ids
+    assert ids[orphan]["unreadable"] is False
+    assert ids[orphan]["object_count"] == 2
+    assert ids[orphan]["total_bytes"] == sum(
+        len(v) for v in (b'{"events":[]}', b"mix-bytes"))
+    assert ids[unreadable]["unreadable"] is True
+
+
+def test_adopt_project_recovers_an_orphan_prefix(client, store):
+    """Adoption writes the record for the prefix's own id; the artifacts
+    become reachable through every normal screen."""
+    pid = _orphan_prefix(store, "proj_01AD0PT0000000000000000000")
+    r = client.post(f"{API_PREFIX}/unclaimed/projects/{pid}/adopt",
+                    json={"title": "Recovered"})
+    assert r.status_code == 201
+    body = r.json()
+    assert body["project"]["id"] == pid
+    assert body["project"]["title"] == "Recovered"
+    assert body["repaired"] is False
+
+    # Now a normal project: listed, readable, dossier sees its artifacts.
+    assert any(p["id"] == pid for p in
+               client.get(f"{API_PREFIX}/projects").json()["projects"])
+    detail = client.get(f"{API_PREFIX}/projects/{pid}").json()
+    assert detail["title"] == "Recovered"
+    dossier = client.get(f"{API_PREFIX}/projects/{pid}/dossier").json()
+    assert any(a["kind"] == "timeline" for a in dossier["artifacts"])
+
+    # The event log names the adoption, not a creation.
+    events = client.get(f"{API_PREFIX}/projects/{pid}/events").json()["events"]
+    assert any("project.adopted" in e["type"] for e in events)
+
+    # Adopting again refuses — the id is live now.
+    r2 = client.post(f"{API_PREFIX}/unclaimed/projects/{pid}/adopt",
+                     json={"title": "Again"})
+    assert r2.status_code == 409
+    assert r2.json()["error"]["code"] == "already_claimed"
+
+
+def test_adopt_project_repairs_an_unreadable_record(client, store):
+    """A record object that cannot be read breaks every project route, so
+    adoption is the one deliberate overwrite — consented, recorded, and it
+    unblocks the index that was failing on it."""
+    pid = "proj_01BR0K3N000000000000000000"
+    _orphan_prefix(store, pid, files={
+        f"projects/{pid}/project.json": b"{not json",
+        f"projects/{pid}/timelines/timeline.v1.json": b"{}",
+    })
+    r = client.post(f"{API_PREFIX}/unclaimed/projects/{pid}/adopt",
+                    json={"title": "Repaired"})
+    assert r.status_code == 201
+    body = r.json()
+    assert body["repaired"] is True
+    assert client.get(f"{API_PREFIX}/projects/{pid}").json()["title"] == "Repaired"
+    events = client.get(f"{API_PREFIX}/projects/{pid}/events").json()["events"]
+    adopted = [e for e in events if "project.adopted" in e["type"]]
+    assert adopted and adopted[0]["payload"]["repaired"] is True
+
+
+def test_adopt_project_rejects_malformed_id(client, store):
+    r = client.post(f"{API_PREFIX}/unclaimed/projects/not-an-id/adopt",
+                    json={"title": "x"})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_id"
+
+
+def test_adopt_project_refuses_a_never_existing_prefix(client, store):
+    """Adoption is recovery, not creation: a prefix that has never held an
+    object is the /projects route's job, and gets 404 here."""
+    r = client.post(
+        f"{API_PREFIX}/unclaimed/projects/proj_01NEVER0000000000000000000/adopt",
+        json={"title": "x"})
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "project_not_found"
+
+
+def test_adopt_project_treats_an_emptyless_record_as_unreadable(
+        client, store):
+    """A project.json that parses but has no id is not a readable record —
+    it gets repaired like any other garbage, never mistaken for a live id."""
+    pid = "proj_01EMPTY0000000000000000000"
+    store.backend.put_bytes(f"projects/{pid}/project.json", b"{}")
+    store.backend.put_bytes(f"projects/{pid}/timelines/timeline.v1.json", b"{}")
+    r = client.post(f"{API_PREFIX}/unclaimed/projects/{pid}/adopt",
+                    json={"title": "Fixed"})
+    assert r.status_code == 201
+    assert r.json()["repaired"] is True
+
+
+def test_claim_ledger_creates_a_spend_archive_and_adopts_every_orphan(
+        client, store, budget_ledger):
+    """The acceptance: orphan rows land in a newly-created project and
+    reconcile into its /budget."""
+    import time as _time
+
+    old = _time.time() - 3600
+    for i in range(2):
+        store.backend.put_bytes(
+            f"ledger/orphan{i}.json",
+            json.dumps({"endpoint": "gemini-2.5-flash", "params_hash": f"o{i}",
+                        "cost_estimate": 0.25, "success": True,
+                        "timestamp": old + i, "project_id": None}).encode())
+    budget_ledger._invalidate_row_cache()
+
+    r = client.post(f"{API_PREFIX}/unclaimed/ledger/claim",
+                    json={"title": "Legacy spend", "budget_usd": 10})
+    assert r.status_code == 201
+    body = r.json()
+    assert body["claimed"] == 2
+    pid = body["project"]["id"]
+    assert body["project"]["title"] == "Legacy spend"
+    assert body["project"]["budget_usd"] == 10
+
+    # The unclaimed view is empty; the project's budget reconciles.
+    assert client.get(f"{API_PREFIX}/unclaimed/ledger").json()["total_count"] == 0
+    budget = client.get(f"{API_PREFIX}/projects/{pid}/budget").json()
+    assert budget["spent"] == pytest.approx(0.50)
+    assert budget["ledger_writable"] is True
+
+
+def test_unclaimed_cache_lists_shared_stems_never_claimable(client, store):
+    """Cache keys are addresses, not provenance — the view shows them with
+    inspection URLs and no claim affordance (the response carries none)."""
+    for i in range(2):
+        store.backend.put_bytes(f"cache/00000000000000000{i}.wav",
+                                b"stem-bytes")
+    body = client.get(f"{API_PREFIX}/unclaimed/cache").json()
+    assert body["total_count"] == 2
+    assert body["rows"][0]["key"].startswith("cache/")
+    assert body["rows"][0]["size_bytes"] == len(b"stem-bytes")
+    assert body["rows"][0]["url"].startswith("file:///")
+    # There is no claim endpoint for cache stems by construction.
+    assert client.post(f"{API_PREFIX}/unclaimed/cache/claim",
+                       json={}).status_code == 404

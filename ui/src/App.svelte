@@ -5,10 +5,12 @@
   import PrimitivesGallery from "./lib/PrimitivesGallery.svelte";
   import CreateProject from "./lib/projects/CreateProject.svelte";
   import ProjectsIndex from "./lib/projects/ProjectsIndex.svelte";
+  import Unclaimed from "./lib/projects/Unclaimed.svelte";
   import { navigate, parseRoute, type Route } from "./lib/projects/route";
 
-  // Path-based SPA routes (unit 7.6 catch-all + 7.13 index/create).
+  // Path-based SPA routes (unit 7.6 catch-all + 7.13 index/create + 7.17 archive).
   // / → projects index · /projects/new → create · /projects/{id} → control room
+  // · /unclaimed → material no project claims (7.17)
   let route = $state<Route>(parseRoute(window.location.pathname));
 
   const pageTitle = $derived(
@@ -16,7 +18,9 @@
       ? "FoleyFlow — New project"
       : route.name === "project"
         ? "FoleyFlow — Control room"
-        : "FoleyFlow — Projects",
+        : route.name === "unclaimed"
+          ? "FoleyFlow — Unclaimed"
+          : "FoleyFlow — Projects",
   );
 
   function go(path: string) {
@@ -38,6 +42,8 @@
   <ControlRoom id={route.id} />
 {:else if route.name === "create"}
   <CreateProject onNavigate={go} />
+{:else if route.name === "unclaimed"}
+  <Unclaimed onNavigate={go} />
 {:else}
   <ProjectsIndex onNavigate={go} />
   {#if import.meta.env.DEV}

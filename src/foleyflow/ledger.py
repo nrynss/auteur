@@ -658,9 +658,16 @@ def _fetch_storage_rows() -> List[dict]:
         if raw is None:
             continue
         try:
-            rows.append(json.loads(raw))
+            data = json.loads(raw)
         except (TypeError, json.JSONDecodeError):
             continue
+        if not isinstance(data, dict):
+            continue
+        # Storage address, for signing each row's immutable record (3.15).
+        # Consumers read the row's money fields only; the underscore key is
+        # the unclaimed view's handle on the object behind the row.
+        data["_key"] = key
+        rows.append(data)
     return rows
 
 

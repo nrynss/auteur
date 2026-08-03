@@ -29,4 +29,9 @@ describe("parseRoute", () => {
   it("does not treat nested paths as project ids", () => {
     expect(parseRoute("/projects/proj_01/extra")).toEqual({ name: "home" });
   });
+
+  it("maps /unclaimed to the archive", () => {
+    expect(parseRoute("/unclaimed")).toEqual({ name: "unclaimed" });
+    expect(parseRoute("/unclaimed/")).toEqual({ name: "unclaimed" });
+  });
 });

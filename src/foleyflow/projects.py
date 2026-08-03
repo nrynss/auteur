@@ -80,6 +80,7 @@ def invalidate_event_log_cache(project_id: Optional[str] = None) -> None:
 # Lifecycle event types — SPEC.md §8.4's domain-neutral names. Deliberately not
 # incident-domain terms inherited from Mosaic.
 EVENT_PROJECT_CREATED = "postproduction.project.created"
+EVENT_PROJECT_ADOPTED = "postproduction.project.adopted"
 EVENT_INPUT_RECORDED = "postproduction.input.recorded"
 EVENT_ANALYSIS_COMPLETED = "postproduction.analysis.completed"
 EVENT_PLAN_PROPOSED = "postproduction.foley.plan.proposed"
@@ -393,6 +394,67 @@ class ProjectStore:
             self.record_input(project.id, sha256=source_sha256,
                               duration_s=duration_s, actor=actor)
         return project
+
+    def adopt_project(self, project_id: str, *, title: str, input_key: str,
+                      actor: str = "user") -> "tuple[Project, bool]":
+        """Write the project record for an existing orphan prefix (unit 7.17).
+
+        Recovery, not creation: the id is the prefix's own, and the record
+        describes what is already there. Normally the record is absent and
+        `put_if_absent` allocates it immutably — a racing adopt cannot
+        double-create. When the prefix already holds a `project.json` that
+        does not parse, adoption is the one deliberate overwrite: a record
+        that cannot be read is not completed work, the repair is consented to
+        by the caller (the route has already read the object and shown it
+        unreadable), and the event log names it `postproduction.project.adopted`
+        with `repaired: true` and the actor.
+
+        Returns ``(project, repaired)``. Raises ``PreconditionFailed`` when a
+        readable record already exists — the id is live and the normal project
+        routes own it.
+        """
+        key = self.project_key(project_id)
+        try:
+            existing = self.backend.get_bytes(key)
+        except ObjectNotFound:
+            existing = None
+        project = Project(
+            id=project_id,
+            title=title,
+            created_at=utcnow(),
+            input_key=input_key,
+            source_sha256="",
+            source_filename="",
+            duration_s=None,
+            budget_usd=None,
+        )
+        payload = json.dumps(project.to_dict(), indent=2, sort_keys=True)
+        payload = payload.encode("utf-8")
+        repaired = False
+        if existing is None:
+            self.backend.put_if_absent(key, payload,
+                                       content_type="application/json")
+        else:
+            try:
+                parsed = json.loads(existing.decode("utf-8"))
+                if not (isinstance(parsed, dict)
+                        and isinstance(parsed.get("id"), str)
+                        and parsed["id"]):
+                    raise ValueError("record has no id")
+                Project.from_dict(parsed)
+            except (ValueError, TypeError):
+                # Unreadable record: explicit repair, recorded in the log.
+                self.backend.put_bytes(key, payload,
+                                       content_type="application/json")
+                repaired = True
+            else:
+                raise PreconditionFailed(
+                    f"project {project_id!r} already has a readable record")
+        self.append_event(project_id, EVENT_PROJECT_ADOPTED, actor=actor,
+                          payload={"title": title, "repaired": repaired})
+        self.append_event(project_id, EVENT_BUDGET_SET, actor=actor,
+                          payload={"budget_usd": None})
+        return project, repaired
 
     def set_budget(self, project_id: str, budget_usd: Optional[float], *,
                    actor: str = "user") -> Optional[Event]:

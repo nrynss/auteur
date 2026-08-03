@@ -138,6 +138,14 @@ class ImmutableConflict(ApiError):
     code = "immutable_conflict"
 
 
+class AlreadyClaimed(ApiError):
+    """The orphan is not an orphan any more (unit 7.17): a project record
+    already exists for the prefix, or the ledger rows were already rescued."""
+
+    status_code = 409
+    code = "already_claimed"
+
+
 class PreconditionFailed(ApiError):
     """Well-formed request, wrong state — e.g. export before analysis."""
 

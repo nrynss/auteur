@@ -85,6 +85,9 @@
     <span class="stop faint" title={storageHint}>storage issue</span>
   {/if}
   <ThemeToggle />
+  <Button variant="ghost" size="sm" onclick={() => go("/unclaimed")}>
+    Unclaimed
+  </Button>
   <Button variant="primary" size="sm" onclick={() => go("/projects/new")}>
     New project
   </Button>

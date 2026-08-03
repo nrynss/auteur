@@ -19,7 +19,7 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   **7 (control-room UI)** last. Tasks **9–17** are **DONE**.
 - CI (10), build identity (11), post-deploy smoke (12), doctor (13), live paid
   + fallback SFX (14), demo evidence (15), and Secret Manager (16) are in place.
-- `uv run pytest -q` → **740 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **750 passed, 1 skipped**. No provider credentials
   required for tests: the billed calls are stubbed at two seams,
   `stems.generate_many` and `sfx_cache.generate_canonical_wav`. Everything else
   — ffmpeg, the mix, the shared cache, storage, the Genblaze pipelines — runs
@@ -175,7 +175,7 @@ actually used for rhythmic events, so a nudge translates instead of
 re-rolling the texture. Renames on frozen content are refused at commit with
 the server's own explanation; a draft whose base went stale under a newer
 version offers to merge the latest's recorded freezes. The browser preview
-follows the draft, so the edit loop is free and instant. npm test 196,
+follows the draft, so the edit loop is free and instant. npm test 202,
 svelte-check 0/0. **7.18 landed** (phase-2): write-through exact ledger
 aggregates for spend/quota, event-log state checkpoint, shared I/O thread
 pool; harness `scripts/latency_bench.py`. Earlier: concurrent multi-get,
@@ -193,7 +193,16 @@ Size/LastModified/ETag (`list_objects_v2` already carried them; `list_keys`
 threw them away), LocalBackend reads the same from `os.stat` plus its usual
 content hash, and the Dossier composes from a few top-level LISTs instead of
 one HEAD per object (the measured 56 s for 131 keys). `size_bytes` unchanged,
-sha256 never derived from an ETag; docs/api.md §3.9 updated.
+sha256 never derived from an ETag; docs/api.md §3.9 updated. **7.17 landed**:
+the Unclaimed screen (docs/api.md §3.15) — the material no project claims.
+Orphan ledger rows (no project_id, no rescue override) are listed with signed
+URLs and claimable into an existing project or a newly-created spend archive;
+orphan `projects/{id}/` prefixes (no readable `project.json`) are listed with
+what they cost and adoptable by writing their record (an unreadable record is
+the one deliberate overwrite, recorded); shared `cache/` stems are shown under
+a "never claimable" caveat — keys are addresses, not provenance. UI at
+`/unclaimed`, linked from the projects index; the ledger section fails closed
+on an unwritable ledger. npm test 202.
 
 The throwaway static dashboard (`api/static/index.html`) is deleted outright
 when 7.6 lands.

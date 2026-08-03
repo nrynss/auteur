@@ -945,4 +945,84 @@ bounded. The totals in `/budget` are always the authoritative figures.
 
 ---
 
+### 3.15 Unclaimed — the material no project claims
+
+Every per-project view resolves an owner and drops what matches nothing. Three
+categories of material are therefore listed by no screen and counted in no
+project's numbers while still costing money and storage. This is the view of
+those categories — the only screen that can show them — and it is where they
+can be given an owner.
+
+```
+GET /api/v1/unclaimed/ledger?limit=50&cursor=0
+GET /api/v1/unclaimed/projects
+GET /api/v1/unclaimed/cache?limit=50&cursor=0
+```
+
+**Ledger rows.** A row with no `project_id` in storage that no rescue override
+(§3.11) claims belongs to no project: it was billed by a CLI run, a process
+that died, or a call made before any project existed. The money is spent, the
+quota is gone, and the only trace is this row. `GET /unclaimed/ledger` lists
+exactly those rows — the same shape as §3.14, newest first, paginated — each
+with a signed URL to its immutable record so the spend is inspectable before
+it is claimed.
+
+**Project prefixes.** `list_projects` discovers projects by listing `projects/`
+and keeping keys ending `/project.json`, so a prefix whose `project.json` is
+missing is invisible to the entire product while its artifacts still exist and
+still cost storage. Nothing in FoleyFlow deletes anything, so these accumulate.
+`GET /unclaimed/projects` lists every `projects/{id}/` prefix with no readable
+record — the id, the object count and total bytes (from the LIST, unit 7.19),
+and whether a record object exists but does not parse (`unreadable`).
+
+**Shared `cache/` stems.** A cache key is `sha256(endpoint, prompt, duration)`:
+**an address, not provenance**, and many projects legitimately resolve to the
+same one. These are **not orphans and are never claimable** — assigning a
+shared stem to a project would assert something false about both, and would
+break the sharing that makes the cache a cache. They appear here because this
+is the only screen that can show them, and the response says why they have no
+owner. `GET /unclaimed/cache` lists them paginated with signed URLs for
+inspection only.
+
+```
+POST /api/v1/unclaimed/projects/{project_id}/adopt
+{ "title": "Western standoff (recovered)" }
+```
+
+Write the project record for an existing orphan prefix so its artifacts become
+reachable through every normal screen. This is recovery, not creation: the id
+is the prefix's own, and the record describes what is already there. When the
+prefix already holds a `project.json` that does not parse, adoption replaces
+the unreadable object with the new record (the one deliberate overwrite — a
+record that cannot be read is not completed work, and the repair is recorded
+in the event log as `postproduction.project.adopted` with the actor).
+
+`201` — the adopted project's summary. `409` when the prefix already has a
+readable record (the id is live — use the normal project routes).
+
+```
+POST /api/v1/unclaimed/ledger/claim
+{ "title": "Legacy spend", "budget_usd": 20 }
+```
+
+Create a project to hold spend that predates or outlived every project, then
+attribute every currently-unclaimed row to it (first-come by `before` = now,
+§3.11). No upload target exists — there is no video — and the project's source
+is absent until one is ever uploaded. `201` — the new project's summary plus
+`claimed`, the count of rows the rescue adopted.
+
+| Status | When |
+|---|---|
+| `400 invalid_id` | Malformed project id (adopt) |
+| `409 already_claimed` | The prefix already has a readable project record (adopt) |
+| `503 storage_unavailable` | Storage cannot answer |
+
+Claiming rows into an **existing** project uses `POST /projects/{id}/attributions`
+(§3.11) unchanged. Moving an orphan prefix into a *different* project is
+refused by design: artifacts are immutable and ownership is the key path, so
+"reassigning" would mean copying every object to new addresses — a new
+artifact claiming to be an old one, the provenance lie §A.3 forbids.
+
+---
+
 ## 4. Concurrency

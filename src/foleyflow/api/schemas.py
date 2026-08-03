@@ -539,6 +539,84 @@ class LedgerRowsResponse(BaseModel):
     ledger_writable: bool = True
 
 
+# -- unclaimed (3.15) -------------------------------------------------------
+
+class UnclaimedLedgerRowOut(LedgerRowOut):
+    """One orphan ledger row — no project_id, no rescue override — plus a
+    signed URL to its immutable record so the spend is inspectable before it
+    is claimed (3.15)."""
+
+    url: Optional[str] = None
+
+
+class UnclaimedLedgerResponse(BaseModel):
+    """Paginated orphan ledger rows (3.15)."""
+
+    total_count: int
+    rows: List[UnclaimedLedgerRowOut]
+    next_cursor: Optional[int] = None
+    ledger_writable: bool = True
+
+
+class OrphanProjectOut(BaseModel):
+    """A `projects/{id}/` prefix with no readable project record (3.15).
+    Object count and bytes come from the LIST (unit 7.19) — the material still
+    costs storage while the whole product cannot see it."""
+
+    project_id: str
+    object_count: int
+    total_bytes: int
+    unreadable: bool = False    # a record object exists but does not parse
+
+
+class UnclaimedProjectsResponse(BaseModel):
+    projects: List[OrphanProjectOut]
+
+
+class UnclaimedCacheRow(BaseModel):
+    """One shared cache stem — an address, not provenance, so it is never
+    claimable; the signed URL is for inspection only (3.15)."""
+
+    key: str
+    size_bytes: int
+    url: Optional[str] = None
+
+
+class UnclaimedCacheResponse(BaseModel):
+    total_count: int
+    rows: List[UnclaimedCacheRow]
+    next_cursor: Optional[int] = None
+
+
+class AdoptProjectRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
+class AdoptProjectResponse(BaseModel):
+    """The orphan prefix now has a live project record (3.15)."""
+
+    project: ProjectSummary
+    repaired: bool = False    # an unreadable record was replaced
+
+
+class ClaimLedgerRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    budget_usd: Optional[float] = None
+
+    @field_validator("budget_usd")
+    @classmethod
+    def _positive_budget(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and v <= 0:
+            raise ValueError("budget_usd must be > 0 when set")
+        return v
+
+
+class ClaimLedgerResponse(BaseModel):
+    """A new spend-holding project plus how many orphan rows it adopted (3.15)."""
+
+    project: ProjectSummary
+    claimed: int
+
 # -- waveform peaks ---------------------------------------------------------
 
 class PeaksResponse(BaseModel):

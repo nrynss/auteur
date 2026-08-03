@@ -12,6 +12,7 @@ handlers in a threadpool, which is what this workload wants.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from contextlib import asynccontextmanager
@@ -60,12 +61,22 @@ from foleyflow.api.schemas import (
     TimelineVersionsResponse,
     StemPeaksBatchResponse,
     StemPeaksEntry,
+    AdoptProjectRequest,
+    AdoptProjectResponse,
+    ClaimLedgerRequest,
+    ClaimLedgerResponse,
+    OrphanProjectOut,
+    UnclaimedCacheResponse,
+    UnclaimedCacheRow,
+    UnclaimedLedgerResponse,
+    UnclaimedLedgerRowOut,
+    UnclaimedProjectsResponse,
     UploadTarget,
     WorkerHealth,
 )
 from foleyflow.api.uploads import create_upload_target, source_key
 from foleyflow.ids import is_valid
-from foleyflow.projects import ProjectStore
+from foleyflow.projects import PreconditionFailed, ProjectStore
 from foleyflow.qa import build_report
 from foleyflow.stages import StageRecord
 from foleyflow.storage.base import (
@@ -1149,6 +1160,189 @@ def create_app(store: Optional[ProjectStore] = None,
             ledger_writable=writable,
         )
 
+    # -- unclaimed (3.15) ---------------------------------------------------
+
+    @app.get(f"{API_PREFIX}/unclaimed/ledger",
+             response_model=UnclaimedLedgerResponse, tags=["unclaimed"])
+    def get_unclaimed_ledger(
+            cursor: int = Query(default=0, ge=0),
+            limit: int = Query(default=50, ge=1, le=200)) -> UnclaimedLedgerResponse:
+        """Orphan ledger rows: no project_id, no rescue override (3.15).
+
+        The money is spent and the quota is gone; this is the only view that
+        shows them, and it is where they get an owner. Each row carries a
+        signed URL to its immutable record so the spend is inspectable before
+        it is claimed.
+        """
+        from foleyflow.ledger import (
+            _attribution_owner, iter_attributions, iter_transactions,
+            ledger_writable)
+
+        try:
+            all_rows = iter_transactions()
+            attributions = iter_attributions()
+        except StorageError as e:
+            raise err.StorageUnavailable(
+                "Cost ledger is unreachable") from e
+
+        orphans = [
+            r for r in all_rows
+            if r.get("project_id") is None
+            and _attribution_owner(r, attributions) is None
+        ]
+        orphans.sort(key=lambda r: r.get("timestamp") or 0, reverse=True)
+        total = len(orphans)
+        page = orphans[cursor:cursor + limit]
+        next_cursor = cursor + len(page) if cursor + len(page) < total else None
+        return UnclaimedLedgerResponse(
+            total_count=total,
+            rows=[
+                UnclaimedLedgerRowOut(
+                    timestamp=float(r.get("timestamp") or 0),
+                    endpoint=r.get("endpoint") or "unknown",
+                    cost_estimate=float(r.get("cost_estimate") or 0),
+                    cost_source=r.get("cost_source") or "estimate",
+                    success=bool(r.get("success")),
+                    error=r.get("error"),
+                    project_id=None,
+                    params_hash=r.get("params_hash"),
+                    url=_sign(store, r.get("_key") or "") or None,
+                )
+                for r in page
+            ],
+            next_cursor=next_cursor,
+            ledger_writable=ledger_writable(),
+        )
+
+    @app.get(f"{API_PREFIX}/unclaimed/projects",
+             response_model=UnclaimedProjectsResponse, tags=["unclaimed"])
+    def get_unclaimed_projects() -> UnclaimedProjectsResponse:
+        """projects/{id}/ prefixes with no readable project record (3.15).
+
+        Discovery is by listing `projects/` — one LIST (unit 7.19), which also
+        carries the object count and bytes the material still costs. A prefix
+        whose record exists but does not parse is an orphan too (the app
+        cannot read it, so every project route fails on it), flagged
+        `unreadable`.
+        """
+        meta_by_id: dict = {}
+        try:
+            listed = store.backend.list_objects("projects/")
+        except StorageError as e:
+            raise err.StorageUnavailable(
+                "Could not list projects") from e
+        for meta in listed:
+            parts = meta.key.split("/")
+            if len(parts) < 2:
+                continue
+            pid = parts[1]
+            entry = meta_by_id.setdefault(
+                pid, {"object_count": 0, "total_bytes": 0, "record_key": None})
+            entry["object_count"] += 1
+            entry["total_bytes"] += meta.size_bytes
+            if meta.key.endswith("/project.json"):
+                entry["record_key"] = meta.key
+
+        out = []
+        for pid, entry in meta_by_id.items():
+            unreadable = False
+            if entry["record_key"] is not None:
+                try:
+                    raw = store.backend.get_bytes(entry["record_key"])
+                    parsed = json.loads(raw.decode("utf-8"))
+                    if not (isinstance(parsed, dict) and parsed.get("id")):
+                        raise ValueError("record has no id")
+                except (ObjectNotFound, ValueError, TypeError):
+                    unreadable = True
+                else:
+                    continue    # readable record — a live project, not ours
+            out.append(OrphanProjectOut(
+                project_id=pid,
+                object_count=entry["object_count"],
+                total_bytes=entry["total_bytes"],
+                unreadable=unreadable,
+            ))
+        out.sort(key=lambda p: p.project_id)
+        return UnclaimedProjectsResponse(projects=out)
+
+    @app.get(f"{API_PREFIX}/unclaimed/cache",
+             response_model=UnclaimedCacheResponse, tags=["unclaimed"])
+    def get_unclaimed_cache(
+            cursor: int = Query(default=0, ge=0),
+            limit: int = Query(default=50, ge=1, le=500)) -> UnclaimedCacheResponse:
+        """Shared cache stems — addresses, not provenance, never claimable
+        (3.15). Signed URLs are for inspection only."""
+        try:
+            listed = store.backend.list_objects("cache/")
+        except StorageError as e:
+            raise err.StorageUnavailable(
+                "Could not list the shared cache") from e
+        listed.sort(key=lambda m: m.key)
+        total = len(listed)
+        page = listed[cursor:cursor + limit]
+        next_cursor = cursor + len(page) if cursor + len(page) < total else None
+        return UnclaimedCacheResponse(
+            total_count=total,
+            rows=[
+                UnclaimedCacheRow(
+                    key=m.key,
+                    size_bytes=m.size_bytes,
+                    url=_sign(store, m.key) or None,
+                )
+                for m in page
+            ],
+            next_cursor=next_cursor,
+        )
+
+    @app.post(f"{API_PREFIX}/unclaimed/projects/{{project_id}}/adopt",
+              response_model=AdoptProjectResponse, tags=["unclaimed"],
+              status_code=201)
+    def adopt_project(project_id: str,
+                      body: AdoptProjectRequest) -> AdoptProjectResponse:
+        """Write the project record for an orphan prefix (3.15). Recovery,
+        not creation: the id is the prefix's own. A readable record already
+        present is 409 already_claimed — the id is live."""
+        _check_project_id(project_id)
+        # Recovery needs something to recover: a prefix that has never held an
+        # object is a creation, and creation is the /projects route's job.
+        if not store.backend.list_objects(f"projects/{project_id}"):
+            raise err.ProjectNotFound(project_id)
+        # The source, if one exists, is at the conventional input path.
+        inputs = store.backend.list_objects(f"projects/{project_id}/input")
+        input_key = (inputs[0].key if len(inputs) == 1
+                     else f"projects/{project_id}/input/source.mp4")
+        try:
+            project, repaired = store.adopt_project(
+                project_id, title=body.title, input_key=input_key, actor="user")
+        except PreconditionFailed as e:
+            raise err.AlreadyClaimed(str(e)) from e
+        return AdoptProjectResponse(
+            project=_adopt_summary(store, project), repaired=repaired)
+
+    @app.post(f"{API_PREFIX}/unclaimed/ledger/claim",
+              response_model=ClaimLedgerResponse, tags=["unclaimed"],
+              status_code=201)
+    def claim_ledger(body: ClaimLedgerRequest) -> ClaimLedgerResponse:
+        """Create a spend-holding project and attribute every currently-
+        unclaimed row to it (3.15). No upload target — there is no video —
+        and the source stays absent until one is ever uploaded."""
+        from foleyflow.ids import new_project_id
+        from foleyflow.ledger import record_attribution
+
+        # The conventional input path, which does not exist: this project has
+        # no video, and every absent-source path (source_url null, ingest 422)
+        # stays honest. An upload target would be a lie about a video that is
+        # never coming.
+        project_id = new_project_id()
+        project = store.create_project(
+            title=body.title, project_id=project_id,
+            input_key=f"projects/{project_id}/input/source.mp4",
+            source_sha256="", source_filename="",
+            budget_usd=body.budget_usd, actor="user")
+        claimed = record_attribution(project.id)
+        return ClaimLedgerResponse(
+            project=_adopt_summary(store, project), claimed=claimed)
+
     return app
 
 
@@ -1263,6 +1457,18 @@ def _project_summary(store: ProjectStore, project) -> ProjectSummary:
         return _summary(state.project, state.status, budget_usd=state.budget_usd)
     except StorageError:
         return _summary(project, "unknown")
+
+
+def _adopt_summary(store: ProjectStore, project) -> ProjectSummary:
+    """Confirm an adoption without letting a corrupt artifact turn a
+    successful write into a 500. The state fold reads the prefix's run
+    records; a corrupt one means the artifacts need human eyes, so fall back
+    to the frozen record's own derivation rather than failing the
+    confirmation the client is waiting on."""
+    try:
+        return _project_summary(store, project)
+    except Exception:
+        return _summary(project, "awaiting_upload", budget_usd=project.budget_usd)
 
 
 def _load_state(store: ProjectStore, project_id: str, *, events=None):

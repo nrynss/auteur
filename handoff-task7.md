@@ -867,7 +867,7 @@ project — so it belongs with the screen that claims them.
   at index 0 mid-paging; the bound (10 s row-cache TTL) and the tradeoff are
   stated in §3.14.
 
-## 7.17 Unclaimed — M
+## 7.17 Unclaimed — M — **DONE**
 
 **Depends on:** 7.19 for the object listing. **Files:** `docs/api.md` first,
 `ledger.py`, `projects.py`, `api/schemas.py`, `api/app.py`, a new UI route.
@@ -939,6 +939,42 @@ claimed into a project — existing or newly created — after which it reconcil
 into that project's `/budget`; every `projects/` prefix with no readable
 `project.json` is listed and can be adopted by creating its record; no shared
 `cache/` stem offers a claim control, and the screen states why.
+
+**Landed (docs/api.md §3.15):** three read endpoints — `GET /unclaimed/ledger`
+(orphan rows, paginated, each with a signed URL to its immutable record; the
+ledger row dicts now carry their storage key internally so the record is
+signable), `GET /unclaimed/projects` (one LIST of `projects/` — unit 7.19 —
+grouped by id, with object count and bytes for each prefix that has no
+readable `project.json`, flagging a record object that exists but does not
+parse as `unreadable`), and `GET /unclaimed/cache` (shared stems, paginated,
+inspection URLs only). Two write endpoints — `POST /unclaimed/projects/{id}/adopt`
+(writes the record for the prefix's own id via a new `store.adopt_project`;
+missing record → immutable `put_if_absent`; an unreadable record object is the
+one deliberate overwrite, recorded as `postproduction.project.adopted` with
+`repaired: true`; a readable record → `409 already_claimed`) and
+`POST /unclaimed/ledger/claim` (creates a spend-holding project with no
+upload target — there is no video, and every absent-source path stays honest
+— then attributes every currently-unclaimed row first-come). Claiming into an
+existing project reuses `POST /projects/{id}/attributions` unchanged; moving
+an orphan prefix into a *different* project is refused by design (ownership is
+the key path; copying would be a provenance lie).
+
+**UI:** new `/unclaimed` route (deep-linkable through the SPA catch-all) with
+an Unclaimed screen — three panels, three truths: orphan rows (claim into a
+project via a picker, or create a spend archive), orphan prefixes (Adopt with
+the unreadable-record explanation), and shared cache stems under a
+"never claimable" caveat with no claim control. The ledger section fails
+closed on `ledger_writable: false` (§3.10 — money figures withheld). A link
+on the projects index. Tests: 8 API contract tests (orphan listing,
+pagination, unwritable flag, prefix detection incl. unreadable, adopt
+recovery + repair + double-adopt 409 + malformed id, claim reconciliation
+into `/budget`, cache never-claimable by construction) and 5 mount tests
+(three sections, claim-into, spend archive, adopt, fail-closed).
+
+**Not in this unit:** the bucket-wide explorer of *claimed* material (that is
+the Dossier at wider scope and was deliberately subtracted from the old
+scope), and any "move an orphan into another project" action (refused by
+design).
 
 ## 7.18 Backend read latency — M — **DONE**
 
@@ -1107,15 +1143,15 @@ blanket component tests.
 
 # G. Still open
 
-- **Unclaimed (7.17)** — the archive explorer: a bucket-wide object browser,
-  which is §3.9's Dossier at a wider scope; what only it can show is the
-  material no project claims — orphan ledger rows and orphan `projects/`
-  prefixes, each claimable, with shared `cache/` stems shown but never
-  claimable — and it owns the bucket-wide `GET /ledger` that 7.16 deferred.
-  It consumes 7.19's `list_objects` (already landed, already paying off
-  against the Dossier).
-  **7.18 (read latency), 7.16 (ledger rows) and 7.19 (no-HEAD listing) are
-  DONE.**
+- **The bucket-wide object explorer (subtracted from the old 7.17 scope).**
+  The Dossier at wider scope — every project, every object, every version —
+  was deliberately subtracted when 7.17 was re-scoped: it is an ops
+  convenience, not a director's need, and the unclaimed view covers the only
+  material no existing screen shows. If it is ever wanted, it owns the
+  bucket-wide `GET /ledger` that 7.16 deferred and consumes 7.19's
+  `list_objects` (already landed, already paying off against the Dossier).
+  **7.18 (read latency), 7.16 (ledger rows), 7.19 (no-HEAD listing) and
+  7.17 (Unclaimed) are DONE.**
 - The states the mockup does not cover — loading, empty, error, the in-flight
   run lock, draft-versus-committed, and the director-mode diff drawn on the
   timeline itself. Listed in `docs/design/control-room.md` §9. These are design

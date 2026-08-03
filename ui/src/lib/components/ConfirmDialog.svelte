@@ -18,6 +18,7 @@
    * separates with border + backdrop. */
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
+  import type { Snippet } from "svelte";
 
   interface Props {
     open: boolean;
@@ -27,6 +28,9 @@
     /** The cost, pre-formatted (screens pass formatCost of the exact
      * confirm_cost_usd they will echo back). null hides the cost line. */
     amount?: string | null;
+    /** Extra content below the body — form fields for a confirm that needs
+     * input (e.g. an adopt title or a target project picker). */
+    children?: Snippet;
     confirmLabel?: string;
     cancelLabel?: string;
     danger?: boolean;
@@ -40,6 +44,7 @@
     title,
     body = "",
     amount = null,
+    children,
     confirmLabel = "Confirm",
     cancelLabel = "Cancel",
     danger = false,
@@ -127,6 +132,7 @@
         </button>
       </header>
       {#if body}<p id={descId}>{body}</p>{/if}
+      {#if children}{@render children()}{/if}
       {#if amount != null}
         <div class="cost">
           <span class="k">This will cost</span>

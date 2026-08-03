@@ -28,6 +28,13 @@ export type PeaksResponse = Schema["PeaksResponse"];
 export type QuotaResponse = Schema["QuotaResponse"];
 export type LedgerRowOut = Schema["LedgerRowOut"];
 export type LedgerRowsResponse = Schema["LedgerRowsResponse"];
+export type AttributionOut = Schema["AttributionOut"];
+export type UnclaimedLedgerResponse = Schema["UnclaimedLedgerResponse"];
+export type UnclaimedProjectsResponse = Schema["UnclaimedProjectsResponse"];
+export type OrphanProjectOut = Schema["OrphanProjectOut"];
+export type UnclaimedCacheResponse = Schema["UnclaimedCacheResponse"];
+export type AdoptProjectResponse = Schema["AdoptProjectResponse"];
+export type ClaimLedgerResponse = Schema["ClaimLedgerResponse"];
 
 const P = "/api/v1/projects";
 
@@ -98,6 +105,66 @@ export function getLedgerRows(
 ): Promise<LedgerRowsResponse> {
   const q = new URLSearchParams({ cursor: String(cursor), limit: String(limit) });
   return api<LedgerRowsResponse>(`${P}/${id}/ledger?${q}`);
+}
+
+// -- unclaimed (unit 7.17, docs/api.md §3.15) ------------------------------
+// The material no project claims: orphan ledger rows, orphan project prefixes,
+// and shared cache stems (shown, never claimable).
+
+const U = "/api/v1/unclaimed";
+
+export function getUnclaimedLedger(
+  cursor = 0,
+  limit = 50,
+): Promise<UnclaimedLedgerResponse> {
+  const q = new URLSearchParams({ cursor: String(cursor), limit: String(limit) });
+  return api<UnclaimedLedgerResponse>(`${U}/ledger?${q}`);
+}
+
+export function getUnclaimedProjects(): Promise<UnclaimedProjectsResponse> {
+  return api<UnclaimedProjectsResponse>(`${U}/projects`);
+}
+
+export function getUnclaimedCache(
+  cursor = 0,
+  limit = 50,
+): Promise<UnclaimedCacheResponse> {
+  const q = new URLSearchParams({ cursor: String(cursor), limit: String(limit) });
+  return api<UnclaimedCacheResponse>(`${U}/cache?${q}`);
+}
+
+export function adoptOrphanProject(
+  projectId: string,
+  title: string,
+): Promise<AdoptProjectResponse> {
+  return api<AdoptProjectResponse>(`${U}/projects/${encodeURIComponent(projectId)}/adopt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+}
+
+export function claimOrphanLedger(
+  title: string,
+  budgetUsd?: number | null,
+): Promise<ClaimLedgerResponse> {
+  return api<ClaimLedgerResponse>(`${U}/ledger/claim`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, budget_usd: budgetUsd ?? null }),
+  });
+}
+
+/** Claim orphan rows into an existing project (docs/api.md §3.11). */
+export function attributeOrphanRows(
+  id: string,
+  before?: number,
+): Promise<AttributionOut> {
+  return api<AttributionOut>(`${P}/${id}/attributions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(before != null ? { before } : {}),
+  });
 }
 
 export function getBudget(id: string): Promise<BudgetResponse> {
