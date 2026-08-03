@@ -432,6 +432,43 @@ def test_event_log_cache_invalidates_on_append(store, project, monkeypatch):
     assert state.event_count == len(events)
 
 
+def test_event_log_cache_isolated_across_backend_scopes(tmp_path):
+    """Two ProjectStores on different roots never share an event-log checkpoint.
+
+    Same project_id on two backends is the multi-tenancy disclosure case the
+    (scope_id, project_id) key exists to prevent (task 18 residual).
+    """
+    from foleyflow.projects import ProjectStore
+    from foleyflow.storage import LocalBackend
+
+    from foleyflow.ids import new_project_id
+
+    store_a = ProjectStore(LocalBackend(str(tmp_path / "a")))
+    store_b = ProjectStore(LocalBackend(str(tmp_path / "b")))
+    assert store_a.backend.scope_id() != store_b.backend.scope_id()
+
+    # Same logical project id on both backends — the disclosure case.
+    proj_id = new_project_id()
+    store_a.append_event(proj_id, "postproduction.test.scope_a", payload={"s": "a"})
+    # Prime A's cache.
+    events_a = store_a.list_events(proj_id)
+    assert len(events_a) == 1
+    assert events_a[0].payload.get("s") == "a"
+
+    # B must not see A's cached events for the same project_id.
+    events_b = store_b.list_events(proj_id)
+    assert events_b == []
+
+    store_b.append_event(proj_id, "postproduction.test.scope_b", payload={"s": "b"})
+    events_b2 = store_b.list_events(proj_id)
+    assert len(events_b2) == 1
+    assert events_b2[0].payload.get("s") == "b"
+    # A still only has A's event.
+    events_a2 = store_a.list_events(proj_id)
+    assert len(events_a2) == 1
+    assert events_a2[0].payload.get("s") == "a"
+
+
 def test_get_state_sees_just_appended_event(store, project):
     """Same-process append then get_state must include the new event."""
     before = store.get_state(project.id).event_count

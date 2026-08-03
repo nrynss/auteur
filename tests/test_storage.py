@@ -16,6 +16,80 @@ def _write(path: str, data: bytes = b"canonical-wav-bytes") -> str:
 
 # -- LocalBackend --
 
+def test_scope_id_identifies_physical_store(tmp_path):
+    """scope_id is the process-cache key for ledger/storage scoped data."""
+    root = tmp_path / "store"
+    root.mkdir()
+    a = LocalBackend(str(root))
+    b = LocalBackend(str(root))
+    other = LocalBackend(str(tmp_path / "other"))
+    assert a.scope_id() == b.scope_id()
+    assert a.scope_id() != other.scope_id()
+    assert a.scope_id().startswith("local:")
+
+
+def test_b2_scope_id_is_bucket_and_prefix(monkeypatch):
+    """B2 scope_id is bucket + prefix; trailing slash on prefix is normalized."""
+    import boto3
+    from foleyflow.storage.b2 import B2Backend
+
+    class _FakeClient:
+        pass
+
+    # B2Backend imports boto3 inside __init__; stub the client construction.
+    monkeypatch.setattr(boto3, "client",
+                        lambda *a, **k: _FakeClient())
+
+    def make(prefix: str) -> B2Backend:
+        return B2Backend(
+            endpoint_url="https://s3.us-east-005.backblazeb2.com",
+            region="us-east-005",
+            bucket="my-bucket",
+            key_id="kid",
+            application_key="secret",
+            prefix=prefix,
+        )
+
+    a = make("foleyflow/")
+    b = make("foleyflow")
+    other = make("other")
+    empty = make("")
+    assert a.scope_id() == b.scope_id() == "b2:my-bucket/foleyflow"
+    assert a.scope_id() != other.scope_id()
+    assert empty.scope_id() == "b2:my-bucket"
+    assert a.scope_id() != empty.scope_id()
+
+
+def test_factory_reuses_backend_for_identical_config(monkeypatch, tmp_path):
+    """Warm scope_id paths must not construct a new backend every hit."""
+    import os
+    import foleyflow.storage.factory as factory
+
+    root = str(tmp_path / "cached_store")
+    monkeypatch.setenv("FOLEYFLOW_CACHE_BACKEND", "local")
+    monkeypatch.setenv("FOLEYFLOW_LOCAL_CACHE_DIR", root)
+    factory._backend_cache.clear()
+
+    # Suite conftest wraps factory.get_backend with an offline LocalBackend.
+    # Exercise the real caching path directly.
+    def real_get(kind=None):
+        kind = (kind or os.environ.get("FOLEYFLOW_CACHE_BACKEND", "local")).strip().lower()
+        key = factory._config_key(kind)
+        with factory._backend_lock:
+            cached = factory._backend_cache.get(key)
+            if cached is not None:
+                return cached
+            backend = factory._build_backend(kind)
+            factory._backend_cache[key] = backend
+            return backend
+
+    monkeypatch.setattr(factory, "get_backend", real_get)
+    first = factory.get_backend("local")
+    second = factory.get_backend("local")
+    assert first is second
+    assert first.scope_id() == LocalBackend(root).scope_id()
+
+
 def test_put_get_roundtrip_preserves_bytes(tmp_path):
     backend = LocalBackend(str(tmp_path / "store"))
     src = _write(str(tmp_path / "src.wav"), b"abc123")

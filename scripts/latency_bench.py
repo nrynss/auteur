@@ -298,7 +298,7 @@ def run_bench(
 
     # Point ledger + storage at our delayed backend.
     ledger.LEDGER_PATH = None
-    ledger._write_ok = True
+    ledger._set_write_ok(True)
     ledger._invalidate_row_cache()
     ledger._invalidate_writable_cache()
     ledger.invalidate_project_spend_cache()

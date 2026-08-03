@@ -47,6 +47,12 @@ class LocalBackend:
     def __init__(self, root: str):
         self.root = os.path.abspath(root)
 
+    def scope_id(self) -> str:
+        """Canonical absolute root — equivalent paths share a ledger cache slot."""
+        # realpath collapses symlinks and ".." so two LocalBackend instances
+        # aimed at the same directory get the same process-cache key.
+        return f"local:{os.path.realpath(self.root)}"
+
     def _path(self, key: str) -> str:
         """Resolve a storage key to a path under root.
 

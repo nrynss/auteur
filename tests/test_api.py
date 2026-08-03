@@ -1782,7 +1782,7 @@ def budget_ledger(store, monkeypatch):
     monkeypatch.delenv("FOLEYFLOW_LEDGER_PATH", raising=False)
     monkeypatch.setattr(ledger_mod, "LEDGER_PATH", None)
     monkeypatch.setattr(storage_mod, "get_backend", lambda *a, **k: store.backend)
-    monkeypatch.setattr(ledger_mod, "_write_ok", True)
+    ledger_mod._set_write_ok(True)
     ledger_mod._invalidate_row_cache()
     ledger_mod._invalidate_attr_cache()
     ledger_mod.invalidate_project_spend_cache()
@@ -3080,10 +3080,10 @@ def test_create_app_without_a_store_does_not_reach_a_real_backend(monkeypatch):
 def test_budget_reports_an_unwritable_ledger(client, store, project):
     """Unit 7.8's warning chip needs the false branch to actually flow through.
 
-    conftest pins `ledger._write_ok = True` suite-wide, so without this the
-    false branch is never exercised end to end: a budget payload that always
-    claims the ledger is writable would hide exactly the condition the chip
-    exists to surface.
+    conftest pins write_ok=True suite-wide via _set_write_ok, so without this
+    the false branch is never exercised end to end: a budget payload that
+    always claims the ledger is writable would hide exactly the condition the
+    chip exists to surface.
     """
     import foleyflow.ledger as ledger
 
@@ -3091,7 +3091,7 @@ def test_budget_reports_an_unwritable_ledger(client, store, project):
     assert r.status_code == 200, r.text
     assert r.json()["ledger_writable"] is True
 
-    ledger._write_ok = False
+    ledger._set_write_ok(False)
     try:
         r2 = client.get(f"{API_PREFIX}/projects/{project.id}/budget")
         assert r2.status_code == 200, r2.text
@@ -3100,7 +3100,7 @@ def test_budget_reports_an_unwritable_ledger(client, store, project):
         # the spend figure's authority, it does not fail the request.
         assert r2.json()["spent"] == 0.0
     finally:
-        ledger._write_ok = True
+        ledger._set_write_ok(True)
 
 
 # -- unclaimed (unit 7.17) ---------------------------------------------------

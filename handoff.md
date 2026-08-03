@@ -16,13 +16,13 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   `docs/api.md` is written ahead of the code and treated as source of truth;
   every endpoint in it is live and covered by tests.
 - Task numbers are the current queue; DONE items keep their titles. Remaining:
-  **7 (control-room UI)**, then **18–20** (roadmap enablers). Tasks **9–17**
+  **7 (control-room UI)**, then **19–20** (roadmap enablers). Tasks **9–18**
   are **DONE**. `docs/roadmap.md` is the product document describing the two
   futures 18–20 enable; it is not an engineering plan and carries no task
   numbers.
 - CI (10), build identity (11), post-deploy smoke (12), doctor (13), live paid
   + fallback SFX (14), demo evidence (15), and Secret Manager (16) are in place.
-- `uv run pytest -q` → **755 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **762 passed, 1 skipped**. No provider credentials
   required for tests: the billed calls are stubbed at two seams,
   `stems.generate_many` and `sfx_cache.generate_canonical_wav`. Everything else
   — ffmpeg, the mix, the shared cache, storage, the Genblaze pipelines — runs
@@ -345,34 +345,19 @@ product document and does not carry it):
   customer's bucket the boundary; the prefix scheme is moot.
 - *Per-tenant quota reset timezone.* Arrives with tenant configuration.
 
-## 18. Key the ledger's process caches by backend scope — S
+## 18. Key the ledger's process caches by backend scope — S — **DONE**
 
-**Depends on:** nothing. **Files:** `storage/base.py`, `storage/b2.py`,
-`storage/local.py`, `ledger.py`, `tests/conftest.py`, tests.
-
-`_row_cache`, `_attr_cache` and the quota/spend aggregates are module globals
-holding rows read from **one** backend. Nothing distinguishes which. Today that
-is merely invisible; it has already cost real bugs.
-
-Every test fixture that swaps a backend must hand-invalidate each cache
-(`tests/conftest.py`, `tests/test_ledger_storage.py`), and a missed one poisons
-later tests — exactly what happened when `_attr_cache` was added and the
-`conftest` fixture was not updated with it. Every new cache repeats the
-obligation, and the compiler cannot help.
-
-Add `scope_id()` to the `Backend` protocol: `B2Backend` returns bucket plus
-prefix (it already holds `self.bucket`), `LocalBackend` returns its root
-directory. Key the caches by it. One scope exists today, so behaviour is
-unchanged; a second backend gets its own entry instead of another backend's
-rows. Fixtures can then stop hand-invalidating, because a fresh temp-dir
-backend is a fresh scope.
-
-This is also the prerequisite that makes multi-tenancy safe later: serving one
-tenant from another's cached ledger rows is disclosure, not a stale read.
-
-**Acceptance:** two backends alive in one process never see each other's cached
-rows; the storage fixtures drop their manual invalidation and the suite still
-passes.
+`Backend.scope_id()` is the process-cache key: LocalBackend uses a canonical
+absolute root (`local:{realpath}`), B2Backend uses `b2:{bucket}/{prefix}`,
+file-mode ledger uses `file:{realpath}`. Ledger row/attr/spend/quota/
+writable-probe caches and the fail-closed `write_ok` pin live on a per-scope
+`_ScopeState` (epochs and single-flight preserved; LRU caps retained scopes).
+Hot paths bind `(scope_id, backend)` once so a mid-flight rewire cannot
+cross-install. Factory caches backends by config fingerprint so warm
+`scope_id` hits do not rebuild boto3 clients. Event-log checkpoints are
+keyed by `(scope_id, project_id)`. Fixtures no longer hand-invalidate ledger
+caches on backend swap — a fresh temp-dir is a fresh scope. Isolation tests
+cover A→B→A for rows, spend, attrs, quota, write_ok, and event logs.
 
 ## 19. Externalise the brand — S
 

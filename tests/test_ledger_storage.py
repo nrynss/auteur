@@ -21,18 +21,18 @@ from foleyflow.storage import LocalBackend, StorageError
 
 @pytest.fixture
 def storage_ledger(tmp_path, monkeypatch):
-    """Route the ledger at a private LocalBackend and restore write-ok state."""
+    """Route the ledger at a private LocalBackend and restore write-ok state.
+
+    A distinct root is a distinct ``scope_id``, so process caches start empty
+    without hand-invalidation (task 18).
+    """
     backend = LocalBackend(str(tmp_path / "store"))
     monkeypatch.delenv("FOLEYFLOW_LEDGER_PATH", raising=False)
     monkeypatch.setattr(ledger, "LEDGER_PATH", None)
-    monkeypatch.setattr(ledger, "_write_ok", True)
     # ledger does `from foleyflow.storage import get_backend` at call time, so
     # patching the package attribute is enough.
     monkeypatch.setattr("foleyflow.storage.get_backend", lambda *a, **k: backend)
-    ledger._invalidate_row_cache()
-    ledger._invalidate_writable_cache()
-    ledger._invalidate_attr_cache()
-    ledger.invalidate_project_spend_cache()
+    ledger._set_write_ok(True)
     return backend
 
 
@@ -90,13 +90,13 @@ def test_storage_write_failure_marks_ledger_unwritable(storage_ledger, monkeypat
 
     broken = Broken(storage_ledger.root)
     monkeypatch.setattr("foleyflow.storage.get_backend", lambda *a, **k: broken)
-    monkeypatch.setattr(ledger, "_write_ok", True)
+    ledger._set_write_ok(True)
 
     assert ledger.ledger_writable() is True  # probe uses put_bytes, still works
 
     # Force the write path to use the broken put_if_absent.
     ledger.log_transaction("gemini-2.5-flash", "x", 0.01, success=True)
-    assert ledger._write_ok is False
+    assert ledger._scope_state().write_ok is False
     assert ledger.ledger_writable() is False
     # No transaction object landed.
     keys = [k for k in broken.list_keys(ledger.LEDGER_PREFIX)
@@ -113,7 +113,7 @@ def test_file_override_still_appends_jsonl(tmp_path, monkeypatch):
     """FOLEYFLOW_LEDGER_PATH keeps the historical single-file path for tests."""
     path = tmp_path / "nested" / "ledger.jsonl"
     monkeypatch.setattr(ledger, "LEDGER_PATH", str(path))
-    monkeypatch.setattr(ledger, "_write_ok", True)
+    ledger._set_write_ok(True)
 
     ledger.log_transaction("m", "h", 0.01, success=True)
     ledger.log_transaction("m", "i", 0.02, success=True)
@@ -364,7 +364,7 @@ def test_ledger_writable_caches_probe_within_ttl(storage_ledger, monkeypatch):
 
     monkeypatch.setattr(storage_ledger, "put_bytes", counting_put)
     ledger._invalidate_writable_cache()
-    monkeypatch.setattr(ledger, "_write_ok", True)
+    ledger._set_write_ok(True)
 
     assert ledger.ledger_writable() is True
     assert puts["n"] == 1
@@ -392,13 +392,13 @@ def test_ledger_writable_failed_write_reports_false_without_reprobe(
 
     broken = Broken(storage_ledger.root)
     monkeypatch.setattr("foleyflow.storage.get_backend", lambda *a, **k: broken)
-    monkeypatch.setattr(ledger, "_write_ok", True)
+    ledger._set_write_ok(True)
     ledger._invalidate_writable_cache()
 
     assert ledger.ledger_writable() is True
     probe_puts = puts["n"]
     ledger.log_transaction("gemini-2.5-flash", "x", 0.01, success=True)
-    assert ledger._write_ok is False
+    assert ledger._scope_state().write_ok is False
     assert ledger.ledger_writable() is False
     assert puts["n"] == probe_puts, "pinned False must not re-PUT the probe"
 
@@ -523,8 +523,9 @@ def test_single_flight_waiter_does_not_serve_stale_on_leader_failure(
     # Populate cache with the seed row.
     assert len(ledger._read_storage_rows(force=True)) == 1
     # Expire TTL but leave the list in place (the bug condition).
-    ledger._row_cache_at = time.monotonic() - ledger._ROW_CACHE_TTL_S - 1.0
-    stale = list(ledger._row_cache)
+    st = ledger._scope_state()
+    st.row_cache_at = time.monotonic() - ledger._ROW_CACHE_TTL_S - 1.0
+    stale = list(st.row_cache)
     assert stale is not None
 
     real_list = storage_ledger.list_keys
@@ -564,8 +565,8 @@ def test_single_flight_waiter_does_not_serve_stale_on_leader_failure(
     assert all(isinstance(exc, StorageError) for _, exc in outcomes)
     # Cache must not look fresh after a failed flight.
     now = time.monotonic()
-    if ledger._row_cache is not None:
-        assert (now - ledger._row_cache_at) >= ledger._ROW_CACHE_TTL_S
+    if st.row_cache is not None:
+        assert (now - st.row_cache_at) >= ledger._ROW_CACHE_TTL_S
 
 
 # -- unit 7.18 phase-2: write-through exact aggregates ----------------------
@@ -950,3 +951,131 @@ def test_a_stale_entry_without_a_stamp_is_refused(storage_ledger):
     assert ledger._spend_fresh({"total": 1.0, "seeded_at": "nope"}) is False
     assert ledger._spend_fresh(
         {"total": 1.0, "seeded_at": time.monotonic()}) is True
+
+
+# -- task 18: process caches keyed by backend scope -------------------------
+
+def test_local_backend_scope_id_is_canonical(tmp_path):
+    """Equivalent roots share a scope; different roots do not."""
+    root = tmp_path / "store"
+    root.mkdir()
+    a = LocalBackend(str(root))
+    b = LocalBackend(str(root / "nested" / ".." ))
+    c = LocalBackend(str(tmp_path / "other"))
+    assert a.scope_id() == b.scope_id()
+    assert a.scope_id().startswith("local:")
+    assert a.scope_id() != c.scope_id()
+
+
+def test_caches_isolated_across_backend_scopes(tmp_path, monkeypatch):
+    """Two backends alive in one process never see each other's cached state.
+
+    Covers rows, spend, attributions, quota aggregates, and the write_ok /
+    writable-probe pin — the full multi-tenancy disclosure surface for ledger
+    process caches.
+    """
+    from datetime import datetime
+    from foleyflow.quota import RESET_TZ, get_quota
+
+    backend_a = LocalBackend(str(tmp_path / "store_a"))
+    backend_b = LocalBackend(str(tmp_path / "store_b"))
+    assert backend_a.scope_id() != backend_b.scope_id()
+
+    monkeypatch.delenv("FOLEYFLOW_LEDGER_PATH", raising=False)
+    monkeypatch.setattr(ledger, "LEDGER_PATH", None)
+
+    now = datetime.now(RESET_TZ)
+
+    # --- backend A: write + warm row/spend/attr/quota/writable ---
+    monkeypatch.setattr("foleyflow.storage.get_backend",
+                        lambda *a, **k: backend_a)
+    ledger._set_write_ok(True)
+    with ledger.set_project_context("proj_A"):
+        ledger.log_transaction("gemini-2.5-flash", "from_a", 0.10, success=True)
+    # Unattributed row + rescue override (attr cache).
+    orphan_ts = __import__("time").time() - 60
+    backend_a.put_bytes(
+        f"{ledger.LEDGER_PREFIX}orphan_a.json",
+        __import__("json").dumps({
+            "endpoint": "m", "params_hash": "orphan_a",
+            "cost_estimate": 0.05, "success": True, "timestamp": orphan_ts,
+            "project_id": None, "cost_source": "estimate",
+        }).encode())
+    ledger._invalidate_row_cache()
+    assert ledger.record_attribution("proj_A", before=orphan_ts + 10) == 1
+    assert any(a["project_id"] == "proj_A" for a in ledger.iter_attributions())
+
+    rows_a = ledger.iter_transactions()
+    assert len(rows_a) == 2
+    assert ledger.project_spend("proj_A")["total"] == pytest.approx(0.15)
+    assert get_quota("gemini-2.5-flash", now=now).per_day.used >= 1
+    assert ledger.ledger_writable() is True
+    st_a = ledger._scope_state(backend_a.scope_id())
+    assert st_a.row_cache is not None and len(st_a.row_cache) == 2
+    assert st_a.attr_cache is not None and len(st_a.attr_cache) == 1
+    assert st_a.quota_agg_seeded is True or st_a.quota_ts
+    assert st_a.write_ok is True
+
+    # Pin A unwritable — B must stay writable (per-scope pin).
+    ledger._set_write_ok(False)
+    assert ledger.ledger_writable() is False
+    assert st_a.write_ok is False
+
+    # --- switch to B: must not see A's rows, spend, attrs, quota, or pin ---
+    monkeypatch.setattr("foleyflow.storage.get_backend",
+                        lambda *a, **k: backend_b)
+    assert ledger.iter_transactions() == []
+    assert ledger.project_spend("proj_A")["total"] == pytest.approx(0.0)
+    assert ledger.iter_attributions() == []
+    assert get_quota("gemini-2.5-flash", now=now).per_day.used == 0
+    assert ledger.ledger_writable() is True  # B's pin is independent
+    st_b = ledger._scope_state(backend_b.scope_id())
+    assert st_b.row_cache is None or st_b.row_cache == []
+    assert st_b.attr_cache is None or st_b.attr_cache == []
+    assert st_b.write_ok is True
+    assert st_a.row_cache is not None and len(st_a.row_cache) == 2
+    assert st_a.write_ok is False
+
+    with ledger.set_project_context("proj_B"):
+        ledger.log_transaction("gemini-2.5-flash", "from_b", 0.20, success=True)
+    rows_b = ledger.iter_transactions()
+    assert len(rows_b) == 1
+    assert rows_b[0]["params_hash"] == "from_b"
+    assert ledger.project_spend("proj_B")["total"] == pytest.approx(0.20)
+    assert ledger.project_spend("proj_A")["total"] == pytest.approx(0.0)
+    assert get_quota("gemini-2.5-flash", now=now).per_day.used == 1
+
+    # --- back to A: still only A's data and still unwritable ---
+    monkeypatch.setattr("foleyflow.storage.get_backend",
+                        lambda *a, **k: backend_a)
+    rows_a2 = ledger.iter_transactions()
+    assert len(rows_a2) == 2
+    assert ledger.project_spend("proj_A")["total"] == pytest.approx(0.15)
+    assert ledger.project_spend("proj_B")["total"] == pytest.approx(0.0)
+    assert any(a["project_id"] == "proj_A" for a in ledger.iter_attributions())
+    assert ledger.ledger_writable() is False
+    ledger._set_write_ok(True)  # restore A for later tests sharing process
+
+    # Physical stores remain isolated too (not just the cache).
+    a_keys = [k for k in backend_a.list_keys(ledger.LEDGER_PREFIX)
+              if ledger._is_transaction_key(k)]
+    b_keys = [k for k in backend_b.list_keys(ledger.LEDGER_PREFIX)
+              if ledger._is_transaction_key(k)]
+    assert len(a_keys) == 2 and len(b_keys) == 1
+
+
+def test_file_mode_scope_uses_realpath(tmp_path, monkeypatch):
+    """Symlinked FOLEYFLOW_LEDGER_PATH targets share one file: scope slot."""
+    real = tmp_path / "real" / "ledger.jsonl"
+    real.parent.mkdir(parents=True)
+    link_dir = tmp_path / "via_link"
+    link_dir.symlink_to(real.parent)
+    path_a = str(real)
+    path_b = str(link_dir / "ledger.jsonl")
+
+    monkeypatch.setattr(ledger, "LEDGER_PATH", path_a)
+    sid_a = ledger._active_scope_id()
+    monkeypatch.setattr(ledger, "LEDGER_PATH", path_b)
+    sid_b = ledger._active_scope_id()
+    assert sid_a == sid_b
+    assert sid_a.startswith("file:")

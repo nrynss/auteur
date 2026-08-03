@@ -62,20 +62,31 @@ from foleyflow.storage.base import (
 # the epoch and clear the entry so a just-written event is never missing.
 # Cross-process appends change list_keys fingerprint → miss. Multi-instance
 # limitation matches the ledger row cache: each process holds its own view.
+#
+# Keys are (backend.scope_id(), project_id) so two backends that happen to
+# share a project id never serve each other's cached event lists (same class
+# of disclosure as unscoped ledger row caches — task 18).
 _event_log_lock = threading.Lock()
-_event_log_epoch: Dict[str, int] = {}
-# project_id -> (epoch, (n_keys, last_key), events)
-_event_log_cache: Dict[str, Tuple[int, Tuple[int, str], List["Event"]]] = {}
+_event_log_epoch: Dict[Tuple[str, str], int] = {}
+# (scope_id, project_id) -> (epoch, (n_keys, last_key), events)
+_event_log_cache: Dict[
+    Tuple[str, str], Tuple[int, Tuple[int, str], List["Event"]]
+] = {}
 
 
 def invalidate_event_log_cache(project_id: Optional[str] = None) -> None:
-    """Drop cached event lists (one project, or all). Tests / backend rewire."""
+    """Drop cached event lists (one project across all scopes, or all)."""
     with _event_log_lock:
         if project_id is None:
             _event_log_cache.clear()
             _event_log_epoch.clear()
         else:
-            _event_log_cache.pop(project_id, None)
+            doomed = [k for k in _event_log_cache if k[1] == project_id]
+            for k in doomed:
+                _event_log_cache.pop(k, None)
+            doomed_e = [k for k in _event_log_epoch if k[1] == project_id]
+            for k in doomed_e:
+                _event_log_epoch.pop(k, None)
 
 # Lifecycle event types — SPEC.md §8.4's domain-neutral names. Deliberately not
 # incident-domain terms inherited from Mosaic.
@@ -581,9 +592,10 @@ class ProjectStore:
         self._put_json(f"{self.events_prefix(project_id)}{event.id}.json",
                        event.to_dict())
         # Never serve state missing this event in the same process.
+        cache_key = (self.backend.scope_id(), project_id)
         with _event_log_lock:
-            _event_log_epoch[project_id] = _event_log_epoch.get(project_id, 0) + 1
-            _event_log_cache.pop(project_id, None)
+            _event_log_epoch[cache_key] = _event_log_epoch.get(cache_key, 0) + 1
+            _event_log_cache.pop(cache_key, None)
         return event
 
     def list_events(self, project_id: str) -> List[Event]:
@@ -597,15 +609,18 @@ class ProjectStore:
         Process-local checkpoint: after the first multi-get for a stable key
         set, subsequent folds reuse the event list (still re-lists keys so a
         cross-process append is detected). Same-process appends bump an epoch
-        and clear the cache immediately.
+        and clear the cache immediately. Cache slots are keyed by
+        ``(backend.scope_id(), project_id)`` so two stores never share a
+        project's checkpoint.
         """
         project_id = self._check_id(project_id, "proj")
+        cache_key = (self.backend.scope_id(), project_id)
         keys = sorted(self.backend.list_keys(self.events_prefix(project_id)))
         fingerprint: Tuple[int, str] = (
             len(keys), keys[-1] if keys else "")
         with _event_log_lock:
-            epoch = _event_log_epoch.get(project_id, 0)
-            cached = _event_log_cache.get(project_id)
+            epoch = _event_log_epoch.get(cache_key, 0)
+            cached = _event_log_cache.get(cache_key)
             if (cached is not None
                     and cached[0] == epoch
                     and cached[1] == fingerprint):
@@ -614,8 +629,8 @@ class ProjectStore:
 
         if not keys:
             with _event_log_lock:
-                if _event_log_epoch.get(project_id, 0) == epoch:
-                    _event_log_cache[project_id] = (epoch, fingerprint, [])
+                if _event_log_epoch.get(cache_key, 0) == epoch:
+                    _event_log_cache[cache_key] = (epoch, fingerprint, [])
             return []
 
         # skip_missing=False: a listed event object must exist; a miss or a
@@ -629,8 +644,8 @@ class ProjectStore:
             # Discard if an append landed while we multi-got — caller still
             # receives this snapshot (same race as an uncached mid-write list);
             # the next call re-fetches.
-            if _event_log_epoch.get(project_id, 0) == epoch:
-                _event_log_cache[project_id] = (epoch, fingerprint, events)
+            if _event_log_epoch.get(cache_key, 0) == epoch:
+                _event_log_cache[cache_key] = (epoch, fingerprint, events)
         return events
 
     @staticmethod

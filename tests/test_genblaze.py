@@ -521,8 +521,7 @@ def file_ledger(tmp_path, monkeypatch):
     # alone would leave rows going to whatever backend the shell is pointed at.
     path = tmp_path / "ledger.jsonl"
     monkeypatch.setattr(ledger, "LEDGER_PATH", str(path))
-    monkeypatch.setattr(ledger, "_write_ok", True)
-    ledger._invalidate_row_cache()
+    ledger._set_write_ok(True)
     return str(path)
 
 

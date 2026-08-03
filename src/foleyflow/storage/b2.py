@@ -95,6 +95,15 @@ class B2Backend:
             config=Config(signature_version="s3v4", retries={"max_attempts": 3}),
         )
 
+    def scope_id(self) -> str:
+        """Bucket + prefix — the B2 physical store this backend addresses."""
+        # Ledger process caches key on this so a second bucket/prefix never
+        # reads rows cached for the first. Empty prefix is still a distinct
+        # store from a non-empty one on the same bucket.
+        if self.prefix:
+            return f"b2:{self.bucket}/{self.prefix}"
+        return f"b2:{self.bucket}"
+
     def _key(self, key: str) -> str:
         """Apply the bucket prefix, validating the key first.
 

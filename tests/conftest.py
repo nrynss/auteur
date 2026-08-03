@@ -42,7 +42,6 @@ def _isolate_ambient_deploy_config(tmp_path, monkeypatch):
     import foleyflow.storage.factory as factory
 
     monkeypatch.setattr(ledger, "LEDGER_PATH", None)
-    monkeypatch.setattr(ledger, "_write_ok", True)
 
     real_get_backend = factory.get_backend
 
@@ -58,20 +57,17 @@ def _isolate_ambient_deploy_config(tmp_path, monkeypatch):
 
     monkeypatch.setattr(factory, "get_backend", offline_get_backend)
     monkeypatch.setattr(storage_pkg, "get_backend", offline_get_backend)
+    # Fresh temp-dir scope defaults write_ok=True; pin explicitly after rewire.
+    ledger._set_write_ok(True)
 
-    ledger._invalidate_row_cache()
-    ledger._invalidate_writable_cache()
-    ledger._invalidate_attr_cache()
-    ledger.invalidate_project_spend_cache()
+    # Ledger row/attr/spend/quota caches are keyed by Backend.scope_id(); this
+    # fixture's private LocalBackend is a fresh scope, so hand-invalidation is
+    # unnecessary. (Invalidation-on-write within a scope still works.)
     from foleyflow.projects import invalidate_event_log_cache
     invalidate_event_log_cache()
 
     yield
 
-    # Drop any rows this test left in process-local caches so the next test
-    # starts from a clean slate even if it reuses the same project ids.
-    ledger._invalidate_row_cache()
-    ledger._invalidate_writable_cache()
-    ledger._invalidate_attr_cache()
-    ledger.invalidate_project_spend_cache()
+    # Event-log cache is scope-keyed; clear still keeps suite tidy across
+    # fixtures that share a project id on different roots.
     invalidate_event_log_cache()

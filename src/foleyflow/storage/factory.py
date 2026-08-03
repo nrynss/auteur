@@ -8,7 +8,8 @@ provenance manifests point at objects that were never uploaded.
 
 import os
 import re
-from typing import Optional
+import threading
+from typing import Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -21,6 +22,14 @@ load_dotenv()
 _B2_REQUIRED = ("B2_ENDPOINT_URL", "B2_BUCKET", "B2_KEY_ID", "B2_APPLICATION_KEY")
 
 _B2_ENDPOINT_RE = re.compile(r"s3\.([a-z0-9-]+)\.backblazeb2\.com")
+
+# One Backend instance per config fingerprint. Ledger warm paths resolve
+# scope_id via get_backend() on every cache hit; constructing a fresh B2
+# client (boto3) each time undoes unit 7.18's sub-ms aggregate reads.
+# Keyed by env that determines the store so rotating credentials or
+# switching buckets builds a new client; identical config reuses one.
+_backend_lock = threading.Lock()
+_backend_cache: dict = {}  # config key -> Backend
 
 
 def _normalize_endpoint(endpoint: str) -> str:
@@ -49,10 +58,25 @@ def _derive_region(endpoint: str, configured: Optional[str]) -> str:
     return match.group(1)
 
 
-def get_backend(kind: Optional[str] = None) -> Backend:
-    """Build the configured backend. `kind` overrides FOLEYFLOW_CACHE_BACKEND."""
-    kind = (kind or os.environ.get("FOLEYFLOW_CACHE_BACKEND", "local")).strip().lower()
+def _config_key(kind: str) -> Tuple:
+    """Fingerprint of env that selects one physical store + credentials."""
+    if kind == "local":
+        root = os.environ.get("FOLEYFLOW_LOCAL_CACHE_DIR", "sfx_cache")
+        return ("local", os.path.realpath(os.path.abspath(root)))
+    if kind == "b2":
+        return (
+            "b2",
+            os.environ.get("B2_ENDPOINT_URL", "").strip(),
+            os.environ.get("B2_BUCKET", "").strip(),
+            os.environ.get("B2_KEY_ID", "").strip(),
+            os.environ.get("B2_APPLICATION_KEY", "").strip(),
+            os.environ.get("B2_PREFIX", "foleyflow").strip(),
+            os.environ.get("B2_REGION", "").strip(),
+        )
+    return ("unknown", kind)
 
+
+def _build_backend(kind: str) -> Backend:
     if kind == "local":
         return LocalBackend(os.environ.get("FOLEYFLOW_LOCAL_CACHE_DIR", "sfx_cache"))
 
@@ -85,3 +109,21 @@ def get_backend(kind: Optional[str] = None) -> Backend:
         )
 
     raise StorageError(f"unknown FOLEYFLOW_CACHE_BACKEND {kind!r}, expected 'local' or 'b2'")
+
+
+def get_backend(kind: Optional[str] = None) -> Backend:
+    """Return the configured backend. `kind` overrides FOLEYFLOW_CACHE_BACKEND.
+
+    Instances are cached per config fingerprint so warm ledger paths that only
+    need ``scope_id()`` do not pay a boto3 client construction on every hit.
+    Tests that monkeypatch this function are unaffected.
+    """
+    kind = (kind or os.environ.get("FOLEYFLOW_CACHE_BACKEND", "local")).strip().lower()
+    key = _config_key(kind)
+    with _backend_lock:
+        cached = _backend_cache.get(key)
+        if cached is not None:
+            return cached
+        backend = _build_backend(kind)
+        _backend_cache[key] = backend
+        return backend

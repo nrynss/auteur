@@ -206,6 +206,17 @@ class Backend(Protocol):
         """
         ...
 
+    def scope_id(self) -> str:
+        """Stable id for the physical store this backend addresses.
+
+        Process-local ledger caches (row snapshots, attribution overrides,
+        spend/quota aggregates) key on this string: two backends that point at
+        the same store share a cache slot; different stores must not. Local
+        backends use a canonical absolute root path; B2 uses bucket + prefix.
+        Callers must never parse the string — equality is the only contract.
+        """
+        ...
+
 
 # Bound concurrent GETs against object storage. Dozens of serial B2 round-trips
 # dominate GET /projects/{id} and ledger scans; unbounded fan-out would open
