@@ -17,8 +17,14 @@ sfx_cache/
 ledger.jsonl
 
 # Demo recording plan and local media (VO, cards, clips, renders).
+# Anchor to repo root so scripts/demo/ (the capture harness) is NOT ignored.
 demoplan.md
-demo/
+/demo/
+
+# Demo harness install + local Playwright artifacts (source is committed).
+scripts/demo/node_modules/
+scripts/demo/test-results/
+scripts/demo/playwright-report/
 
 # Built SPA output and codegen inputs (decision 8: never committed). The UI
 # build writes into the package's static dir; the schema and generated types
