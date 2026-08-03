@@ -7,7 +7,7 @@ that you can interrogate: every sound traceable to the call that made it, every
 placement adjustable without paying to move it, every version kept beside the
 last.
 
-Live: <https://foleyflow-142385844755.us-east4.run.app>
+Live: <https://auteur.nryn.dev>
 
 Built for the Backblaze Generative AI Media Hackathon. Foley is the first
 application, not the boundary of the design.

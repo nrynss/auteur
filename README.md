@@ -38,7 +38,7 @@ goes. [docs/api.md](docs/api.md) is the HTTP contract.
 
 ## Status
 
-**Live: <https://foleyflow-142385844755.us-east4.run.app>**
+**Live: <https://auteur.nryn.dev>**
 
 A silent clip goes in and a B2-backed Foley export comes out, over the API, on
 the deployed app. One package (`src/foleyflow`), one command (`auteur`, still
