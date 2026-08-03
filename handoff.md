@@ -12,13 +12,15 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
 
 ## Orientation
 
-- One package, `src/foleyflow`. One CLI, `foleyflow`. The HTTP contract in
+- One package, `src/foleyflow`. One CLI, `auteur` (installed as `foleyflow`
+  too — task 23 added the new name and kept the old one). The HTTP contract in
   `docs/api.md` is written ahead of the code and treated as source of truth;
   every endpoint in it is live and covered by tests.
-- Task numbers are the current queue; DONE items keep their titles. Remaining:
-  **20** (rename to Auteur), **21** (configuration view), **22** (polish),
-  then **23** (repo and image identity) once nothing else is in flight. Tasks
-  **1–19** are **DONE**, including **7** — the control room is complete, and
+- Task numbers are the current queue; DONE items keep their titles. Tasks
+  **1–23** are all **DONE** — 23 (repo and image identity) closed the queue.
+  The one action left is not a commit: the GitHub repository itself is still
+  named `FoleyFlow` and only its owner can rename it (see task 23). Task **7**
+  is done too — the control room is complete, and
   its polish pass was promoted out of `handoff-task7.md` into task 22 rather
   than staying a sub-unit of a finished build. `docs/roadmap.md` is the product
   document describing the two futures 18–21 enable; it is not an engineering
@@ -962,7 +964,7 @@ tooltips) and 252 vitest tests, all green, zero unhandled errors. The
 chromium and runs the gate on every PR and push, so each of these guarantees
 is a standing machine check rather than a one-time fix.
 
-## 23. Repo and image identity — S
+## 23. Repo and image identity — S — **DONE**
 
 **Depends on:** 20, and best done after 22. **Files:** `pyproject.toml` (`[project.scripts]`),
 `Dockerfile`, `scripts/deploy.sh`, `scripts/smoke_deploy.py`, `README.md`.
@@ -1006,6 +1008,37 @@ earlier product name costs nothing a viewer will ever see.
 **Acceptance:** `auteur --help` and `foleyflow --help` both work; a deploy
 built from the renamed image passes `scripts/smoke_deploy.py`; and the
 `mix_video_key` decision is recorded here either way.
+
+**Done (2026-08-03).**
+
+- **CLI:** `[project.scripts]` now declares `auteur` and keeps `foleyflow`, both
+  bound to `foleyflow.cli:main`. `auteur --help` and `foleyflow --help` both
+  work. Note that `cli.py` hardcodes `prog="foleyflow"` (and the `foleyflow
+  render` / `foleyflow direct` sub-parsers), so `auteur --help` prints usage
+  under the old name. `cli.py` is outside this task's file list and the error
+  prefixes are pinned by `tests/test_direct.py`; changing `prog` is a small,
+  separate change if the help text is ever considered a rendered surface.
+- **Image:** lowercase `auteur` everywhere it is typed. `Dockerfile`'s build
+  example is `-t auteur .`, `README.md`'s image-based deploy section matches,
+  and CI's `docker-build` job now builds `auteur:ci` and runs the container as
+  `auteur-ci`. That job was the only machine consumer of the old image name.
+- **Not renamed, on purpose:** the Cloud Run service (`foleyflow`), the five
+  Secret Manager entries, and the `FOLEYFLOW_*` env vars. `deploy.sh` deploys
+  with `gcloud run deploy --source`, so it never names an image; renaming the
+  *service* would mint a new URL and orphan the live revisions, which is a
+  different and more disruptive change than the one this task asks for. The
+  reasoning is recorded in `deploy.sh`'s header.
+- **GitHub repository:** not renamed here — that rewrites every clone's remote
+  and is an owner action in GitHub settings, not a commit.
+
+**`mix_video_key` decision: leave it.** `ProjectStore.mix_video_key` continues
+to write `runs/{run_id}/foley.mp4`. The recommendation above is adopted
+unchanged: every such object already in B2 is immutable, so changing the
+constant renames nothing that exists — it only splits new artifacts from old.
+Cache keys are addresses, not provenance, so a bucket holding both is correct,
+and a filename no viewer ever sees is not worth a permanent seam in the archive.
+This is the irreversible half of the task and it is now closed: do not revisit
+it without a reason that a reader of the bucket, not of the code, would notice.
 
 ## Out of scope
 

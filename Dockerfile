@@ -91,7 +91,11 @@ ENV PATH="/app/.venv/bin:$PATH" \
 #   docker build \
 #     --build-arg FOLEYFLOW_GIT_SHA="$(git rev-parse HEAD)" \
 #     --build-arg FOLEYFLOW_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-#     -t foleyflow .
+#     -t auteur .
+#
+# The image name is lowercase `auteur` — not a style preference: Docker rejects
+# a repository name containing uppercase (`invalid reference format: repository
+# name must be lowercase`), so `-t Auteur .` fails outright.
 #
 # Empty defaults: a build that omits the args still runs; health just reports
 # null for git_sha / build_time (same as a local `uv run uvicorn`).

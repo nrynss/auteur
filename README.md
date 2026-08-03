@@ -12,21 +12,23 @@ post-production checks, and preserves the full production record in Backblaze B2
 **Live: <https://foleyflow-142385844755.us-east4.run.app>**
 
 A silent clip goes in and a B2-backed Foley export comes out, over the API, on
-the deployed app. One package (`src/foleyflow`), one command (`foleyflow`).
+the deployed app. One package (`src/foleyflow`), one command (`auteur`, still
+installed as `foleyflow` too).
 
 | Layer | State |
 |---|---|
 | Media pipeline — VLM analysis, routing, SFX, mix, mux | Built |
-| Genblaze orchestration — ingest, stem fan-out, mix/mux/QA stages | Built (analysis is the one call still outside) |
+| Genblaze orchestration — ingest, analysis, stem fan-out, mix/mux/QA stages | Built |
 | Storage — content-addressed cache, B2 artifacts | Built |
 | Projects, runs, versions | Built |
 | Deployment — Cloud Run + tunnelled GPU worker | Built |
 | HTTP API + CLI | Built |
 | QA — loudness, true peak, visual continuity | Built (audio when mix measured) |
 | Self-hosted SFX worker — MOSS-SoundEffect v2 | Built (separate GPU process, bearer-auth) |
-| Control room UI | Not started |
+| Control room UI — Svelte SPA served by the app, timeline editing, config view | Built |
 
-Remaining work is itemised in [handoff.md](handoff.md).
+The build log and every decision behind it are itemised in
+[handoff.md](handoff.md).
 
 ## Prerequisites
 
@@ -67,20 +69,25 @@ The API listens on `http://127.0.0.1:8000` by default. Point the CLI elsewhere w
 One command. Project verbs talk to the API; file verbs run locally with no server.
 
 ```bash
-uv run foleyflow --help
+uv run auteur --help
 ```
+
+`foleyflow` is installed as an alias of `auteur` and will keep working — same
+entry point, same verbs — so existing scripts and runbooks need no edit. The
+identifier is lowercase everywhere; capitalised `Auteur` is the product name in
+prose only.
 
 ### Projects (needs the API running)
 
 ```bash
-uv run foleyflow create path/to/clip.mp4 --title "Standoff" --analyze --wait
-uv run foleyflow show proj_…
-uv run foleyflow timeline proj_…
-uv run foleyflow scenes proj_…
-uv run foleyflow qa proj_…
-uv run foleyflow mix proj_… --wait
-uv run foleyflow export proj_… --wait
-uv run foleyflow quota
+uv run auteur create path/to/clip.mp4 --title "Standoff" --analyze --wait
+uv run auteur show proj_…
+uv run auteur timeline proj_…
+uv run auteur scenes proj_…
+uv run auteur qa proj_…
+uv run auteur mix proj_… --wait
+uv run auteur export proj_… --wait
+uv run auteur quota
 ```
 
 ### Local render (no server)
@@ -88,13 +95,13 @@ uv run foleyflow quota
 Deterministic re-render from a saved timeline — no analysis call, $0:
 
 ```bash
-uv run foleyflow render path/to/clip.mp4 --from-timeline samples/timelines/clip_1.json
+uv run auteur render path/to/clip.mp4 --from-timeline samples/timelines/clip_1.json
 ```
 
 Fresh analysis + render (spends provider quota):
 
 ```bash
-uv run foleyflow render path/to/clip.mp4
+uv run auteur render path/to/clip.mp4
 ```
 
 Same timeline in, byte-identical mix out — mix randomness is seeded from a
@@ -343,7 +350,7 @@ stamps into the image via Dockerfile `ARG`/`ENV`:
 docker build \
   --build-arg FOLEYFLOW_GIT_SHA="$(git rev-parse HEAD)" \
   --build-arg FOLEYFLOW_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  -t foleyflow .
+  -t auteur .
 ```
 
 Omit them and health still works — `git_sha` / `build_time` are just `null`.

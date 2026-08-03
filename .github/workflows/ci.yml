@@ -206,17 +206,17 @@ jobs:
           docker build \
             --build-arg FOLEYFLOW_GIT_SHA="$GITHUB_SHA" \
             --build-arg FOLEYFLOW_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -t foleyflow:ci .
+            -t auteur:ci .
 
       - name: Start the container
         run: |
-          docker run -d --name foleyflow-ci -p 8099:8080 foleyflow:ci
+          docker run -d --name auteur-ci -p 8099:8080 auteur:ci
           for i in $(seq 1 45); do
             curl -fsS http://localhost:8099/api/v1/health >/dev/null 2>&1 && exit 0
             sleep 2
           done
           echo "container did not become ready" >&2
-          docker logs foleyflow-ci >&2 || true
+          docker logs auteur-ci >&2 || true
           exit 1
 
       - name: Assert the SPA is served, not the unbuilt page
@@ -239,11 +239,11 @@ jobs:
 
       - name: Assert no Node ships in the runtime image
         run: |
-          if docker exec foleyflow-ci sh -c 'command -v node'; then
+          if docker exec auteur-ci sh -c 'command -v node'; then
             echo "error: node is present in the runtime image" >&2
             exit 1
           fi
-          if docker exec foleyflow-ci sh -c 'command -v npm'; then
+          if docker exec auteur-ci sh -c 'command -v npm'; then
             echo "error: npm is present in the runtime image" >&2
             exit 1
           fi
@@ -251,4 +251,4 @@ jobs:
 
       - name: Clean up
         if: always()
-        run: docker rm -f foleyflow-ci || true
+        run: docker rm -f auteur-ci || true

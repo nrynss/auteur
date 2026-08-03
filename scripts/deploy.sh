@@ -23,6 +23,14 @@
 #   ./scripts/deploy.sh --skip-smoke # deploy without post-deploy smoke (emergency)
 #
 # This script never embeds or prints secret values.
+#
+# Naming: the product is Auteur and every identifier for it is lowercase
+# `auteur` — the console script and the Docker image (`docker build -t auteur .`;
+# Docker rejects an uppercase repository name outright). The Cloud Run service,
+# the Secret Manager entries and the FOLEYFLOW_* env vars below deliberately
+# still read `foleyflow`: renaming a live service mints a new URL and orphans the
+# old revisions, and renaming secrets or env vars is a separate, larger change.
+# Those are ops addresses, not branding.
 
 set -euo pipefail
 

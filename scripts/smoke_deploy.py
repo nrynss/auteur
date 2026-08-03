@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Post-deploy smoke check for a Auteur API base URL.
+"""Post-deploy smoke check for an Auteur API base URL.
 
 The same checks operators run by hand after every deploy: health + worker
 probe, build identity, storage, ledger_writable, and one read endpoint with

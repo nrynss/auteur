@@ -27,6 +27,11 @@ dev = [
 ]
 
 [project.scripts]
+# `auteur` is the command; `foleyflow` is kept as an alias on purpose. Every
+# script in scripts/, every README example and every runbook says `foleyflow`,
+# and an operator mid-incident should not learn about a rename from
+# `command not found`. Both resolve to the same entry point.
+auteur = "foleyflow.cli:main"
 foleyflow = "foleyflow.cli:main"
 
 [build-system]
