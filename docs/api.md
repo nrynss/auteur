@@ -515,11 +515,11 @@ pre-flight projection block the mix response carries:
 {
   "run_id": "run_01K…",
   "kind": "repair",
-  "estimated_cost_usd": 0.90,
-  "projected_cost_usd": 0.90,
+  "estimated_cost_usd": 1.62,
+  "projected_cost_usd": 1.62,
   "spent_usd": 3.70,
   "budget_usd": 5.00,
-  "projected_total_usd": 4.60,
+  "projected_total_usd": 5.32,
   "cache_hits": 2,
   "cache_misses": 3
 }
@@ -534,8 +534,8 @@ The estimate the client confirms is the **re-mix's cache-miss projection**
 request's price: a repair re-mixes the whole timeline, and the run bills every
 stem that is not cached at its own address — the target under its fresh variant
 nonce, plus whatever the previous mix never cached. So an empty cache quotes the
-full re-mix, and a fully cached re-mix quotes the target alone ($0.30 on the
-paid tier). The re-mix runs at the tier of the mix it repairs (raised to
+full re-mix, and a fully cached re-mix quotes the target alone ($0.54 on the
+paid tier — the measured 30-day average; see providers.toml). The re-mix runs at the tier of the mix it repairs (raised to
 whatever tier includes the target event, since rhythmic/continuous stems only
 exist at `full`), so a repair never bills tiers of stems that were not in the
 mix. The figure is a projection: a mid-flight fallback can change the bill, and
@@ -543,7 +543,7 @@ the advisory budget never refuses work.
 
 The `422` refusal and the `202` body carry `cache_hits` / `cache_misses` /
 `projected_cost_usd` alongside `estimated_cost_usd`, so the client can say
-"3 of 5 stems will be regenerated, costing $0.90".
+"3 of 5 stems will be regenerated, costing $1.62".
 
 `confirm_cost_usd` is required when the regeneration is billable and must match
 the estimate the client was shown. SPEC.md §9.4 requires the estimate be shown
@@ -580,11 +580,11 @@ POST /api/v1/projects/{id}/mixes
 {
   "run_id": "run_01K…",
   "kind": "mix",
-  "estimated_cost_usd": 2.40,
-  "projected_cost_usd": 2.40,
+  "estimated_cost_usd": 4.32,
+  "projected_cost_usd": 4.32,
   "spent_usd": 3.70,
   "budget_usd": 5.00,
-  "projected_total_usd": 6.10,
+  "projected_total_usd": 8.02,
   "cache_hits": 4,
   "cache_misses": 8
 }

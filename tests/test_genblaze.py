@@ -560,8 +560,9 @@ def test_a_paid_generation_writes_a_ledger_row(monkeypatch, tmp_path, file_ledge
     assert len(rows) == 1
     assert rows[0]["endpoint"] == ELEVEN
     assert rows[0]["success"] is True
-    # providers.toml declares $0.30 — the top of ElevenLabs' duration buckets.
-    assert rows[0]["cost_estimate"] == pytest.approx(0.30)
+    # providers.toml declares $0.54 — the measured 30-day average from the
+    # workspace usage report (2026-08-03), used as USD.
+    assert rows[0]["cost_estimate"] == pytest.approx(0.54)
     # The SFX API answers with audio bytes and no billing metadata, so claiming
     # "actual" here would be inventing a precision the response does not carry.
     assert rows[0]["cost_source"] == "estimate"

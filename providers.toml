@@ -76,14 +76,16 @@ duration_type = "float"
 # are the ones its `generate()` reads off `step.params` — so build_arguments
 # produces a payload the connector accepts with no special-casing.
 #
-# Pricing is bucketed by duration upstream (<=5s $0.10, <=15s $0.20, <=30s
-# $0.30) and the connector ships no pricing table. A single per-call figure at
-# the top of the range is the honest choice for a spend guard: over-estimating
-# is recoverable, under-estimating is what empties an account.
+# Pricing: the connector returns audio with no billing metadata, so the ledger
+# holds estimates. The flat figure is the 30-day measured average from the
+# workspace usage report (13 requests, $7.03, 2026-08-03, values used as USD):
+# $0.54/request vs the old bucketed guess of $0.30, which under-quoted the
+# observed $0.75/request day by 2.5x. Per-request cost still varies with
+# duration; a per-second price needs a calibrated credits<->seconds probe.
 [models."eleven_text_to_sound_v2"]
 adapter = "elevenlabs"
 role = "sfx"
-cost_per_call_usd = 0.30
+cost_per_call_usd = 0.54
 duration_min_s = 0.5
 duration_max_s = 30.0
 prompt_field = "prompt"

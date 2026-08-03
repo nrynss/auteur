@@ -171,7 +171,7 @@ config edit, not a code change.
 |---|---|---|
 | Video understanding → event timeline | `gemini-2.5-flash` (default); `gpt-5.6-luna` optional | ~$0.005 / ~$0.02 |
 | SFX, tier `test` (default) | `openmoss/moss-soundeffect-v2` (self-hosted) | $0.00 |
-| SFX, tier `paid` | `eleven_text_to_sound_v2` (`genblaze-elevenlabs`) | ~$0.10–0.30/call |
+| SFX, tier `paid` | `eleven_text_to_sound_v2` (`genblaze-elevenlabs`) | ~$0.54/call est (measured 30-day avg; hard cap `$15/day` by default) |
 | SFX, tier `fallback` | `fal-ai/elevenlabs/sound-effects/v2` (fal) | ~$0.05/call |
 
 All three SFX tiers are invoked through Genblaze, so choosing one is a config

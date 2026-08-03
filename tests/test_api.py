@@ -1767,7 +1767,7 @@ def test_regenerate_requires_confirmation_when_billable(
                     json={})
     assert r.status_code == 422
     detail = r.json()["error"]["detail"]
-    assert detail["estimated_cost_usd"] == pytest.approx(0.90)
+    assert detail["estimated_cost_usd"] == pytest.approx(1.62)
     assert detail["cache_misses"] == 3
     assert detail["cache_hits"] == 0
     assert detail["require"] == "confirm_cost_usd"
@@ -1777,11 +1777,11 @@ def test_regenerate_requires_confirmation_when_billable(
     assert r.status_code == 422
 
     r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
-                    json={"confirm_cost_usd": 0.90})
+                    json={"confirm_cost_usd": 1.62})
     assert r.status_code == 202
     body = r.json()
-    assert body["estimated_cost_usd"] == pytest.approx(0.90)
-    assert body["projected_cost_usd"] == pytest.approx(0.90)
+    assert body["estimated_cost_usd"] == pytest.approx(1.62)
+    assert body["projected_cost_usd"] == pytest.approx(1.62)
     assert body["cache_hits"] == 0
     assert body["cache_misses"] == 3
 
@@ -1809,12 +1809,12 @@ def test_regenerate_provider_reroutes_to_an_approved_tier(
     r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
                     json={"provider": "test"})
     assert r.status_code == 422, r.text
-    assert r.json()["error"]["detail"]["estimated_cost_usd"] == pytest.approx(0.90)
+    assert r.json()["error"]["detail"]["estimated_cost_usd"] == pytest.approx(1.62)
 
     r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
-                    json={"provider": "test", "confirm_cost_usd": 0.90})
+                    json={"provider": "test", "confirm_cost_usd": 1.62})
     assert r.status_code == 202, r.text
-    assert r.json()["estimated_cost_usd"] == pytest.approx(0.90)
+    assert r.json()["estimated_cost_usd"] == pytest.approx(1.62)
     _await_run(client, project.id, r.json()["run_id"])
     assert captured["request"].endpoint == "openmoss/moss-soundeffect-v2"
 
@@ -1837,13 +1837,13 @@ def test_regenerate_quotes_the_previous_mix_tier_not_always_full(
                     json={})
     assert r.status_code == 422, r.text
     detail = r.json()["error"]["detail"]
-    assert detail["estimated_cost_usd"] == pytest.approx(0.60)
+    assert detail["estimated_cost_usd"] == pytest.approx(1.08)
     assert detail["cache_misses"] == 2
 
     r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
-                    json={"confirm_cost_usd": 0.60})
+                    json={"confirm_cost_usd": 1.08})
     assert r.status_code == 202, r.text
-    assert r.json()["estimated_cost_usd"] == pytest.approx(0.60)
+    assert r.json()["estimated_cost_usd"] == pytest.approx(1.08)
     _await_run(client, project.id, r.json()["run_id"])
     assert captured["tier"] == "discrete"
 
@@ -1862,9 +1862,9 @@ def test_regenerate_of_a_continuous_stem_raises_a_discrete_mix_to_full(
     monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
 
     r = client.post(f"{API_PREFIX}/projects/{project.id}/events/0/regenerate",
-                    json={"confirm_cost_usd": 0.90})
+                    json={"confirm_cost_usd": 1.62})
     assert r.status_code == 202, r.text
-    assert r.json()["estimated_cost_usd"] == pytest.approx(0.90)
+    assert r.json()["estimated_cost_usd"] == pytest.approx(1.62)
     _await_run(client, project.id, r.json()["run_id"])
     assert captured["tier"] == "full"
 
@@ -1886,7 +1886,7 @@ def test_regenerate_is_refused_when_the_paid_daily_cap_is_reached(
                      "source": "analytics"})
 
     r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
-                    json={"confirm_cost_usd": 0.90})
+                    json={"confirm_cost_usd": 1.62})
     assert r.status_code == 429, r.text
     body = r.json()["error"]
     assert body["code"] == "spend_cap_reached"
@@ -1967,7 +1967,7 @@ def test_repair_projection_ignores_stale_files_in_the_cli_scratch(
         # count, or the quote would understate the bill.
         assert detail["cache_hits"] == 0
         assert detail["cache_misses"] == 3
-        assert detail["estimated_cost_usd"] == pytest.approx(0.90)
+        assert detail["estimated_cost_usd"] == pytest.approx(1.62)
     finally:
         if os.path.exists(stale):
             os.unlink(stale)
@@ -2065,7 +2065,7 @@ def test_regenerate_quote_matches_the_run_bill_when_only_some_stems_are_cached(
     assert r.status_code == 422, r.text
     detail = r.json()["error"]["detail"]
     estimate = detail["estimated_cost_usd"]
-    assert estimate == pytest.approx(0.60)
+    assert estimate == pytest.approx(1.08)
     assert detail["cache_misses"] == 2
     assert detail["cache_hits"] == 1
 
@@ -2081,12 +2081,12 @@ def test_regenerate_quote_matches_the_run_bill_when_only_some_stems_are_cached(
     run = _await_run(client, project.id, body["run_id"])
     assert run["status"] == "completed", run
     assert run["metadata"]["generated_count"] == 2
-    assert run["metadata"]["ledger_delta_usd"] == pytest.approx(0.60)
+    assert run["metadata"]["ledger_delta_usd"] == pytest.approx(1.08)
 
     # The ledger is the bill: exactly two billed stems, both the paid tier.
     spend = project_spend(project.id)
-    assert spend["total"] == pytest.approx(0.60)
-    assert spend["by_endpoint"] == {"eleven_text_to_sound_v2": pytest.approx(0.60)}
+    assert spend["total"] == pytest.approx(1.08)
+    assert spend["by_endpoint"] == {"eleven_text_to_sound_v2": pytest.approx(1.08)}
     assert len(calls) == 2
 
 
@@ -2166,7 +2166,7 @@ def test_budget_is_advisory_and_never_refuses_work(client, store, budget_ledger,
 
     r = client.post(
         f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
-        json={"confirm_cost_usd": 0.90})
+        json={"confirm_cost_usd": 1.62})
     assert r.status_code == 202, r.text
 
     body = client.get(f"{API_PREFIX}/projects/{project.id}/budget").json()
@@ -2185,7 +2185,7 @@ def test_budget_allows_work_with_no_advisory_figure(client, store, budget_ledger
 
     r = client.post(
         f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
-        json={"confirm_cost_usd": 0.90})
+        json={"confirm_cost_usd": 1.62})
     assert r.status_code == 202, r.text
 
 
@@ -2761,7 +2761,7 @@ def test_unwritable_ledger_does_not_block_work(client, store, budget_ledger,
 
     r = client.post(
         f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
-        json={"confirm_cost_usd": 0.90})
+        json={"confirm_cost_usd": 1.62})
     assert r.status_code == 202, r.text
 
     body = client.get(f"{API_PREFIX}/projects/{project.id}/budget").json()
