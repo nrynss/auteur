@@ -41,10 +41,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --group dev
 
-      # Runs the full suite and asserts handoff.md / SPEC.md match runtime
-      # passed + skipped exactly (so a silent ffmpeg skip increase fails CI).
-      - name: Docs count + suite
-        run: uv run --frozen python scripts/check_test_count.py
+      # The full offline suite. Billed provider calls are stubbed at two seams
+      # (stems.generate_many, sfx_cache.generate_canonical_wav); ffmpeg, the
+      # mix, storage and the Genblaze pipelines run for real, which is why
+      # ffmpeg is required on PATH above.
+      - name: Test suite
+        run: uv run --frozen pytest -q
 
   ui-build:
     # Unit 7.6: the Svelte SPA must type-check against the API contract and

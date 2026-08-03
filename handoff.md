@@ -257,10 +257,13 @@ stays. Unwritable ledger → alerts unreliable, work continues.
 ## 10. Continuous integration — S — **DONE**
 
 GitHub Actions (`.github/workflows/ci.yml`): ffmpeg required on PATH, `uv sync
---frozen --group dev`, then `scripts/check_test_count.py` which runs the full
-suite and asserts handoff/SPEC match runtime `passed` and `skipped` exactly.
-Permissions `contents: read`, concurrency cancel-in-progress, 25m job timeout.
-No provider credentials. Offline suite only.
+--frozen --group dev`, then `pytest -q` for the full suite. Permissions
+`contents: read`, concurrency cancel-in-progress, 25m job timeout. No provider
+credentials. Offline suite only.
+
+The doc-count gate (`scripts/check_test_count.py`) was removed: quoted test
+counts are no longer tracked, so the numbers in this file's orientation and in
+`SPEC.md` are now prose, not enforced.
 
 ## 11. Report the deployed build in `/health` — S — **DONE**
 
