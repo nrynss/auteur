@@ -33,7 +33,7 @@ it("loading reads as working, never as empty", () => {
   const { body } = render(DossierPanel, {
     props: { dossier: null, loading: true },
   });
-  expect(body).toContain("Composing the dossier: one lookup per artifact…");
+  expect(body).toContain("Composing the artifact list: one lookup per artifact…");
   expect(body).not.toContain("No artifacts yet");
 });
 
@@ -44,7 +44,7 @@ it("a failed fetch says failure — not a forever 'Composing…' and not absence
   const { body } = render(DossierPanel, {
     props: { dossier: null, loading: true, failed: true },
   });
-  expect(body).toContain("Dossier could not be loaded.");
+  expect(body).toContain("Artifacts could not be loaded.");
   expect(body).not.toContain("Composing the dossier");
   expect(body).not.toContain("No artifacts yet");
 });

@@ -110,7 +110,7 @@
 
   const checks = $derived<ReadinessItem[]>(
     [
-      ...(config?.checks ?? []),
+      ...(config?.checks ?? []).map(checkCopy),
       ...(brandRow ? [brandRow] : []),
       ...(buildRow ? [buildRow] : []),
     ],
@@ -118,6 +118,48 @@
   const blockedCount = $derived(
     checks.filter((c) => c.state === "blocked").length,
   );
+
+  /** The API's doctor-parity rows carry mechanism labels ("storage ok",
+   * "worker", "quota") that read as internal service names. The screen
+   * speaks one register: sentence case, with a sub-line saying what was
+   * checked. The verdict state is the API's; the words are this screen's. */
+  function checkCopy(item: ReadinessItem): ReadinessItem {
+    // \u2014 escape, not the literal character: the no-em-dash-in-rendered-
+    // copy test scans this file, and this is a search pattern, not copy.
+    const deDash = (d: string | null | undefined) =>
+      (d ?? "").replace(/\u2014\s*/g, ": ");
+    switch (item.key) {
+      case "storage":
+        return item.state === "ok"
+          ? { ...item, label: "Storage", detail: "reads and writes reachable" }
+          : { ...item, label: "Storage", detail: "storage unavailable: reads and writes will fail" };
+      case "worker":
+        return {
+          ...item,
+          label: "Rendering worker",
+          detail:
+            item.state === "ok"
+              ? "healthy and ready to render"
+              : deDash(item.detail) || "not healthy",
+        };
+      case "ledger":
+        return item.state === "ok"
+          ? { ...item, label: "Ledger recording", detail: "spend transactions are being written" }
+          : { ...item, label: "Ledger recording", detail: "spend transactions are not being written: every spend figure would be fiction" };
+      case "quota":
+        return {
+          ...item,
+          label: "Daily request limits",
+          detail:
+            item.state === "ok"
+              ? "all models within their daily limits"
+              : deDash(item.detail) || "a model is over its daily limit",
+        };
+      default:
+        // api / brand / build already read as sentence-case checks.
+        return { ...item, detail: deDash(item.detail) || item.detail };
+    }
+  }
 </script>
 
 <header class="chrome">

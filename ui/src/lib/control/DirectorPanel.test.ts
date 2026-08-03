@@ -179,7 +179,7 @@ it("fails closed when the ledger could not record the call", () => {
   });
   // No clean cost figure — the number is withheld and the reason given
   // (docs/api.md §3.10: an unrecorded call's cost must not be presented).
-  expect(target.textContent).toContain("call billed but not recorded: ledger unwritable");
+  expect(target.textContent).toContain("call billed but not recorded: spend recording unavailable");
   expect(target.textContent).not.toContain("call ~$0.0050");
   unmount(app);
 });

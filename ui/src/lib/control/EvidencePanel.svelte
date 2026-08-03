@@ -5,7 +5,6 @@
    * approximates (that rule lands with 7.9's preview). */
   import ContinuityCard from "./ContinuityCard.svelte";
   import Evidence from "../components/Evidence.svelte";
-  import Term from "../help/Term.svelte";
   import { loudnessDelta } from "./helpers";
   import type { QaReportResponse, SceneOut } from "../api/projects";
 
@@ -78,7 +77,7 @@
   {/if}
 
   {#if qa && (qa.visual?.issues ?? []).length > 0}
-    <p class="eyebrow">Visual <Term term="continuity" /></p>
+    <p class="eyebrow">Shot-to-shot comparison</p>
     <div class="cards">
       {#each qa.visual.issues ?? [] as issue (issue.code + (issue.scene_id ?? "") + (issue.compared_with ?? ""))}
         <ContinuityCard

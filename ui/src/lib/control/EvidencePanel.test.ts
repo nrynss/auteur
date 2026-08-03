@@ -64,7 +64,7 @@ it("renders continuity issues when the visual block exists", () => {
       scenes: [],
     },
   });
-  expect(body).toContain("continuity");
+  expect(body).toContain("Shot-to-shot comparison");
 });
 
 it("a failed QA fetch says failure, not 'not measured' — the empty state's claim would be false", () => {

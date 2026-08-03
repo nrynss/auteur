@@ -115,7 +115,7 @@ describe("ContinuityCard", () => {
     const bare = render(ContinuityCard, {
       props: { issue: { ...issue, detail: null, confidence: null }, threshold: 20, scenes, runId: null },
     });
-    expect(bare.body).toContain("continuity warning");
+    expect(bare.body).toContain("shot-to-shot comparison");
     // No number is invented when the report records none.
     expect(bare.body).not.toContain("confidence");
   });

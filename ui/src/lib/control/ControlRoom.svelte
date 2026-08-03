@@ -87,7 +87,7 @@
 
   let { id }: Props = $props();
 
-  type Tab = "readiness" | "evidence" | "director" | "spend" | "history" | "dossier";
+  type Tab = "checklist" | "evidence" | "director" | "spend" | "history" | "artifacts";
 
   let project = $state<ProjectDetail | null>(null);
   let scenes = $state<SceneOut[]>([]);
@@ -122,7 +122,7 @@
 
   let status = $state<"loading" | "ready" | "error">("loading");
   let error = $state("");
-  let tab = $state<Tab>("readiness");
+  let tab = $state<Tab>("checklist");
   // A non-404 ancillary failure is NOT absence — say so rather than let a
   // panel render an empty state that looks like the data does not exist.
   let ancillaryFailed = $state(false);
@@ -254,7 +254,7 @@
     }
 
     // The dossier tab may already be the open one (a reload after a run).
-    if (tab === "dossier") void ensureDossier();
+    if (tab === "artifacts") void ensureDossier();
   }
 
   /** The dossier composes every artifact in the project with a backend HEAD
@@ -415,7 +415,7 @@
       current_stage: null,
       metadata: {},
     };
-    tab = "readiness";
+    tab = "checklist";
   }
 
   function onActionError(message: string) {
@@ -803,12 +803,12 @@
   });
 
   const tabs: { key: Tab; label: string }[] = [
-    { key: "readiness", label: "Readiness" },
+    { key: "checklist", label: "Checklist" },
     { key: "evidence", label: "Evidence" },
     { key: "director", label: "Director" },
     { key: "spend", label: "Spend" },
     { key: "history", label: "History" },
-    { key: "dossier", label: "Dossier" },
+    { key: "artifacts", label: "Artifacts" },
   ];
 </script>
 
@@ -906,7 +906,7 @@
                 // The dossier is slow enough (a HEAD per object) that it is
                 // fetched on first open rather than at load; so are the
                 // ledger rows (the audit trail behind the Spend tab).
-                if (t.key === "dossier") void ensureDossier();
+                if (t.key === "artifacts") void ensureDossier();
                 if (t.key === "spend") void ensureLedger();
               }}
             >
@@ -915,7 +915,7 @@
           {/each}
         </div>
 
-        <div class="panel" role="tabpanel" aria-labelledby="tabbtn-readiness" id="tab-readiness" hidden={tab !== "readiness"}>
+        <div class="panel" role="tabpanel" aria-labelledby="tabbtn-checklist" id="tab-checklist" hidden={tab !== "checklist"}>
           <ReadinessPanel
             {project}
             runs={displayRuns}
@@ -956,7 +956,7 @@
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-history" id="tab-history" hidden={tab !== "history"}>
           <HistoryPanel {versions} runs={displayRuns} {events} {mixPeaks} mixRunId={project.mix_run_id ?? null} failed={ancillaryFailed} />
         </div>
-        <div class="panel" role="tabpanel" aria-labelledby="tabbtn-dossier" id="tab-dossier" hidden={tab !== "dossier"}>
+        <div class="panel" role="tabpanel" aria-labelledby="tabbtn-artifacts" id="tab-artifacts" hidden={tab !== "artifacts"}>
           <DossierPanel {dossier} loading={dossierRequested && !dossierLoaded} failed={dossierFailed} />
         </div>
       </aside>

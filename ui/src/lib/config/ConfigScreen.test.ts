@@ -102,9 +102,9 @@ async function mountScreen() {
 it("renders every check row with doctor's labels", async () => {
   const { target, app } = await mountScreen();
   expect(target.textContent).toContain("API reachable");
-  expect(target.textContent).toContain("storage ok");
-  expect(target.textContent).toContain("ledger writable");
-  expect(target.textContent).toContain("0/20 today");
+  expect(target.textContent).toContain("Storage");
+  expect(target.textContent).toContain("Ledger recording");
+  expect(target.textContent).toContain("all models within their daily limits");
   expect(target.textContent).toContain("Deployment checks pass");
   unmount(app);
 });
@@ -184,7 +184,7 @@ it("a blocked check flips the summary and names the stop", async () => {
   };
   const { target, app } = await mountScreen();
   expect(target.textContent).toContain("1 check blocked");
-  expect(target.textContent).toContain("spend figures are fiction");
+  expect(target.textContent).toContain("every spend figure would be fiction");
   unmount(app);
 });
 

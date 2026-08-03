@@ -187,7 +187,7 @@ it("claiming rows into an existing project calls the attribution endpoint", asyn
   claim.click();
   await settle();
   // The dialog names the truth: it adopts every currently-unclaimed row.
-  expect(target.textContent).toContain("every currently-unclaimed ledger row");
+  expect(target.textContent).toContain("every currently-orphaned transaction");
   const confirm = [...target.querySelectorAll("button")].find((b) =>
     (b.textContent ?? "").includes("Claim rows"),
   )!;
@@ -248,7 +248,7 @@ it("withholds orphan rows when the ledger is unwritable", async () => {
     }),
   );
   const { target, app } = await mountScreen();
-  expect(target.textContent).toContain("Ledger unwritable: figures withheld");
+  expect(target.textContent).toContain("Spend record unavailable: figures withheld");
   // No money figure may survive (docs/api.md §3.10).
   expect(target.textContent).not.toContain("$0.30");
   expect(target.textContent).not.toContain("Claim into project");

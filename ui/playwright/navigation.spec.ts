@@ -103,9 +103,9 @@ test("index → new project → brand back-link", async ({ page }) => {
 
 test("index → unclaimed → back to projects", async ({ page }) => {
   await openIndex(page);
-  await page.getByRole("button", { name: "Unclaimed" }).click();
+  await page.getByRole("button", { name: "Orphans" }).click();
   await expect(page).toHaveURL(/\/unclaimed$/);
-  await expect(page.getByRole("heading", { name: "Unclaimed" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Orphans" })).toBeVisible();
   await page.getByRole("button", { name: /Projects/ }).click();
   await expect(page).toHaveURL(/\/$/);
 });
@@ -115,7 +115,7 @@ test("index → project card → control room, and browser Back returns", async 
   await page.locator("a.row", { hasText: "Western standoff" }).click();
   await expect(page).toHaveURL(/\/projects\/proj_PW$/);
   await expect(page.getByText("Western standoff (silent)")).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Readiness" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Checklist" })).toBeVisible();
   // Browser history: Back returns to the index without a reload nav error.
   await page.goBack();
   await expect(page).toHaveURL(/\/$/);
@@ -128,12 +128,12 @@ test("control-room tabs switch content and aria-selected", async ({ page }) => {
   await expect(page.getByText("Western standoff (silent)")).toBeVisible();
 
   const tabs: [string, RegExp][] = [
-    ["Readiness", /Post-production readiness|readiness/],
+    ["Checklist", /Project checklist/],
     ["Evidence", /No measurements yet|Loudness/],
     ["Director", /Describe a change/],
     ["Spend", /This project|transactions/],
     ["History", /Timeline versions/],
-    ["Dossier", /No artifacts yet|Composing the dossier/],
+    ["Artifacts", /No artifacts yet|Composing the artifact list/],
   ];
   for (const [label, content] of tabs) {
     const tab = page.getByRole("tab", { name: label });

@@ -284,7 +284,7 @@
         }
         if (e.code === "quota_exhausted") {
           fail(
-            "Analysis quota exhausted for the model. The project is uploaded; open the control room and retry later.",
+            "The model’s daily request limit is spent. The project is uploaded; open the control room and retry later.",
             e.code,
           );
           return false;
@@ -599,10 +599,10 @@
   </p>
   <p class="foot faint">
     <strong>Creating spends.</strong> Analysis is a billable vision-model call
-    against a daily request quota, started automatically once ingest finishes
+    against a daily request limit, started automatically once ingest finishes
     (SPEC §6.2). Upload and ingest themselves cost nothing. The run's own
-    estimate is shown when the API accepts it, and every charge is attributed
-    to this project's ledger.
+    estimate is shown when the API accepts it, and every charge is recorded
+    against this project’s spend.
   </p>
 </main>
 

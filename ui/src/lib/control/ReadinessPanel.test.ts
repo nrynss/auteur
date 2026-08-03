@@ -56,7 +56,7 @@ it("empty readiness rows name what would fill them", () => {
       runs: [],
     },
   });
-  expect(body).toContain("No readiness rows yet.");
+  expect(body).toContain("No checklist items yet.");
 });
 
 it("renders the latest run's stages with their statuses", () => {

@@ -123,8 +123,9 @@
   {#if turns.length === 0}
     <p class="empty">
       Describe a change: "pull the gunshot back 80 ms", "move every footstep
-      40 ms earlier". Each send is one {modelName()} call, recorded in the
-      ledger; the proposal is never applied until you approve it.
+      40 ms earlier". Each send is one {modelName()} call, recorded against
+      this project's spend; the proposal is never applied until you approve
+      it.
     </p>
   {:else}
     <div class="chat">
@@ -149,7 +150,7 @@
                   {#if turn.proposal.ledger_writable}
                     <span class="cost">call ~${turn.proposal.cost_usd.toFixed(4)} · moves free</span>
                   {:else}
-                    <span class="cost unwritable">call billed but not recorded: ledger unwritable</span>
+                    <span class="cost unwritable">call billed but not recorded: spend recording unavailable</span>
                   {/if}
                 </header>
                 <ul>
@@ -203,7 +204,7 @@
     {#if busy}
       <div class="busy">
         <Spinner label="Proposing" />
-        <span class="dim">Proposing: one {modelName()} call through the ledger…</span>
+        <span class="dim">Proposing: one billed {modelName()} call…</span>
       </div>
     {/if}
     <form
@@ -234,8 +235,9 @@
       </button>
     </form>
     <p class="costline">
-      One {modelName()} call per proposal, ledger-recorded and quota-counted.
-      The moves themselves are free. The same cached stems, placed elsewhere.
+      One {modelName()} call per proposal, billed and counted against the
+      daily limit. The moves themselves are free. The same cached stems,
+      placed elsewhere.
     </p>
   </div>
 </section>

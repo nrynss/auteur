@@ -61,7 +61,7 @@
   const thresholds = $derived(budget?.thresholds ?? []);
 
   const spentSource = $derived(
-    budget ? `ledger rows attributed to ${budget.project_id}` : "",
+    budget ? `recorded transactions for ${budget.project_id}` : "",
   );
 
   /** Estimated / actual split as a share of spend, for the bar only. */
@@ -105,7 +105,7 @@
         they are absent ones, so they are not shown
         (<span class="k">docs/api.md §3.10</span>).
       </p>
-      <p>Fix storage writes, then reload. The ledger is append-only and nothing already recorded is lost.</p>
+      <p>Fix storage writes, then reload. The transaction record is append-only and nothing already recorded is lost.</p>
     </div>
   {:else if !budget && !quota}
     <p class="empty">No spend recorded yet.</p>
@@ -172,7 +172,7 @@
     {/if}
 
     {#if models.length > 0}
-      <p class="eyebrow"><Term term="usage" /> · all projects</p>
+      <p class="eyebrow">Usage · all projects</p>
       <table class="rows">
         <thead>
           <tr>
@@ -200,13 +200,14 @@
       </table>
       <p class="note">
         Daily request count: the binding constraint, not requests per minute.
-        Counted from our own ledger, not a provider balance: Google exposes no
-        remaining-balance field, so this is a guide and never authoritative.
+        Counted from our own recorded transactions, not a provider balance:
+        Google exposes no remaining-balance field, so this is a guide and
+        never authoritative.
       </p>
     {/if}
 
     {#if ledgerShown && ledger}
-      <p class="eyebrow"><Term term="transactions" /></p>
+      <p class="eyebrow">Transactions</p>
       <table class="rows ledger">
         <thead>
           <tr>
@@ -246,10 +247,11 @@
         <button class="mini" disabled={!canGoOlder || ledgerLoading} onclick={onLedgerOlder}>older</button>
       </div>
       <p class="note">
-        Failed calls are included. They may still have consumed provider
-        quota, and the totals above sum them too. Each row carries its own
+        Failed calls are included. They may still have consumed daily request
+        allowance, and the totals above sum them too. Each row carries its own
         <span class="src">est</span>/<span class="src">actual</span> source;
-        the Spend summary's numbers reconcile to these rows.
+        the Spend summary's numbers reconcile to these
+        <Term term="transactions" />.
       </p>
     {/if}
   {/if}

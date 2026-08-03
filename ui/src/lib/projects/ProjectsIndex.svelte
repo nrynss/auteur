@@ -90,7 +90,7 @@
   <HelpHint />
   <ThemeToggle />
   <Button variant="ghost" size="sm" onclick={() => go("/unclaimed")}>
-    Unclaimed
+    Orphans
   </Button>
   <Button variant="primary" size="sm" onclick={() => go("/projects/new")}>
     New project

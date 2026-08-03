@@ -276,7 +276,7 @@ async function openControlRoom(page: Page): Promise<void> {
   // The h1 truncates at narrow widths (its text is present but the box can
   // shrink); wait on the brand and the tab row, which are always full-size.
   await expect(page.locator(".brand").first()).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Readiness" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Checklist" })).toBeVisible();
 }
 
 /** Nothing may push the page wider than the viewport: a horizontal scrollbar
@@ -396,30 +396,75 @@ test("the mix's measured peaks paint real pixels on the History tab", async ({ p
   expect(painted, "the waveform canvas should contain drawn pixels").toBe(true);
 });
 
+// -- the Evidence source row never breaks mid-phrase -----------------------
+
+test("the Evidence source row keeps 'summed from <artifact>' on one line with a long source", async ({ page }) => {
+  // §3 regression: with a long project id the phrase (.k) shrank and wrapped
+  // while the artifact (.v) held its width — the source row read as two
+  // broken lines. The phrase and the artifact must share one line; the
+  // artifact truncates instead.
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await stubApi(page);
+  const LONG_ID = "proj_01KZ0JYN9M6Y4Q2WQTV3X8ZHD0EXPORTSLATEST";
+  await page.route("**/api/v1/projects/proj_PW/budget", (route) =>
+    route.fulfill({ json: { ...BUDGET, project_id: LONG_ID } }),
+  );
+  await page.goto("/projects/proj_PW");
+  await expect(page.locator(".brand").first()).toBeVisible();
+  await page.getByRole("tab", { name: "Spend" }).click();
+  await expect(page.getByText("This project", { exact: true })).toBeVisible();
+
+  // All tab panels are mounted (hidden ones too), so scope to the Spend panel.
+  const row = page.locator("#tab-spend .evidence .src");
+  await expect(row).toContainText("summed from");
+  await expect(row).toContainText(LONG_ID);
+  const line = await row.evaluate((el) => {
+    const k = el.querySelector(".k")!.getBoundingClientRect();
+    const v = el.querySelector(".v")!.getBoundingClientRect();
+    return {
+      // Baseline alignment with mixed font sizes offsets the tops; the real
+      // regression was the phrase WRAPPING to a second line. Two elements on
+      // one line have overlapping vertical ranges; a wrapped phrase does not.
+      overlap: k.bottom > v.top && v.bottom > k.top,
+      kHeight: k.height,
+      vHeight: v.height,
+      rowHeight: el.getBoundingClientRect().height,
+      phraseText: el.querySelector(".k")!.textContent,
+    };
+  });
+  expect(
+    line.overlap,
+    `phrase and artifact must share one line (${JSON.stringify(line)})`,
+  ).toBe(true);
+  // The phrase itself is one line of text, never two.
+  expect(line.kHeight).toBeLessThanOrEqual(16);
+  expect(line.phraseText).toBe("summed from");
+});
+
 // -- screenshots: the mechanical substitute for eyes ------------------------
 
-test("screenshots: control room readiness tab, desktop", async ({ page }) => {
+test("screenshots: control room checklist tab, desktop", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await openControlRoom(page);
-  await expect(page.getByRole("tab", { name: "Readiness" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Checklist" })).toBeVisible();
   await expect(page.getByText("Timeline has events")).toBeVisible();
   await expect(page.locator(".block").first()).toBeVisible();
-  await expect(page).toHaveScreenshot("control-room-readiness-1280.png");
+  await expect(page).toHaveScreenshot("control-room-checklist-1280.png");
 });
 
 test("screenshots: control room spend tab, desktop", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await openControlRoom(page);
   await page.getByRole("tab", { name: "Spend" }).click();
-  await expect(page.getByText("This project")).toBeVisible();
-  await expect(page.getByText("transactions")).toBeVisible();
+  await expect(page.getByText("This project", { exact: true })).toBeVisible();
+  await expect(page.getByText("Transactions", { exact: true })).toBeVisible();
   await expect(page).toHaveScreenshot("control-room-spend-1280.png");
 });
 
 test("screenshots: control room, narrow 480", async ({ page }) => {
   await page.setViewportSize({ width: 480, height: 800 });
   await openControlRoom(page);
-  await expect(page.getByRole("tab", { name: "Readiness" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Checklist" })).toBeVisible();
   await expect(page).toHaveScreenshot("control-room-480.png");
 });
 

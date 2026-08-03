@@ -43,7 +43,7 @@
   const recorded = $derived(
     issue.detail ??
       (confidence != null ? `confidence ${confidence}` : null) ??
-      "continuity warning",
+      "shot-to-shot comparison",
   );
   const source = $derived(
     runId ? `qa/qa-report.json · run ${runId}` : "qa/qa-report.json",

@@ -194,13 +194,13 @@ it("a failed dossier fetch says failure — never a forever 'Composing…' and n
   for (let i = 0; i < 8; i += 1) await settle();
 
   const dossierTab = [...target.querySelectorAll("button")].find((b) =>
-    (b.textContent ?? "").trim() === "Dossier",
+    (b.textContent ?? "").trim() === "Artifacts",
   )!;
   dossierTab.click();
   for (let i = 0; i < 8; i += 1) await settle();
 
   const text = target.textContent ?? "";
-  expect(text).toContain("Dossier could not be loaded.");
+  expect(text).toContain("Artifacts could not be loaded.");
   // Neither the busy lie nor the absence lie may survive the failure.
   expect(text).not.toContain("Composing the dossier:");
   expect(text).not.toContain("No artifacts yet");
@@ -227,7 +227,7 @@ it("a 404 dossier is absence — 'No artifacts yet', not an error", async () => 
   for (let i = 0; i < 8; i += 1) await settle();
 
   const dossierTab = [...target.querySelectorAll("button")].find((b) =>
-    (b.textContent ?? "").trim() === "Dossier",
+    (b.textContent ?? "").trim() === "Artifacts",
   )!;
   dossierTab.click();
   for (let i = 0; i < 8; i += 1) await settle();

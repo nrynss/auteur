@@ -154,15 +154,24 @@
     padding: 0 11px 9px;
     font-size: 11px;
     color: var(--faint);
+    min-width: 0;
   }
 
   .src .k {
+    /* The source phrase ("measured from", "summed from", "recorded at")
+     * must never shrink and break across lines — its row's whole payload is
+     * the phrase + the artifact name. It holds max-content; the artifact
+     * name truncates instead. */
+    flex: 0 0 auto;
+    white-space: nowrap;
     font-family: var(--font-mono);
     font-size: 10.5px;
     letter-spacing: 0.03em;
   }
 
   .src .v {
+    flex: 1 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

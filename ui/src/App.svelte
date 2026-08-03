@@ -25,7 +25,7 @@
       : route.name === "project"
         ? brandPageTitle("Control room")
         : route.name === "unclaimed"
-          ? brandPageTitle("Unclaimed")
+          ? brandPageTitle("Orphans")
           : route.name === "config"
             ? brandPageTitle("Configuration")
             : brandPageTitle("Projects"),

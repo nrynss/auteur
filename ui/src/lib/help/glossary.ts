@@ -6,7 +6,7 @@
  *
  * The register rule from the brief: craft terms the audience knows cold
  * (stem, mix, transient) stay without apology; terms that are ours and
- * defined nowhere (readiness, dossier, unclaimed) stay because a one-line
+ * defined nowhere (draft, version, commit, freeze) stay because a one-line
  * definition earns them; engineering terms that name an internal mechanism
  * rather than a thing the user has (ledger, quota) are renamed in
  * director-facing copy to the thing the user actually has — costs,
@@ -49,28 +49,11 @@ export const GLOSSARY: Record<string, TermDef> = {
     craft: true
   },
   // -- our terms, kept because a line defines them --------------------------
-  readiness: {
-    label: "readiness",
-    def: "the checklist of what stands between this project and a finished mix",
-  },
-  dossier: {
-    label: "dossier",
-    def: "every artifact this project has produced, listed in one place",
-  },
-  unclaimed: {
-    label: "unclaimed",
-    def: "material the system owns (money spent, storage used) that no project claims",
-  },
-  continuity: {
-    label: "continuity",
-    def: "an adjacent-shot comparison that flags a visual jump for your judgement, never a verdict",
-  },
   envelope: {
     label: "envelope",
     def: "the shape of a sound's attack and decay, drawn on each timeline block",
     craft: true
   },
-  // -- editing vocabulary ---------------------------------------------------
   draft: {
     label: "draft",
     def: "your uncommitted working copy of the timeline; commit writes it as the next version",
@@ -104,10 +87,6 @@ export const GLOSSARY: Record<string, TermDef> = {
   ledger: {
     label: "ledger",
     def: "the operator name for the transaction record every billed call is written to",
-  },
-  quota: {
-    label: "quota",
-    def: "the operator name for a model's per-day request limit",
   },
 };
 

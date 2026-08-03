@@ -118,7 +118,7 @@ test("each route reaches ready state within the budget", async ({ page }) => {
     ["/", /Projects/],
     ["/projects/proj_PW", /Western standoff/],
     ["/config", /Deployment checks/],
-    ["/unclaimed", /unclaimed/i],
+    ["/unclaimed", /Orphans/],
   ];
   // The budget is a hang-detector, not a benchmark (3s with an instant
   // stubbed API leaves huge headroom for slow CI runners).
@@ -182,6 +182,6 @@ test("smoke soak: repeated overlay opens and tab switches stay clean and respons
   }
 
   // The app still responds.
-  await expect(page.getByRole("tab", { name: "Readiness" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Checklist" })).toBeVisible();
   expect(errors).toEqual([]);
 });

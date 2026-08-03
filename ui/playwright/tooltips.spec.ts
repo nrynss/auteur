@@ -179,7 +179,7 @@ async function expectTipClearOf(page: Page, anchor: { boundingBox: () => Promise
 
 test("focusing a glossary term shows a tip inside the viewport, clear of the term", async ({ page }) => {
   await openControlRoom(page);
-  const term = page.locator("button.term", { hasText: "readiness" });
+  const term = page.locator("button.term", { hasText: "transient" });
   await term.focus();
   await expectTipClearOf(page, term);
 });
@@ -194,7 +194,7 @@ test("hovering a button with help shows the tip too", async ({ page }) => {
 
 test("Escape dismisses an open tip", async ({ page }) => {
   await openControlRoom(page);
-  const term = page.locator("button.term", { hasText: "readiness" });
+  const term = page.locator("button.term", { hasText: "transient" });
   await term.focus();
   await expect(page.locator('[role="tooltip"]')).toBeVisible();
   await page.keyboard.press("Escape");
@@ -286,7 +286,7 @@ test("a tip on a narrow viewport is clamped inside it", async ({ page }) => {
   await page.goto("/projects/proj_PW");
   // At 480px the chrome title truncates; wait on the brand instead.
   await expect(page.locator(".brand").first()).toBeVisible();
-  const term = page.locator("button.term", { hasText: "readiness" });
+  const term = page.locator("button.term", { hasText: "transient" });
   await term.focus();
   await expectTipClearOf(page, term);
 });
@@ -294,7 +294,7 @@ test("a tip on a narrow viewport is clamped inside it", async ({ page }) => {
 test("tips render in the dark theme too", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "dark" });
   await openControlRoom(page);
-  const term = page.locator("button.term", { hasText: "readiness" });
+  const term = page.locator("button.term", { hasText: "transient" });
   await term.focus();
   await expectTipClearOf(page, term);
   // The tip must actually use the dark surface, not a light default.

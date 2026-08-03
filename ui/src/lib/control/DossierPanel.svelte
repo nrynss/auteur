@@ -31,9 +31,9 @@
 
 <div class="panel-body">
   {#if failed}
-    <p class="empty">Dossier could not be loaded.</p>
+    <p class="empty">Artifacts could not be loaded.</p>
   {:else if loading}
-    <p class="empty">Composing the dossier: one lookup per artifact…</p>
+    <p class="empty">Composing the artifact list: one lookup per artifact…</p>
   {:else if !dossier}
     <p class="empty">No artifacts yet. Mix, repair or export creates them.</p>
   {:else}

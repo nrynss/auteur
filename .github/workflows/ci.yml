@@ -110,7 +110,7 @@ jobs:
       - name: Default build keeps the brand
         working-directory: ui
         run: |
-          grep -q '<title>Auteur — Control room</title>' \
+          grep -q '<title>Auteur · Control room</title>' \
             ../src/foleyflow/api/static/index.html
           grep -rnq "Auteur" ../src/foleyflow/api/static/
 

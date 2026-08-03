@@ -20,7 +20,6 @@
   import { ApiError } from "../api/client";
 
   import HelpHint from "../help/HelpHint.svelte";
-  import Term from "../help/Term.svelte";
 
   import { formatCost } from "../format";
   import {
@@ -236,8 +235,8 @@
 <div class="page">
   <header class="chrome">
     <div class="proj">
-      <h1><Term term="unclaimed" /></h1>
-      <span class="sub">material this system owns that no project claims: money spent, storage held, addresses shared</span>
+      <h1>Orphans</h1>
+      <span class="sub">spend and storage no project claims: money spent, storage held, addresses shared</span>
     </div>
     <span class="spacer"></span>
     <HelpHint />
@@ -261,14 +260,14 @@
   {:else}
     <section class="panel">
       <div class="head">
-        <p class="eyebrow">Orphaned <Term term="transactions" /></p>
+        <p class="eyebrow">Orphaned transactions</p>
         <span class="count num">{ledger.total_count}</span>
       </div>
       {#if ledgerBroken}
         <div class="fiction" role="alert">
           <span class="head">
             <Icon name="alert" size={12} />
-            <span class="word">Ledger unwritable: figures withheld</span>
+            <span class="word">Spend record unavailable: figures withheld</span>
           </span>
           <p>
             Nothing is being recorded, so every spend figure would read zero no
@@ -281,7 +280,7 @@
       {:else}
         <p class="note">
           Money spent and daily usage consumed that no project’s budget counts. Claiming
-          adopts <b>every currently-unclaimed row</b> (first-come by time, docs/api.md §3.11).
+          claims <b>every currently-orphaned row</b> (first-come by time, docs/api.md §3.11).
         </p>
         <table class="rows">
           <thead>
@@ -412,8 +411,8 @@
     {@const d = dialog}
     <ConfirmDialog
       open={true}
-      title="Claim every unclaimed row into a project?"
-      body="This adopts every currently-unclaimed ledger row into the chosen project (first-come by time). The money then reconciles into that project's budget."
+      title="Claim every orphan row into a project?"
+      body="This claims every currently-orphaned transaction into the chosen project (first-come by time). The money then reconciles into that project's budget."
       confirmLabel={busy ? "Claiming…" : "Claim rows"}
       busy={busy}
       onconfirm={() => d.projectId && confirmClaimInto(d.projectId)}
@@ -438,7 +437,7 @@
     <ConfirmDialog
       open={true}
       title="Create a spend archive?"
-      body="Creates a project with no video (there is nothing to upload) and claims every currently-unclaimed ledger row into it, first-come by time. Its budget then counts that spend."
+      body="Creates a project with no video (there is nothing to upload) and claims every currently-orphaned transaction into it, first-come by time. Its budget then counts that spend."
       confirmLabel={busy ? "Creating…" : "Create & claim"}
       busy={busy}
       onconfirm={confirmClaimNew}
