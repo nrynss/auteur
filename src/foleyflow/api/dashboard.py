@@ -87,7 +87,7 @@ stale bundle pretending to be current.</p>
 <pre>uv run python scripts/emit_openapi.py --out ui/openapi.json
 cd ui &amp;&amp; npm install &amp;&amp; npm run build</pre>
 <p>or build the Docker image, whose Node stage runs the build for you:</p>
-<pre>docker build --build-arg FOLEYFLOW_GIT_SHA="$(git rev-parse HEAD)" -t foleyflow .</pre>
+<pre>docker build --build-arg FOLEYFLOW_GIT_SHA="$(git rev-parse HEAD)" -t auteur .</pre>
 <p>The API itself is unaffected — <a href="/docs">/docs</a> and
 <a href="/api/v1/openapi.json">/api/v1/openapi.json</a> still work.</p>
 </main>
