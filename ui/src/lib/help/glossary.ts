@@ -24,6 +24,11 @@ export interface TermDef {
   /** One-line definition — the evidence-first voice: what it is, never a
    * judgement. */
   def: string;
+  /** Craft terms the audience knows cold — completeness entries in the `?`
+   * overlay even when the word itself is not rendered (envelope is drawn,
+   * never labelled). The coverage test requires every NON-craft entry to be
+   * used in the rendered template. */
+  craft?: boolean;
 }
 
 export const GLOSSARY: Record<string, TermDef> = {
@@ -31,14 +36,17 @@ export const GLOSSARY: Record<string, TermDef> = {
   stem: {
     label: "stem",
     def: "the single recorded sound for one event; events that route to the same request share one stem",
+    craft: true
   },
   mix: {
     label: "mix",
     def: "the finished audio track assembled from the timeline, its placed stems and the ambience",
+    craft: true
   },
   transient: {
     label: "transient",
     def: "the onset of a one-shot sound — the hit point the playhead marks, not the event's start",
+    craft: true
   },
   // -- our terms, kept because a line defines them --------------------------
   readiness: {
@@ -60,6 +68,7 @@ export const GLOSSARY: Record<string, TermDef> = {
   envelope: {
     label: "envelope",
     def: "the shape of a sound's attack and decay, drawn on each timeline block",
+    craft: true
   },
   // -- editing vocabulary ---------------------------------------------------
   draft: {
@@ -75,7 +84,7 @@ export const GLOSSARY: Record<string, TermDef> = {
     def: "write the draft as one new immutable version beside the others",
   },
   freeze: {
-    label: "freeze",
+    label: "frozen content",
     def: "a recorded value that locks a generated sound's address or texture, so an edit cannot silently re-roll it",
   },
   // -- money, in the director's words --------------------------------------

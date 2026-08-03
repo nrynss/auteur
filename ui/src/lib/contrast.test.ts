@@ -148,6 +148,15 @@ for (const theme of ["light", "dark"] as const) {
     const accentFill = theme === "light" ? "D7E8E5" : "1B3330";
     expect(ratio(ink, accentFill), `${theme} pressed chip text on accent-q`)
       .toBeGreaterThanOrEqual(4.5);
+    // The error banner: the stop word and dim detail on the stop-tinted fill
+    // (ControlRoom .banner.err = stop at 10% over the surface).
+    // The banner sits on the app surface, not the raised chip background.
+    const appSurface = theme === "light" ? "FFFFFF" : "171B1E";
+    const errFill = mix(themeToken(theme, "stop"), 0.10, appSurface);
+    expect(ratio(themeToken(theme, "stop"), errFill), `${theme} banner stop word`)
+      .toBeGreaterThanOrEqual(4.5);
+    expect(ratio(dimInk, errFill), `${theme} banner detail`)
+      .toBeGreaterThanOrEqual(4.5);
   });
 }
 

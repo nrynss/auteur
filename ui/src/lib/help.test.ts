@@ -27,13 +27,26 @@ const here = join(dirname(fileURLToPath(import.meta.url)), "..", "lib");
 // -- glossary coverage -------------------------------------------------------
 
 it("every glossary entry is used by a Term or rendered somewhere", () => {
+  // Scan only the TEMPLATE region of each component (`</script>` → `<style>`)
+  // — a term that appears only in a script or a comment is not rendered, and
+  // must not count. Craft terms (stem, mix, transient, envelope) are exempt:
+  // they are completeness entries in the `?` overlay for vocabulary the
+  // audience knows, whether or not the word is drawn on screen.
   const sources = readdirSync(here, { recursive: true })
     .filter((f): f is string => typeof f === "string" && f.endsWith(".svelte"))
-    .map((f) => readFileSync(join(here, f), "utf-8"))
+    .map((f) => {
+      const src = readFileSync(join(here, f), "utf-8");
+      const scriptEnd = src.indexOf("</script>");
+      const styleStart = src.indexOf("<style");
+      const start = scriptEnd === -1 ? 0 : scriptEnd + 9;
+      const end = styleStart === -1 ? src.length : styleStart;
+      return src.slice(start, end);
+    })
     .join("\n");
   for (const [id, t] of Object.entries(GLOSSARY)) {
+    if (t.craft) continue;
     const usedAsTerm = sources.includes(`term="${id}"`);
-    const labelRendered = new RegExp(`\\b${t.label}\\b`).test(sources);
+    const labelRendered = new RegExp(`\\b${t.label}\\b`, "i").test(sources);
     expect(
       usedAsTerm || labelRendered,
       `glossary entry ${id} ("${t.label}") is never rendered`,

@@ -854,6 +854,20 @@ invariants (help.test.ts). CI's UI-test step names the gate.
   change, and tears down entirely when the text goes away — no stale
   `aria-describedby` pointing at a vanished tip.
 
+**Review round 4 (final):**
+- **The glossary-coverage test stopped lying.** It scanned whole `.svelte`
+  files, so a term that appeared only in a script or comment counted as
+  "rendered" — `envelope` passed for being in code. It now scans only the
+  template region, and craft terms (stem, mix, transient, envelope) are
+  flagged as completeness entries the test exempts. This caught the one
+  mis-aligned label: the UI says "Frozen content" (the rename tooltip), the
+  glossary said "freeze" — aligned, and the match is case-insensitive.
+- **Tab order pinned.** The a11y gate now asserts no focusable carries a
+  positive `tabindex` — nothing can reorder the tab sequence away from the
+  visual/DOM order without failing.
+- **The error banner's pair is pinned too** — the stop word and the detail
+  on the stop-tinted banner fill, in both themes.
+
 ## 23. Repo and image identity — S
 
 **Depends on:** 20, and best done after 22. **Files:** `pyproject.toml` (`[project.scripts]`),

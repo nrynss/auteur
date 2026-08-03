@@ -257,6 +257,10 @@ it("every interactive control on the control room is keyboard-reachable", async 
       tabindex,
       `element ${el.tagName} unreachable: ${el.outerHTML.slice(0, 120)}`,
     ).not.toBe("-1");
+    // No positive tabindex: a positive value would reorder the tab sequence
+    // away from the visual/DOM order (task 22's focus-order rule).
+    const n = tabindex == null ? 0 : Number(tabindex);
+    expect(n, `element ${el.tagName} reorders the tab sequence`).toBeLessThanOrEqual(0);
   }
   unmount(app);
 });
