@@ -228,8 +228,71 @@ async function openProject(page: Page, projectId: string): Promise<void> {
     page.locator('[role="button"][aria-label*="index "]').first(),
   ).toBeVisible({ timeout: 45_000 });
 
+  await waitForViewerBuffered(page);
+
   // Dead head after context creation: hold a settled frame before the beat.
   await page.waitForTimeout(1_500);
+}
+
+/**
+ * Hold until the source video is FULLY buffered, or the take is unusable.
+ *
+ * The seeded source is ~25.8 MB over ~15 s — about 13.7 Mbps — and the link to
+ * B2 measures ~6.8 Mbps from here. Playback needs roughly twice the bandwidth
+ * available, so the video cannot stream in real time: it must be sat on until
+ * the whole range is cached, after which it plays perfectly from memory.
+ *
+ * Skip this and every beat that shows the viewer stutters to black whenever
+ * playback reaches unbuffered data. That was the "clipping" in the first
+ * capture pass — not the screen recorder, which produced crisp UI frames the
+ * whole time.
+ *
+ * Waiting is free: capture overshoots its budget by design and ffmpeg trims to
+ * the VO clock afterwards.
+ */
+async function waitForViewerBuffered(page: Page): Promise<void> {
+  const hasVideo = await page.locator("video").count();
+  if (hasVideo === 0) return;
+
+  const buffered = await page
+    .waitForFunction(
+      () => {
+        const v = document.querySelector("video");
+        if (!v) return true;
+        if (v.error) return true; // surfaced below, not silently waited on
+        if (!v.duration || Number.isNaN(v.duration)) return false;
+        if (v.buffered.length === 0) return false;
+        const end = v.buffered.end(v.buffered.length - 1);
+        // HAVE_ENOUGH_DATA and the whole range within a frame of the end.
+        return v.readyState >= 4 && end >= v.duration - 0.05;
+      },
+      undefined,
+      { timeout: 120_000, polling: 500 },
+    )
+    .then(() => true)
+    .catch(() => false);
+
+  const state = await page.evaluate(() => {
+    const v = document.querySelector("video");
+    if (!v) return null;
+    return {
+      readyState: v.readyState,
+      duration: v.duration,
+      bufferedEnd: v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0,
+      error: v.error ? v.error.code : null,
+    };
+  });
+
+  if (state?.error) {
+    throw new Error(`viewer failed to load (MediaError ${state.error})`);
+  }
+  if (!buffered) {
+    throw new Error(
+      `viewer not fully buffered after 120s: readyState=${state?.readyState} ` +
+        `buffered=${state?.bufferedEnd?.toFixed(2)}/${state?.duration?.toFixed(2)}s. ` +
+        `The take would stutter to black — re-run rather than film it.`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

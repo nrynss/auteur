@@ -23,6 +23,7 @@ endpoint URLs) escaped to callers written against the StorageError contract.
 
 import os
 import sys
+import time
 from typing import Optional
 
 from foleyflow.storage.base import (
@@ -86,6 +87,10 @@ class B2Backend:
         # write, so the unsupported round trip is attempted once per process
         # rather than on every immutable put. See put_if_absent.
         self._conditional_put = True
+        # Presigned GET URLs, keyed (key, expires_s, window). Per instance so a
+        # second bucket/prefix can never be served another's URL — same reason
+        # ledger caches key on scope_id(). See signed_url.
+        self._signed_url_cache: dict[tuple[str, int, int], str] = {}
         self._client = boto3.client(
             "s3",
             endpoint_url=endpoint_url,
@@ -302,14 +307,50 @@ class B2Backend:
         return out
 
     def signed_url(self, key: str, expires_s: int = 3600) -> str:
+        """Presigned GET, held stable for half its lifetime.
+
+        A fresh signature per call defeats browser caching completely. The
+        browser keys its HTTP cache on the whole URL, signature included, so a
+        new `X-Amz-Date` on every request means a large immutable object is
+        re-downloaded from scratch on every page load no matter what
+        `Cache-Control` B2 sends back (it sends `immutable, max-age=1y`).
+
+        That is not academic: the seeded 25.8 MB source is served to a `<video>`
+        element, browsers stream video as many ranged GETs, and ranged reads
+        from B2 measure ~0.9 MB/s against ~6.2 MB/s for a single full GET
+        because each range pays a fixed round trip. Re-fetching that on every
+        render made the viewer stall and flash indefinitely.
+
+        So the same URL string is returned for every call inside a window, and
+        the window is half the expiry — a URL is therefore never handed out
+        with less than half its life remaining. Cache is per backend instance,
+        so two backends (different bucket or prefix) can never share an entry.
+        """
+        window = max(60, expires_s // 2)
+        bucket_index = int(time.time()) // window
+        cache_key = (key, expires_s, bucket_index)
+
+        cached = self._signed_url_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
-            return self._client.generate_presigned_url(
+            url = self._client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self.bucket, "Key": self._key(key)},
                 ExpiresIn=expires_s,
             )
         except _boto_errors() as e:
             raise StorageError(f"presign failed for {key!r}") from e
+
+        # Drop entries from earlier windows; without this a long-lived process
+        # accumulates one entry per key per window forever.
+        stale = [k for k in self._signed_url_cache if k[2] != bucket_index]
+        for k in stale:
+            self._signed_url_cache.pop(k, None)
+
+        self._signed_url_cache[cache_key] = url
+        return url
 
     def signed_upload_url(self, key: str, content_type: str,
                           expires_s: int = 900) -> str:
