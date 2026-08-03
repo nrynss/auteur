@@ -826,6 +826,25 @@ transition is disabled too.
 every control keyboard-reachable), the contrast pin, and the glossary/bindings
 invariants (help.test.ts). CI's UI-test step names the gate.
 
+**Review round 1 (after landing):** the first adversarial pass, before the
+numbered rounds — the build's own bugs and the tests that were lying:
+- **The a11y harness was broken in three ways** (its failures hid real
+  problems): the stub's URL split made every global fetch return the project
+  object (unhandled `undefined.length` errors on the routes — the acceptance
+  says zero); the keyboard test unmounted the app before its own assertions,
+  so the tooltip destroy ran `tabindex=-1` on live nodes (a phantom failure
+  that took a while to find); and the `$effect`-wired tooltip action ran
+  inside its own cleanup (the wiring never happened) with tabindex churn from
+  re-runs — moved to a `use:` action with a proper lifecycle.
+- **Terminology leftovers in director copy** — "ledger unwritable" on the
+  budget chip and "quota consumed" in the unclaimed note — renamed to "costs
+  not recorded" / "daily usage consumed".
+- **Empty states said what was missing but not what fills it** — the history
+  and dossier empties now name the action that fills them.
+- **The tooltip skipped wiring when it had no text** (the budget chip's
+  writable case) and the `$derived.by` misuse on the config screen's brand row
+  was caught and fixed.
+
 **Review round 2 (after landing):**
 - **No focusable-inside-disabled-control.** The tooltip action now resolves a
   wrapping button — enabled OR disabled — as the target, so a disabled
@@ -854,7 +873,7 @@ invariants (help.test.ts). CI's UI-test step names the gate.
   change, and tears down entirely when the text goes away — no stale
   `aria-describedby` pointing at a vanished tip.
 
-**Review round 4 (final):**
+**Review round 4:**
 - **The glossary-coverage test stopped lying.** It scanned whole `.svelte`
   files, so a term that appeared only in a script or comment counted as
   "rendered" — `envelope` passed for being in code. It now scans only the
@@ -867,6 +886,19 @@ invariants (help.test.ts). CI's UI-test step names the gate.
   visual/DOM order without failing.
 - **The error banner's pair is pinned too** — the stop word and the detail
   on the stop-tinted banner fill, in both themes.
+
+**Clipping hardening (the review that started this round of work):** jsdom
+has no layout engine, so tooltip clipping was untestable and untested. The
+audit found the real risk: the tip rendered in place, a descendant of
+whatever container the anchor sat in — vulnerable to any `overflow` ancestor
+and any containing-block property (`transform`/`filter`/`backdrop-filter`
+re-base `position: fixed`), and `Button:hover` already carries a `filter`.
+Fixed structurally rather than tested around: the tip **portals to
+`<body>`** (`use:portal`) so no ancestor can clip or re-base it; the viewport
+clamp is a pure, unit-tested `clampTipPosition` (`geometry.test.ts` — never
+leaves the viewport, flips above the bottom edge, horizontal gutter); long
+definitions wrap on narrow viewports; z-index (60) sits above the dialog
+scrim and help overlay.
 
 **Browser gate (after the clipping review):** jsdom has no layout engine, so
 tooltip clipping could not be tested there. Added a focused Playwright job —
@@ -919,6 +951,13 @@ The gate immediately earned its keep — three real bugs jsdom missed:
   re-navigations (leak detection), and a smoke soak — 8× overlay open/close
   plus all tabs — staying error-free and responsive (window listeners must be
   removed on close, not piled up).
+
+**Standing state:** 21 Playwright tests across four specs (tooltips 10,
+keyboard 2, navigation 5, performance 3 — plus the console-error sweep in
+tooltips) and 252 vitest tests, all green, zero unhandled errors. The
+`ui-playwright` CI job downloads the default bundle from `ui-build`, installs
+chromium and runs the gate on every PR and push, so each of these guarantees
+is a standing machine check rather than a one-time fix.
 
 ## 23. Repo and image identity — S
 
