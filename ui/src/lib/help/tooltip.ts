@@ -16,10 +16,16 @@ const FOCUSABLE =
   'select:not([disabled]), textarea:not([disabled]), ' +
   '[tabindex]:not([tabindex="-1"])';
 
+export interface TooltipTipOptions {
+  id: string;
+  onOpen: () => void;
+  onClose: () => void;
+}
+
 export function tooltipTip(
   node: HTMLElement,
-  opts?: { id: string; onOpen: () => void; onClose: () => void },
-): { destroy: () => void } {
+  opts?: TooltipTipOptions,
+): { destroy: () => void; update?: (o: TooltipTipOptions) => void } {
   if (!opts || !opts.id) return { destroy() {} };
   const { id, onOpen, onClose } = opts;
   // The interactive element the help attaches to: the anchor itself, a
@@ -76,7 +82,7 @@ export function tooltipTip(
   target.addEventListener("mouseleave", onMouseLeave);
   target.addEventListener("keydown", onKeydown);
 
-  return {
+  const cleanup: { destroy: () => void; update?: (o: TooltipTipOptions) => void } = {
     destroy() {
       target?.removeEventListener("focusin", onFocusIn);
       target?.removeEventListener("focusout", onFocusOut);
@@ -86,5 +92,22 @@ export function tooltipTip(
       target?.removeAttribute("aria-describedby");
       if (wrapperFocusable) node.tabIndex = -1;
     },
+    // The anchor's help text can flip while mounted (e.g. the budget chip's
+    // ledger-writable flag): re-wire when the id changes.
+    update(next?: TooltipTipOptions) {
+      if (!next) {
+        // The help text went away while mounted: tear the wiring down.
+        cleanup.destroy();
+        cleanup.destroy = () => {};
+        return;
+      }
+      if (next.id !== id) {
+        cleanup.destroy();
+        const again = tooltipTip(node, next);
+        cleanup.destroy = again.destroy;
+        cleanup.update = again.update;
+      }
+    },
   };
+  return cleanup;
 }

@@ -86,6 +86,8 @@ const CASES: [string, string][] = [
   ["faint", "surface"], ["faint", "raised"], ["faint", "ground"],
   ["accent", "surface"],
   ["ok", "surface"], ["warn", "surface"], ["stop", "surface"],
+  // Primary buttons: the surface ink on the accent fill.
+  ["surface", "accent"],
 ];
 
 for (const theme of ["light", "dark"]) {

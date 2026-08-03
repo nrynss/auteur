@@ -33,6 +33,7 @@ vi.hoisted(() => {
 });
 
 import axe from "axe-core";
+import HelpOverlay from "./help/HelpOverlay.svelte";
 import ConfigScreen from "./config/ConfigScreen.svelte";
 import ControlRoom from "./control/ControlRoom.svelte";
 import CreateProject from "./projects/CreateProject.svelte";
@@ -185,6 +186,7 @@ const screens: [string, unknown, Record<string, unknown>][] = [
   ["control room", ControlRoom, { id: "proj_A11Y" }],
   ["unclaimed", Unclaimed, { onNavigate: () => {} }],
   ["config", ConfigScreen, { onNavigate: () => {} }],
+  ["help overlay", HelpOverlay, { open: true, onclose: () => {} }],
 ];
 
 async function runAxe(target: HTMLElement, label: string) {

@@ -843,6 +843,17 @@ invariants (help.test.ts). CI's UI-test step names the gate.
 - **Empty-state copy:** the unclaimed header links its own term; the dossier
   empty says what fills it.
 
+**Review round 3 (after landing):**
+- **The help overlay is in the a11y gate too** — axe now audits it open, not
+  just the five routes.
+- **The accent-button pair is pinned.** Primary buttons render `--surface`
+  ink on `--accent`; the contrast test now checks `surface` on `accent` in
+  both themes (4.88 / 6.87 — the pair passes, and now cannot drift).
+- **The tooltip action re-wires when its help text flips while mounted** (the
+  budget chip's writable flag): `update()` tears down and re-wires on id
+  change, and tears down entirely when the text goes away — no stale
+  `aria-describedby` pointing at a vanished tip.
+
 ## 23. Repo and image identity — S
 
 **Depends on:** 20, and best done after 22. **Files:** `pyproject.toml` (`[project.scripts]`),
