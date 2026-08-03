@@ -129,9 +129,9 @@
   size="sm"
   disabled={!canAct}
   pending={busy && phase.kind === "idle"}
-  title={
+  help={
     locked
-      ? "A run is in flight"
+      ? "A run is in flight — editing is locked"
       : eventIndex == null
         ? "Select a timeline event"
         : "Regenerate this event's stem by index"

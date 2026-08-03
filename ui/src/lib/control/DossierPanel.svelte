@@ -2,6 +2,7 @@
   /** Dossier tab: the artifact inventory — provenance only (key, size,
    * recorded sha256), one row per physical object. */
   import type { DossierResponse } from "../api/projects";
+  import Tooltip from "../help/Tooltip.svelte";
 
   interface Props {
     dossier: DossierResponse | null;
@@ -47,7 +48,7 @@
         {#each dossier.artifacts as a (a.key)}
           <tr>
             <td class="kind">{a.kind}</td>
-            <td class="key num" title={a.key}>{shortKey(a.key)}</td>
+            <td class="key num"><Tooltip text={a.key}><span>{shortKey(a.key)}</span></Tooltip></td>
             <td class="size num">{fmtBytes(a.size_bytes)}</td>
             <td class="sha num">{shortSha(a.sha256)}</td>
           </tr>

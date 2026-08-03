@@ -4,12 +4,14 @@
   import { onMount } from "svelte";
 
   import { BRAND_NAME } from "../brand";
+  import Tooltip from "../help/Tooltip.svelte";
   import Button from "../components/Button.svelte";
   import Chip from "../components/Chip.svelte";
   import Panel from "../components/Panel.svelte";
   import Spinner from "../components/Spinner.svelte";
   import ThemeToggle from "../components/ThemeToggle.svelte";
   import { ApiError } from "../api/client";
+  import HelpHint from "../help/HelpHint.svelte";
   import {
     listProjects,
     type ProjectSummary,
@@ -83,8 +85,9 @@
   <span class="dim">projects</span>
   <span class="spacer"></span>
   {#if storageHint}
-    <span class="stop faint" title={storageHint}>storage issue</span>
+    <span class="stop faint"><Tooltip text={storageHint ?? ""}><span>storage issue</span></Tooltip></span>
   {/if}
+  <HelpHint />
   <ThemeToggle />
   <Button variant="ghost" size="sm" onclick={() => go("/unclaimed")}>
     Unclaimed
@@ -160,8 +163,8 @@
             <span class="num num-col" role="cell">
               {formatCost(p.budget_usd)}
             </span>
-            <span class="file faint" role="cell" title={p.source_filename}>
-              {p.source_filename || "—"}
+            <span class="file faint" role="cell">
+              <Tooltip text={p.source_filename}><span>{p.source_filename || "—"}</span></Tooltip>
             </span>
             <span class="created faint" role="cell">
               {formatCreatedAt(p.created_at)}

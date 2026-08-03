@@ -18,6 +18,7 @@
   import ChecklistRow from "../control/ChecklistRow.svelte";
   import { BRAND_NAME } from "../brand";
   import { ApiError } from "../api/client";
+  import HelpHint from "../help/HelpHint.svelte";
   import { getConfig, type ConfigResponse } from "../api/projects";
   import type { ReadinessItem } from "../api/projects";
 
@@ -134,6 +135,7 @@
   <Button variant="ghost" size="sm" onclick={() => onNavigate("/")}>
     Projects
   </Button>
+  <HelpHint />
   <ThemeToggle />
 </header>
 

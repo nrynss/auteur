@@ -5,6 +5,7 @@
 
   import Icon from "./Icon.svelte";
   import Spinner from "./Spinner.svelte";
+  import Tooltip from "../help/Tooltip.svelte";
 
   interface Props {
     variant?: "secondary" | "primary" | "ghost" | "danger";
@@ -12,7 +13,10 @@
     pending?: boolean;
     disabled?: boolean;
     type?: "button" | "submit";
-    title?: string;
+    /** Help text — rendered as a real tooltip (task 22), never a native
+     * title= attribute. A disabled button still gets its explanation: the
+     * tooltip wrapper becomes the keyboard handle. */
+    help?: string;
     "aria-label"?: string;
     onclick?: (event: MouseEvent) => void;
     children?: import("svelte").Snippet;
@@ -26,7 +30,7 @@
     pending = false,
     disabled = false,
     type = "button",
-    title,
+    help,
     "aria-label": ariaLabel,
     onclick,
     children,
@@ -34,26 +38,49 @@
   }: Props = $props();
 </script>
 
-<button
-  class="btn"
-  class:primary={variant === "primary"}
-  class:ghost={variant === "ghost"}
-  class:danger={variant === "danger"}
-  class:sm={size === "sm"}
-  class:pending={pending}
-  type={type}
-  disabled={disabled || pending}
-  title={title}
-  aria-label={ariaLabel}
-  aria-busy={pending || undefined}
-  onclick={onclick}
-  {...rest}
->
-  {#if pending}
-    <Spinner size={11} />
-  {/if}
-  {@render children?.()}
-</button>
+{#if help}
+  <Tooltip text={help}>
+    <button
+      class="btn"
+      class:primary={variant === "primary"}
+      class:ghost={variant === "ghost"}
+      class:danger={variant === "danger"}
+      class:sm={size === "sm"}
+      class:pending={pending}
+      type={type}
+      disabled={disabled || pending}
+      aria-label={ariaLabel}
+      aria-busy={pending || undefined}
+      onclick={onclick}
+      {...rest}
+    >
+      {#if pending}
+        <Spinner size={11} />
+      {/if}
+      {@render children?.()}
+    </button>
+  </Tooltip>
+{:else}
+  <button
+    class="btn"
+    class:primary={variant === "primary"}
+    class:ghost={variant === "ghost"}
+    class:danger={variant === "danger"}
+    class:sm={size === "sm"}
+    class:pending={pending}
+    type={type}
+    disabled={disabled || pending}
+    aria-label={ariaLabel}
+    aria-busy={pending || undefined}
+    onclick={onclick}
+    {...rest}
+  >
+    {#if pending}
+      <Spinner size={11} />
+    {/if}
+    {@render children?.()}
+  </button>
+{/if}
 
 <style>
   .btn {

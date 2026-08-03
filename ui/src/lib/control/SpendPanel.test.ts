@@ -134,7 +134,9 @@ it("renders ledger rows with their own source and result — failed included", (
       ledger: LEDGER,
     } as never,
   });
-  expect(body).toContain("Ledger — individual transactions");
+  // Task 22 terminology: the audit table is the director's
+  // "transactions" — the ledger is the operator name.
+  expect(body).toContain("transactions");
   // The audit trail names the endpoint, the money, and how it was priced.
   expect(body).toContain("eleven_text_to_sound_v2");
   expect(body).toContain("$0.30");

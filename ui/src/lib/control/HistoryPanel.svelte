@@ -38,12 +38,12 @@
       {/each}
     </div>
   {:else}
-    <p class="empty">No timeline versions yet.</p>
+    <p class="empty">No timeline versions yet — analysis creates the first.</p>
   {/if}
 
   <p class="eyebrow">Runs &amp; mixes</p>
   {#if runs.length === 0}
-    <p class="empty">No runs yet.</p>
+    <p class="empty">No runs yet — mix, repair or export create one.</p>
   {:else}
     <ul class="runs">
       {#each runs as r (r.id)}
@@ -70,7 +70,7 @@
 
   <p class="eyebrow">Event log</p>
   {#if events.length === 0}
-    <p class="empty">No events yet.</p>
+    <p class="empty">No events yet — analysis and repairs populate the log.</p>
   {:else}
     <ul class="events">
       {#each events as e (e.id)}

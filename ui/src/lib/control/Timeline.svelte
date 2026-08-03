@@ -7,6 +7,8 @@
    * A.2.1); a historical view is read-only with an explicit "Edit from here".
    * 7.11: locked prop + selected index + regenerate slot. */
   import EnvelopeCanvas from "./EnvelopeCanvas.svelte";
+  import Tooltip from "../help/Tooltip.svelte";
+  import Term from "../help/Term.svelte";
   import { envelopeSeed, groupLanes, placeEvent } from "./helpers";
   import { resizeHandle } from "./resize-handle";
   import { timelineGrip } from "./timeline-grip";
@@ -359,12 +361,15 @@
               (viewing === "draft" && !draft && v === (versions[versions.length - 1]))}
             aria-pressed={viewing === v ||
               (viewing === "draft" && !draft && v === (versions[versions.length - 1]))}
-            title={v === versions[versions.length - 1]
-              ? `v${v} — latest committed version`
-              : `v${v} — earlier version (undo: view it, then edit from here)`}
             onclick={() => onView?.(v)}
           >
-            v{v}
+            <Tooltip
+              text={v === versions[versions.length - 1]
+                ? `v${v} — latest committed version`
+                : `v${v} — earlier version (undo: view it, then edit from here)`}
+            >
+              <span>v{v}</span>
+            </Tooltip>
           </button>
         {/each}
         {#if draft}
@@ -373,10 +378,11 @@
             class="vchip draft"
             class:pressed={viewing === "draft"}
             aria-pressed={viewing === "draft"}
-            title={`Draft — ${draftChangedText(draft)}`}
             onclick={() => onView?.("draft")}
           >
-            draft +1
+            <Tooltip text={`Draft — ${draftChangedText(draft)}`}>
+              <span>draft +1</span>
+            </Tooltip>
           </button>
         {/if}
       </div>
@@ -392,15 +398,21 @@
         type="button"
         class="head-btn"
         disabled={locked}
-        title={locked
-          ? "A run is in flight — editing is locked"
-          : `Restore v${viewing} as the working draft (undo to this version)`}
         onclick={() => onRestoreFrom?.(viewing as number)}
       >
-        Edit from here
+        <Tooltip
+          text={locked
+            ? "A run is in flight — editing is locked"
+            : `Restore v${viewing} as the working draft (undo to this version)`}
+        >
+          <span>Edit from here</span>
+        </Tooltip>
       </button>
     {:else if canEdit}
       <span class="note snap">snap 10 ms · ⌥ drag to override</span>
+      <span class="note legend">
+        <Term term="transient" /> = start + 50 ms bias
+      </span>
       <span class="note free">move · resize · rename · delete free</span>
     {:else if locked}
       <span class="note lock">run in flight — locked</span>
@@ -410,11 +422,15 @@
 
     {#if draft}
       {#if isDraftView && !isProposalView}
-        <button type="button" class="head-btn primary" disabled={locked || commitPending} onclick={onCommit} title={commitPending ? "Committing…" : "Write this draft as one new immutable version"}>
-          {commitPending ? "Committing…" : `Commit v${nextVersion ?? ""}`}
+        <button type="button" class="head-btn primary" disabled={locked || commitPending} onclick={onCommit}>
+          <Tooltip text={commitPending ? "Committing…" : "Write this draft as one new immutable version"}>
+            <span>{commitPending ? "Committing…" : `Commit v${nextVersion ?? ""}`}</span>
+          </Tooltip>
         </button>
-        <button type="button" class="head-btn ghost" onclick={onDiscardDraft} title="Discard this draft — the committed versions are untouched">
-          Discard
+        <button type="button" class="head-btn ghost" onclick={onDiscardDraft}>
+          <Tooltip text="Discard this draft — the committed versions are untouched">
+            <span>Discard</span>
+          </Tooltip>
         </button>
       {/if}
     {/if}
@@ -477,7 +493,7 @@
               <i
                 class="transient"
                 style={`left:${t.toFixed(3)}%`}
-                title="transient — start + 50 ms bias (onset trim not exposed)"
+                aria-hidden="true"
               ></i>
             {/if}
           {/each}
@@ -603,12 +619,15 @@
             type="button"
             class="mini"
             disabled={selectedEvent.source_duration_s != null}
-            title={selectedEvent.source_duration_s != null
-              ? "Frozen content — the commit refuses renames (a different generation); Regenerate re-rolls the audio instead"
-              : "Rename — free to commit; the next generation re-routes and re-prompts by the new name"}
             onclick={startRename}
           >
-            rename
+            <Tooltip
+              text={selectedEvent.source_duration_s != null
+                ? "Frozen content — the commit refuses renames (a different generation); Regenerate re-rolls the audio instead"
+                : "Rename — free to commit; the next generation re-routes and re-prompts by the new name"}
+            >
+              <span>rename</span>
+            </Tooltip>
           </button>
         {/if}
       </div>
@@ -629,7 +648,6 @@
         <button
           type="button"
           class="mini danger"
-          title="Delete this event — free: the money for generated content is already spent"
           onclick={() => {
             if (selected == null || !onEdit) return;
             const idx = selected;
@@ -638,7 +656,9 @@
             onselect?.(null);
           }}
         >
-          delete
+          <Tooltip text="Delete this event — free: the money for generated content is already spent">
+            <span>delete</span>
+          </Tooltip>
         </button>
       {/if}
       {#if inspectorActions}
@@ -1032,6 +1052,12 @@
     border-radius: 2px;
     background: transparent;
     transition: background 0.08s;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .handle::after {
+      transition: none;
+    }
   }
 
   .handle.h-r::after {

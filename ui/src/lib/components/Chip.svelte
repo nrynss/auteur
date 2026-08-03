@@ -104,7 +104,7 @@
   }
 
   .chip .detail {
-    color: var(--faint);
+    color: var(--dim);
   }
 
   .chip.ok {
@@ -113,16 +113,28 @@
     background: var(--ok-q);
   }
 
+  .chip.ok .word {
+    color: var(--text);
+  }
+
   .chip.warn {
     color: var(--warn);
     border-color: var(--warn-q);
     background: var(--warn-q);
   }
 
+  .chip.warn .word {
+    color: var(--text);
+  }
+
   .chip.blocked {
     color: var(--stop);
     border-color: var(--stop-q);
     background: var(--stop-q);
+  }
+
+  .chip.blocked .word {
+    color: var(--text);
   }
 
   .chip.pending {
@@ -135,6 +147,10 @@
     color: var(--ok);
     border-color: transparent;
     background: var(--ok-q);
+  }
+
+  .chip.live .word {
+    color: var(--text);
   }
 
   .chip[aria-pressed="true"] {

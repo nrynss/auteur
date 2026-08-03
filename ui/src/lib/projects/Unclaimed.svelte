@@ -18,6 +18,8 @@
   import Icon from "../components/Icon.svelte";
   import Spinner from "../components/Spinner.svelte";
   import { ApiError } from "../api/client";
+  import Term from "../help/Term.svelte";
+  import HelpHint from "../help/HelpHint.svelte";
   import { formatCost } from "../format";
   import {
     adoptOrphanProject,
@@ -236,6 +238,7 @@
       <span class="sub">material this system owns that no project claims — money spent, storage held, addresses shared</span>
     </div>
     <span class="spacer"></span>
+    <HelpHint />
     <button type="button" class="nav" onclick={() => onNavigate("/")}>← Projects</button>
   </header>
 
@@ -256,7 +259,7 @@
   {:else}
     <section class="panel">
       <div class="head">
-        <p class="eyebrow">Orphan ledger rows</p>
+        <p class="eyebrow">Orphaned <Term term="transactions" /></p>
         <span class="count num">{ledger.total_count}</span>
       </div>
       {#if ledgerBroken}
@@ -275,7 +278,7 @@
         <p class="empty">Every row has an owner — nothing to claim.</p>
       {:else}
         <p class="note">
-          Money spent and quota consumed that no project's budget counts. Claiming
+          Money spent and daily usage consumed that no project’s budget counts. Claiming
           adopts <b>every currently-unclaimed row</b> (first-come by time, docs/api.md §3.11).
         </p>
         <table class="rows">

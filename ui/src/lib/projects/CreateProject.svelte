@@ -7,6 +7,7 @@
   import Spinner from "../components/Spinner.svelte";
   import ThemeToggle from "../components/ThemeToggle.svelte";
   import { BRAND_NAME } from "../brand";
+  import HelpHint from "../help/HelpHint.svelte";
   import { ApiError } from "../api/client";
   import {
     analyzeProject,
@@ -434,6 +435,7 @@
   >
   <span class="dim">new project</span>
   <span class="spacer"></span>
+  <HelpHint />
   <ThemeToggle />
 </header>
 

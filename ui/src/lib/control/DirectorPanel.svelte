@@ -14,6 +14,7 @@
    */
   import type { DirectorResponse } from "../api/projects";
   import Spinner from "../components/Spinner.svelte";
+  import Tooltip from "../help/Tooltip.svelte";
   import { BRAND_NAME } from "../brand";
 
   /** The document a proposal was diffed against — what the director was
@@ -167,12 +168,15 @@
                     type="button"
                     class="btn primary"
                     disabled={locked}
-                    title={locked
-                      ? "A run is in flight — apply to the draft when it settles"
-                      : "Merge this proposal into the draft (an edit — commit still asks)"}
                     onclick={onApply}
                   >
-                    Apply to draft
+                    <Tooltip
+                      text={locked
+                        ? "A run is in flight — apply to the draft when it settles"
+                        : "Merge this proposal into the draft (an edit — commit still asks)"}
+                    >
+                      <span>Apply to draft</span>
+                    </Tooltip>
                   </button>
                   <button type="button" class="btn ghost" onclick={onDiscard}>
                     Discard
@@ -223,9 +227,10 @@
         type="submit"
         class="hint"
         disabled={!canSend}
-        title="Send — one billed director-model call"
       >
-        ⏎
+        <Tooltip text="Send — one billed director-model call">
+          <span>⏎</span>
+        </Tooltip>
       </button>
     </form>
     <p class="costline">

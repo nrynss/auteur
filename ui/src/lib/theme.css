@@ -26,8 +26,8 @@
 
   /* text */
   --text: #121618;
-  --dim: #5e6a6e;
-  --faint: #8a9599;
+  --dim: #556064;
+  --faint: #5e696d;
 
   /* accent — selection/active/primary action only */
   --accent: #2e7d74;
@@ -35,11 +35,11 @@
 
   /* semantic — state only, always with a glyph and a word */
   --ok: #3f7d53;
-  --ok-q: color-mix(in srgb, var(--ok) 14%, transparent);
+  --ok-q: color-mix(in srgb, var(--ok) 8%, transparent);
   --warn: #9a6b14;
-  --warn-q: color-mix(in srgb, var(--warn) 16%, transparent);
+  --warn-q: color-mix(in srgb, var(--warn) 8%, transparent);
   --stop: #b4453c;
-  --stop-q: color-mix(in srgb, var(--stop) 14%, transparent);
+  --stop-q: color-mix(in srgb, var(--stop) 8%, transparent);
 
   /* waveform ink */
   --wave: #7fa9a3;
@@ -95,17 +95,17 @@
 
     --text: #e8edee;
     --dim: #8c989c;
-    --faint: #6b7679;
+    --faint: #839095;
 
     --accent: #4fb3a6;
     --accent-q: #1b3330;
 
     --ok: #5fb37a;
-    --ok-q: color-mix(in srgb, var(--ok) 16%, transparent);
+    --ok-q: color-mix(in srgb, var(--ok) 8%, transparent);
     --warn: #d9a441;
-    --warn-q: color-mix(in srgb, var(--warn) 16%, transparent);
+    --warn-q: color-mix(in srgb, var(--warn) 8%, transparent);
     --stop: #e0655c;
-    --stop-q: color-mix(in srgb, var(--stop) 16%, transparent);
+    --stop-q: color-mix(in srgb, var(--stop) 8%, transparent);
 
     --wave: #3e6b67;
 
@@ -126,17 +126,17 @@
 
   --text: #e8edee;
   --dim: #8c989c;
-  --faint: #6b7679;
+  --faint: #839095;
 
   --accent: #4fb3a6;
   --accent-q: #1b3330;
 
   --ok: #5fb37a;
-  --ok-q: color-mix(in srgb, var(--ok) 16%, transparent);
+  --ok-q: color-mix(in srgb, var(--ok) 8%, transparent);
   --warn: #d9a441;
-  --warn-q: color-mix(in srgb, var(--warn) 16%, transparent);
+  --warn-q: color-mix(in srgb, var(--warn) 8%, transparent);
   --stop: #e0655c;
-  --stop-q: color-mix(in srgb, var(--stop) 16%, transparent);
+  --stop-q: color-mix(in srgb, var(--stop) 8%, transparent);
 
   --wave: #3e6b67;
 
@@ -154,18 +154,18 @@
   --line-soft: #e3e7e7;
 
   --text: #121618;
-  --dim: #5e6a6e;
-  --faint: #8a9599;
+  --dim: #556064;
+  --faint: #5e696d;
 
   --accent: #2e7d74;
   --accent-q: #d7e8e5;
 
   --ok: #3f7d53;
-  --ok-q: color-mix(in srgb, var(--ok) 14%, transparent);
+  --ok-q: color-mix(in srgb, var(--ok) 8%, transparent);
   --warn: #9a6b14;
-  --warn-q: color-mix(in srgb, var(--warn) 16%, transparent);
+  --warn-q: color-mix(in srgb, var(--warn) 8%, transparent);
   --stop: #b4453c;
-  --stop-q: color-mix(in srgb, var(--stop) 14%, transparent);
+  --stop-q: color-mix(in srgb, var(--stop) 8%, transparent);
 
   --wave: #7fa9a3;
 

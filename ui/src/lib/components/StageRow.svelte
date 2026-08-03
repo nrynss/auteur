@@ -6,6 +6,7 @@
    * chip — an unknown status must never be presented as a confident
    * success (control-room.md §7). */
   import Chip from "./Chip.svelte";
+  import Tooltip from "../help/Tooltip.svelte";
   import Spinner from "./Spinner.svelte";
   import Timecode from "./Timecode.svelte";
 
@@ -42,7 +43,7 @@
     <span class="elapsed"><Timecode seconds={elapsed_s} /></span>
   {/if}
   {#if retries > 0}
-    <span class="retries num" title={`${retries} retries`}>×{retries}</span>
+    <span class="retries num"><Tooltip text={`${retries} retries`}><span>×{retries}</span></Tooltip></span>
   {/if}
   {#if provider}
     <span class="provider">{provider}</span>

@@ -4,6 +4,8 @@
   import { brandPageTitle } from "./lib/brand";
   import ConfigScreen from "./lib/config/ConfigScreen.svelte";
   import ControlRoom from "./lib/control/ControlRoom.svelte";
+  import HelpOverlay from "./lib/help/HelpOverlay.svelte";
+  import { closeHelp, help, openHelp } from "./lib/help/helpStore.svelte";
   import PrimitivesGallery from "./lib/PrimitivesGallery.svelte";
   import CreateProject from "./lib/projects/CreateProject.svelte";
   import ProjectsIndex from "./lib/projects/ProjectsIndex.svelte";
@@ -36,7 +38,23 @@
   onMount(() => {
     const onPop = () => (route = parseRoute(window.location.pathname));
     window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
+
+    // `?` opens help from anywhere — except while typing (an input owns `?`)
+    // or inside a dialog (the dialog traps its own keys).
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "?") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+      if (t?.closest('[role="dialog"]')) return;
+      e.preventDefault();
+      openHelp();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      window.removeEventListener("keydown", onKey);
+    };
   });
 </script>
 
@@ -58,3 +76,5 @@
     <PrimitivesGallery />
   {/if}
 {/if}
+
+<HelpOverlay open={help.open} onclose={closeHelp} />

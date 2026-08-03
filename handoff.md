@@ -654,7 +654,7 @@ rows `foleyflow doctor` prints when its `/quota` probe fails — so a failure
 renders the same states and labels; the docs' 503 row is gone (the sheet now
 always 200s with the outage visible as blocked rows).
 
-## 22. Polish — L
+## 22. Polish — L — **DONE**
 
 **Depends on:** 20 (the rename, so copy is written once) and 21 (the
 configuration view is a screen this pass covers). **Files:** every route and
@@ -775,6 +775,56 @@ available to a keyboard user without a pointer, and no `title=` attribute
 carries information available nowhere else; contrast passes AA in both themes;
 no console errors or unhandled rejections on any route; and CI runs an
 automated accessibility check (there is none today) so the pass does not decay.
+
+**Landed (22):** the help system, the terminology pass, the states audit, the
+contrast fix and the CI a11y gate.
+
+- **Help system — one surface, one source.** `ui/src/lib/help/` holds the
+glossary (`glossary.ts` — every defined term's label + one-line definition),
+the keyboard map (`bindings.ts` — the documented map's single source), a real
+tooltip (`Tooltip.svelte` + `tooltip.ts` action: focus- and hover-triggered,
+`aria-describedby`-wired onto the interactive element itself — resolving the
+anchor, a focusable descendant, or the wrapping button — Escape-dismissible,
+positioned to flip above when the viewport would clip it, and keyboard-
+reachable for disabled controls via a focusable wrapper), the inline glossary
+term (`Term.svelte`), and the `?` overlay (`HelpOverlay.svelte` — keyboard map
++ glossary on one screen, focus-managed like the dialogs). `?` opens from
+anywhere (App-level handler, guarded against inputs and open dialogs); a
+`HelpHint` button sits in every screen's chrome. The Kbd component finally has
+its intended home.
+- **title= is gone.** Every substantive help string migrated to Tooltip; the
+remaining `title=` attributes are ConfirmDialog props (visible headings). The
+a11y test asserts zero `[title]` attributes across all five screens.
+- **Terminology, per the brief's register rule.** Craft terms (stem, mix,
+transient) stay; ours (readiness, dossier, unclaimed, continuity, envelope)
+stay and are defined; engineering terms renamed where a director reads them —
+"Ledger — individual transactions" → *Transactions*, "Model quota" →
+*Model usage*, "Orphan ledger rows" → *Orphaned transactions*, "ledger
+unwritable" → "costs not recorded", "quota consumed" → "daily usage
+consumed". The operator surface (config screen, doctor-parity rows) keeps
+ledger/quota with glossary definitions.
+- **States audit.** Every panel has defined loading/empty/error behaviour; an
+error never renders as emptiness (the ancillaryFailed banner + per-panel
+failed states); empty states now say what fills them ("No runs yet — mix,
+repair or export create one").
+- **Contrast — real failures found and fixed by moving tokens.** The state
+chips rendered coloured text on a same-hue tinted fill (chip.ok on ok-q was
+3.06:1 in dark — a fail). The q-fill opacities moved 14–16% → 8% and the chip
+word/detail now use high-contrast ink (--text/--dim) while the glyph and
+border keep the state colour; faint darkened in light (#8a9599 → #5e696d) and
+lightened in dark (#6b7679 → #839095) to pass on every produced background
+including `--ground` (the placeholder's tag sat on it at 4.30).
+`contrast.test.ts` pins every produced pair — text/dim/faint on
+surface/raised/ground, accent, the semantic colours, and the chip fills
+(glyph ≥ 3:1 non-text, word/detail ≥ 4.5:1) — by reading the values out of
+theme.css, in both themes.
+- **Reduced motion.** The spinner now truly stops under
+`prefers-reduced-motion` (it claimed to; it slowed), and the timeline handle
+transition is disabled too.
+- **CI a11y gate.** The suite now runs axe-core over all five screens
+(a11y.test.ts — serious/critical violations, zero title= attributes,
+every control keyboard-reachable), the contrast pin, and the glossary/bindings
+invariants (help.test.ts). CI's UI-test step names the gate.
 
 ## 23. Repo and image identity — S
 

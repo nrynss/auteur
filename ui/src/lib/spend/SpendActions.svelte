@@ -136,7 +136,7 @@
   <Button
     size="sm"
     disabled={locked}
-    title={locked ? "A run is in flight" : "Render stems, mix, and measure"}
+    help={locked ? "A run is in flight — editing is locked" : "Render every stem the timeline needs, mix, mux and re-measure QA"}
     onclick={openMix}
   >
     Mix
@@ -145,7 +145,7 @@
     size="sm"
     variant="primary"
     disabled={locked}
-    title={locked ? "A run is in flight" : "Publish the latest mix"}
+    help={locked ? "A run is in flight — editing is locked" : "Publish the already-rendered mix — provenance manifest and the exports/latest pointer"}
     onclick={openExport}
   >
     Export

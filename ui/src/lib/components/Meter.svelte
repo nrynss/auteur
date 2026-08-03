@@ -11,7 +11,7 @@
   const shown = $derived(percent == null ? "—" : `${Math.round(percent)}%`);
 </script>
 
-<div class="meter" title={`Post-production readiness ${shown}`}>
+<div class="meter">
   <span class="val">
     <b class="num">{shown}</b> {label}
   </span>

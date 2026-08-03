@@ -88,7 +88,13 @@ jobs:
         working-directory: ui
         run: npm run check
 
-      - name: Run UI tests
+      # Task 22: the suite now includes the automated accessibility gate —
+      # axe-core over every route (a11y.test.ts), the WCAG contrast pin on
+      # the token table in both themes (contrast.test.ts), and the glossary /
+      # keyboard-map invariants (help.test.ts) — so the polish pass cannot
+      # decay. Colour is checked against the tokens; axe cannot measure
+      # contrast in jsdom, which is why the pair is explicit.
+      - name: Run UI tests (incl. the accessibility gate)
         working-directory: ui
         run: npm test
 

@@ -14,7 +14,7 @@
   }
 </script>
 
-<button class="t" aria-label={label} title={label} onclick={onClick}>◐</button>
+<button class="t" aria-label={label} onclick={onClick}>◐</button>
 
 <style>
   .t {

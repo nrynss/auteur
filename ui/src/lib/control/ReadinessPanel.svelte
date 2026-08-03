@@ -4,6 +4,7 @@
    * read-only here). Runs arrive oldest-first, so the \"latest\" is the last
    * element, and a run with stages is the one worth showing. */
   import ChecklistRow from "./ChecklistRow.svelte";
+  import Term from "../help/Term.svelte";
   import StageRow from "../components/StageRow.svelte";
   import Spinner from "../components/Spinner.svelte";
   import type { ProjectDetail, RunOut } from "../api/projects";
@@ -37,7 +38,7 @@
 </script>
 
 <div class="panel-body">
-  <p class="eyebrow">Post-production readiness</p>
+  <p class="eyebrow"><Term term="readiness" /></p>
   {#if (project.readiness ?? []).length === 0}
     <p class="empty">No readiness rows yet.</p>
   {:else}

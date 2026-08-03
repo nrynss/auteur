@@ -12,6 +12,7 @@
     type DirectorBase,
     type DirectorTurn,
   } from "./DirectorPanel.svelte";
+  import HelpHint from "../help/HelpHint.svelte";
   import DossierPanel from "./DossierPanel.svelte";
   import SpendPanel from "./SpendPanel.svelte";
   import EvidencePanel from "./EvidencePanel.svelte";
@@ -821,6 +822,7 @@
         onerror={onActionError}
       />
       <span class="sep" aria-hidden="true"></span>
+      <HelpHint />
       <ThemeToggle />
     </header>
 

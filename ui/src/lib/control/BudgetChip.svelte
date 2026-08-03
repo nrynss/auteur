@@ -5,6 +5,7 @@
    * figures are fiction). Absent budget → nothing, not a fake number. */
   import Icon from "../components/Icon.svelte";
   import { formatCost } from "../format";
+  import Tooltip from "../help/Tooltip.svelte";
   import type { BudgetResponse } from "../api/projects";
 
   interface Props {
@@ -17,18 +18,20 @@
 </script>
 
 {#if show && budget}
-  <span class="budget" title={budget.ledger_writable ? undefined : "ledger unwritable — these figures are fiction"}>
-    <span class="amt num">{formatCost(budget.spent)}</span>
-    <span class="of">of</span>
-    <span class="cap num">{formatCost(budget.budget_usd)}</span>
-    <span class="est">estimate</span>
+  <Tooltip text={budget.ledger_writable ? undefined : "Costs not being recorded — these figures are fiction"}>
+    <span class="budget">
+      <span class="amt num">{formatCost(budget.spent)}</span>
+      <span class="of">of</span>
+      <span class="cap num">{formatCost(budget.budget_usd)}</span>
+      <span class="est">estimate</span>
     {#if !budget.ledger_writable}
       <span class="ledger-warn" role="status">
         <Icon name="alert" size={10} />
-        <span>ledger unwritable</span>
+        <span>costs not recorded</span>
       </span>
     {/if}
-  </span>
+    </span>
+  </Tooltip>
 {/if}
 
 <style>

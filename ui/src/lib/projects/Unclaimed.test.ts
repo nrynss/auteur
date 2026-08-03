@@ -146,7 +146,9 @@ it("renders all three sections with their distinct truths", async () => {
   const text = target.textContent ?? "";
 
   // Orphan rows: money, endpoint, failure visible, inspect link.
-  expect(text).toContain("Orphan ledger rows");
+  // Task 22 terminology: ledger rows are "transactions" to a user.
+  expect(text).toContain("Orphaned");
+  expect(text).toContain("transactions");
   expect(text).toContain("gemini-2.5-flash");
   expect(text).toContain("$0.30");
   expect(text).toContain("Failed");

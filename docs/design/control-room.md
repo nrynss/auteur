@@ -170,3 +170,10 @@ from it:
 - The director-mode diff on the timeline itself — ghosted old positions against
   new. The mockup shows the proposal only as a list.
 - Focus order and the full keyboard map.
+
+**Closed since this list was written:** the director-mode diff landed with
+7.12 (ghosted old positions against new, a proposal banner, suspended editing);
+and the keyboard map, focus order, the `?` help surface (keys + glossary),
+loading/empty/error consistency, contrast and the automated accessibility
+gate landed with task 22. What remains open lives in `handoff.md` task 22's
+"also worth a look" rather than here.

@@ -12,6 +12,8 @@
   import Chip from "../components/Chip.svelte";
   import Evidence from "../components/Evidence.svelte";
   import Icon from "../components/Icon.svelte";
+  import Term from "../help/Term.svelte";
+  import Tooltip from "../help/Tooltip.svelte";
   import { formatCost } from "../format";
   import type {
     BudgetResponse,
@@ -95,7 +97,7 @@
     <div class="fiction" role="alert">
       <span class="head">
         <Icon name="alert" size={12} />
-        <span class="word">Ledger unwritable — figures withheld</span>
+        <span class="word">Costs not being recorded — figures withheld</span>
       </span>
       <p>
         Nothing is being recorded, so every spend figure would read zero no
@@ -170,7 +172,7 @@
     {/if}
 
     {#if models.length > 0}
-      <p class="eyebrow">Model quota — all projects</p>
+      <p class="eyebrow"><Term term="usage" /> — all projects</p>
       <table class="rows">
         <thead>
           <tr>
@@ -204,7 +206,7 @@
     {/if}
 
     {#if ledgerShown && ledger}
-      <p class="eyebrow">Ledger — individual transactions</p>
+      <p class="eyebrow"><Term term="transactions" /></p>
       <table class="rows ledger">
         <thead>
           <tr>
@@ -217,7 +219,7 @@
         <tbody>
           {#each ledger.rows as r, i (i)}
             <tr>
-              <td class="k" title={new Date(r.timestamp * 1000).toISOString()}>{ledgerTime(r.timestamp)}</td>
+              <td class="k"><Tooltip text={new Date(r.timestamp * 1000).toISOString()}><span>{ledgerTime(r.timestamp)}</span></Tooltip></td>
               <td class="k ep">{r.endpoint}</td>
               <td class="r num">
                 {formatCost(r.cost_estimate)}

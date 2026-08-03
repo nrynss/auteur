@@ -37,7 +37,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .spinner i {
-      animation-duration: 1.6s;
+      animation: none;
     }
   }
 </style>
