@@ -25,7 +25,7 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   plan and carries no task numbers.
 - CI (10), build identity (11), post-deploy smoke (12), doctor (13), live paid
   + fallback SFX (14), demo evidence (15), and Secret Manager (16) are in place.
-- `uv run pytest -q` → **798 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **800 passed, 1 skipped**. No provider credentials
   required for tests: the billed calls are stubbed at two seams,
   `stems.generate_many` and `sfx_cache.generate_canonical_wav`. Everything else
   — ffmpeg, the mix, the shared cache, storage, the Genblaze pipelines — runs
@@ -540,7 +540,7 @@ ConfigScreen fixture + assertions, dashboard default-brand assertions, the
 OpenAPI title, smoke fixture); the KinoPost override tests now also assert
 `Auteur` does not leak into a rebranded page.
 
-## 21. Read-only configuration view — M
+## 21. Read-only configuration view — M — **DONE**
 
 **Depends on:** nothing. **Files:** `docs/api.md` first, `api/schemas.py`,
 `api/app.py`, a UI route. Builds on the existing component layer and design
@@ -636,12 +636,23 @@ rendering `ui/src/lib/config/ConfigScreen.svelte`.
   neutral "Absent" tag for missing integrations (never overloading a semantic
   chip state), the source as a plain tag, monospace numerics, and a
   read-only note stating rotation stays a Secret Manager operation.
-- **Tests:** 15 API contract/verdict tests (storage down, worker unreachable,
-  worker auth-missing, ledger unwritable, quota blocked/warn, integration
+- **Tests:** 16 API contract/verdict tests (storage down, worker unreachable,
+  worker auth-missing, ledger unwritable, quota blocked/warn, a failed
+  quota/ledger read degrading to blocked rows — never a 500 — through both a
+  stubbed `get_all_quotas` and the real storage fetch path, integration
   presence + any-of keys, unresolved-reference detection, never-a-value,
   brand in the payload) + 1 doctor↔config parity test + 9 ConfigScreen render
   tests (checks, integrations, unresolved reference, unstamped-build
   severity, brand agreement + disagreement, never-a-value) + route tests.
+
+**Review round (after landing):** the docs promised `503 storage_unavailable`
+when storage cannot answer, but a full B2 outage surfaced as an unhandled
+`StorageError` from the quota read — a 500 — the one failure mode the sheet
+must survive (it is the screen for diagnosing outages). Fixed by folding a
+failed quota/ledger read into blocked "quota probe failed" rows — the same
+rows `foleyflow doctor` prints when its `/quota` probe fails — so a failure
+renders the same states and labels; the docs' 503 row is gone (the sheet now
+always 200s with the outage visible as blocked rows).
 
 ## 22. Polish — L
 

@@ -1175,11 +1175,21 @@ def create_app(store: Optional[ProjectStore] = None,
             storage = "unavailable"
         worker = _worker_health()
 
-        quota_models = [q.to_dict() for q in get_all_quotas()]
+        quota_err: Optional[str] = None
+        quota_models: list = []
+        try:
+            quota_models = [q.to_dict() for q in get_all_quotas()]
+        except StorageError as exc:
+            # A storage outage must not 500 the sheet: fold the failed
+            # quota/ledger read into blocked rows, exactly as doctor does
+            # when its /quota probe fails, so the operator still gets the
+            # full picture, in the same blocked shape doctor prints.
+            quota_err = f"{type(exc).__name__}"
         checks = _config_checks(
             worker=worker, storage=storage,
-            ledger_writable=ledger_writable(),
-            quota_models=quota_models)
+            ledger_writable=(ledger_writable() if quota_err is None
+                             else False),
+            quota_models=quota_models, quota_err=quota_err)
 
         return ConfigResponse(
             ok=not any(c["state"] == "blocked" for c in checks),
@@ -1589,7 +1599,8 @@ def _worker_health() -> WorkerHealth:
 
 
 def _config_checks(*, worker: WorkerHealth, storage: str,
-                   ledger_writable: bool, quota_models: list) -> list:
+                   ledger_writable: bool, quota_models: list,
+                   quota_err: Optional[str] = None) -> list:
     """The read-only config screen's verdict rows (task 20, docs/api.md
     §3.17) — the same checks `foleyflow doctor` prints, with the same states
     and the same fail-closed rules, so the screen and the CLI cannot drift:
@@ -1601,6 +1612,10 @@ def _config_checks(*, worker: WorkerHealth, storage: str,
       even though /health reads healthy;
     - ANY quota-blocked model is a STOP (not only the default analysis VLM);
     - otherwise the default VLM's usage decides warn vs ok.
+    - `quota_err` (a failed quota/ledger read — a storage outage): the
+      ledger and quota rows fold into blocked rows with the reason, exactly
+      as doctor does when its /quota probe fails. A probe failure must never
+      500 the sheet.
 
     The API check is self-referential by construction (the page was served by
     this API), so it reports the health verdict as evidence rather than a
@@ -1663,6 +1678,18 @@ def _config_checks(*, worker: WorkerHealth, storage: str,
             "detail": f"{wstatus}: {detail}" if detail != wstatus
                       else str(wstatus),
         })
+
+    if quota_err is not None:
+        # Doctor's /quota-failed shape: both rows blocked with the reason.
+        checks.append({
+            "key": "ledger", "label": "ledger writable", "state": "blocked",
+            "detail": f"quota probe failed — {quota_err}",
+        })
+        checks.append({
+            "key": "quota", "label": "quota", "state": "blocked",
+            "detail": f"quota probe failed — {quota_err}",
+        })
+        return checks
 
     if ledger_writable is True:
         checks.append({"key": "ledger", "label": "ledger writable",

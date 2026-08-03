@@ -247,3 +247,43 @@ def test_no_credential_value_appears_anywhere(client, monkeypatch):
                    "https://sfx.secret-host.example",
                    "tok_verysecret123"):
         assert secret not in text, secret
+
+
+def test_quota_probe_failure_degrades_to_blocked_rows_not_500(
+        client, monkeypatch):
+    """A storage outage must not 500 the sheet. Doctor's rule: always print a
+    full checklist even when a probe fails mid-flight — the ledger and quota
+    rows fold into blocked rows with the reason, so an operator still sees
+    the whole picture. The parity test then holds under failure too."""
+    from foleyflow import quota as quota_mod
+    from foleyflow.storage import StorageError
+
+    def boom(*a, **k):
+        raise StorageError("b2 down")
+
+    monkeypatch.setattr(quota_mod, "get_all_quotas", boom)
+    body = _config(client)
+    by_key = {c["key"]: c for c in body["checks"]}
+    assert by_key["ledger"]["state"] == "blocked"
+    assert "quota probe failed" in by_key["ledger"]["detail"]
+    assert by_key["quota"]["state"] == "blocked"
+    assert "quota probe failed" in by_key["quota"]["detail"]
+    assert body["ok"] is False
+
+
+def test_quota_probe_failure_through_the_real_storage_path(client, monkeypatch):
+    """The same degradation through the actual ledger read path (a B2 outage
+    surfaces as StorageError from the row fetch), not just a stubbed
+    get_all_quotas — so a real outage cannot 500 the sheet."""
+    from foleyflow import ledger as ledger_mod
+    from foleyflow.storage import StorageError
+
+    def boom(backend):
+        raise StorageError("b2 down")
+
+    monkeypatch.setattr(ledger_mod, "_fetch_storage_rows", boom)
+    body = _config(client)
+    by_key = {c["key"]: c for c in body["checks"]}
+    assert by_key["ledger"]["state"] == "blocked"
+    assert by_key["quota"]["state"] == "blocked"
+    assert body["ok"] is False

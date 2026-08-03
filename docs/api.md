@@ -1215,8 +1215,7 @@ binding, not a value inspection.
 
 | HTTP | `code` | When |
 |---|---|---|
-| 200 | — | The sheet assembled |
-| 503 | `storage_unavailable` | Storage cannot answer the probe |
+| 200 | — | The sheet assembled — including under a storage or worker outage, where the affected rows fold into `blocked` with the reason (doctor's rule: a probe failure never blanks the sheet or 500s it) |
 
 ---
 
