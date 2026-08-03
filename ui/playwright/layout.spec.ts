@@ -485,8 +485,30 @@ test("the Evidence source row keeps 'summed from <artifact>' on one line with a 
 });
 
 // -- screenshots: the mechanical substitute for eyes ------------------------
+//
+// SKIPPED IN CI, deliberately. Baselines are rasterised on whatever machine
+// generated them, and GitHub's Ubuntu runner has a different font stack from a
+// developer box: the same DOM differs by 2-3% of pixels with no layout change
+// at all. Comparing across those two environments only ever produces noise, and
+// the tolerance needed to absorb it (>3%) is wide enough to hide a genuinely
+// collapsed panel — which would make the gate worse than useless.
+//
+// So these run locally, where the baselines were made and where a human reviews
+// the PNGs. What guards layout in CI is the behavioural half of this file above:
+// zero horizontal overflow at three widths, the viewer frame's minimum height,
+// the money-visible-at-480 assertion, and the Evidence source-row geometry.
+// Those assert measured values rather than pixels and hold on any machine.
+//
+// Regenerate after an intended visual change, then LOOK at the PNGs:
+//   npx playwright test layout.spec.ts --update-snapshots
+const screenshotsOnlyLocally = () =>
+  test.skip(
+    !!process.env.CI,
+    "screenshot baselines are machine-specific; the behavioural layout assertions above cover CI",
+  );
 
 test("screenshots: control room checklist tab, desktop", async ({ page }) => {
+  screenshotsOnlyLocally();
   await page.setViewportSize({ width: 1280, height: 800 });
   await openControlRoom(page);
   await expect(page.getByRole("tab", { name: "Checklist" })).toBeVisible();
@@ -496,6 +518,7 @@ test("screenshots: control room checklist tab, desktop", async ({ page }) => {
 });
 
 test("screenshots: control room spend tab, desktop", async ({ page }) => {
+  screenshotsOnlyLocally();
   await page.setViewportSize({ width: 1280, height: 800 });
   await openControlRoom(page);
   await page.getByRole("tab", { name: "Spend" }).click();
@@ -505,6 +528,7 @@ test("screenshots: control room spend tab, desktop", async ({ page }) => {
 });
 
 test("screenshots: control room, narrow 480", async ({ page }) => {
+  screenshotsOnlyLocally();
   await page.setViewportSize({ width: 480, height: 800 });
   await openControlRoom(page);
   await expect(page.getByRole("tab", { name: "Checklist" })).toBeVisible();
@@ -512,6 +536,7 @@ test("screenshots: control room, narrow 480", async ({ page }) => {
 });
 
 test("screenshots: projects index and config", async ({ page }) => {
+  screenshotsOnlyLocally();
   await page.setViewportSize({ width: 1280, height: 800 });
   await stubApi(page);
   await page.goto("/");
@@ -530,6 +555,7 @@ test("screenshots: projects index and config", async ({ page }) => {
 // token pairs numerically; this checks the rendered result).
 
 test("dark screenshots: control room checklist tab, desktop", async ({ page }) => {
+  screenshotsOnlyLocally();
   await page.emulateMedia({ colorScheme: "dark" });
   await page.setViewportSize({ width: 1280, height: 800 });
   await openControlRoom(page);
@@ -539,6 +565,7 @@ test("dark screenshots: control room checklist tab, desktop", async ({ page }) =
 });
 
 test("dark screenshots: control room spend tab, desktop", async ({ page }) => {
+  screenshotsOnlyLocally();
   await page.emulateMedia({ colorScheme: "dark" });
   await page.setViewportSize({ width: 1280, height: 800 });
   await openControlRoom(page);
@@ -549,6 +576,7 @@ test("dark screenshots: control room spend tab, desktop", async ({ page }) => {
 });
 
 test("dark screenshots: control room narrow 480 and projects index", async ({ page }) => {
+  screenshotsOnlyLocally();
   await page.emulateMedia({ colorScheme: "dark" });
   await page.setViewportSize({ width: 480, height: 800 });
   await openControlRoom(page);
@@ -563,6 +591,7 @@ test("dark screenshots: control room narrow 480 and projects index", async ({ pa
 });
 
 test("dark screenshots: config", async ({ page }) => {
+  screenshotsOnlyLocally();
   await page.emulateMedia({ colorScheme: "dark" });
   await page.setViewportSize({ width: 1280, height: 800 });
   await stubApi(page);
