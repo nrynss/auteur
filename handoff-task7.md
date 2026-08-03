@@ -701,6 +701,113 @@ confirm → kick off analysis. No UI exists for any of this today.
 Accessibility pass, keyboard map, empty and error states, the pass that decides
 whether it reads as a tool.
 
+## 7.15 Spend tab — S — **DONE**
+
+**Depends on:** 7.7, 7.8.
+
+The money the API already reported and nothing displayed: `spent_estimated` vs
+`spent_actual`, the alert thresholds with their `crossed` flags, and the
+`by_model` breakdown from `/budget`, plus per-model daily usage and
+`ok`/`warn`/`blocked` from `/quota`. No backend work — every figure was already
+on the wire and only the chrome chip's headline was being used.
+
+**Fails closed on an unwritable ledger.** `docs/api.md` §3.10: the figures are
+then *fiction* rather than imprecise — nothing is recorded, so usage reads zero
+however much was spent — and a UI seeing it "must stop presenting the numbers
+at all". A warning above readable figures does not satisfy that, so the panel
+withholds every number and says why. Either endpoint reporting it poisons both.
+
+Daily quota, not per-minute: `requests_per_day` is the binding constraint
+(`gemini-2.5-flash` allows 20/day), which is what matters before a demo.
+
+## 7.16 Ledger rows endpoint — S
+
+**Depends on:** nothing. **Files:** `docs/api.md` first, then `api/app.py`,
+`api/schemas.py`, `ledger.py`, tests. Then a section in the Spend tab (7.15).
+
+`/budget` summarises; individual transactions are not exposed. `iter_transactions`
+exists in `ledger.py` with no route. Add one returning rows — timestamp,
+endpoint, `cost_estimate`, `cost_source`, `success`, `error`, `project_id` —
+so spend is **auditable** rather than only totalled. That is the immutable
+history principle applied to money: one immutable object per billed call under
+`ledger/{ulid}.json` already exists; nothing reads it back.
+
+Scope decisions this unit makes: per-project (`/projects/{id}/ledger`) or
+global (`/ledger`) or both; pagination (the ledger grows one object per call,
+so a full scan is already what makes `/budget` slow — see 7.17); and whether
+failed rows are included by default (they should be — a failed billable call
+can still have cost money).
+
+**Acceptance:** every row the summary counted is retrievable and the totals
+reconcile with `/budget`.
+
+## 7.17 Archive explorer — M
+
+**Depends on:** 7.16 for the ledger section; otherwise nothing.
+**Files:** `docs/api.md` first, `storage/base.py` + `storage/b2.py` +
+`storage/local.py`, `api/app.py`, a new UI route.
+
+A view of the **whole bucket**, not one project: every project, every object,
+and the versions of each artifact. The per-project view already exists — that
+is the Dossier tab — and this is the archive above it.
+
+**Do not build it on the dossier's mechanism.** The dossier does one backend
+`HEAD` per object to get size, which measures **56 s for 131 keys** against real
+B2 and gets monotonically worse as the bucket grows. It does not need to:
+`list_objects_v2` already returns `Size`, `LastModified` and `ETag` for every
+object in the listing, 1000 at a time, and `B2Backend.list_keys` currently
+throws all of that away and keeps only the key. So this unit adds a
+`list_objects(prefix)` backend method returning that metadata, and the explorer
+is one paginated LIST per page rather than N HEADs — cheap where the dossier is
+not. `LocalBackend` gets the same method from `os.stat`.
+
+**Versions.** Artifacts are immutable and content-addressed, so S3 object
+versions are near-meaningless here — an object is never overwritten. The
+versions that matter are FoleyFlow's own, and they are legible from the key
+space: `timelines/timeline.v{n}.json`, `runs/{run_id}/…` per run, one manifest
+per export, `exports/latest.json` as the pointer. Group by those rather than
+asking the store for object versions.
+
+**The provenance caveat is a display requirement, not a footnote.** The invariant
+is "cache keys are addresses, not provenance": the ~170 shared stems under
+`cache/` belong to no project, and a fallback-served clip is cached at the
+*requested* tier's address while `served_endpoint` records who actually produced
+it. A raw listing invites reading a `cache/` key as evidence a project used a
+given provider. The shared-cache section must say so where it is read, and
+per-object provenance must come from the stem inventory, never inferred from
+the key.
+
+Signed URLs are handed out per row as the dossier does; the same TTL applies,
+so the explorer is browsable but never a durable public handle.
+
+**Acceptance:** the whole bucket is listable without a single HEAD, and the
+shared-cache section cannot be read as project provenance.
+
+## 7.18 Backend read latency — M
+
+**Depends on:** nothing. Measured 2026-08-03 against the live bucket.
+
+The control room's first paint no longer waits on the slowest fetch (panels
+fill in independently, the dossier is lazy), but the underlying calls are slow
+enough to matter on their own:
+
+| endpoint | measured |
+|---|---|
+| `GET /projects/{id}` | **8.4 s** |
+| `GET /quota` | **11.1 s** |
+| `GET /projects/{id}/budget` | **25.1 s** |
+| `GET /projects/{id}/qa` | 7.2 s |
+| `GET /projects/{id}/dossier` | 56.0 s |
+| `GET /projects/{id}/timeline` | 0.7 s |
+| `GET /projects/{id}/scenes` | 0.7 s |
+
+`/projects/{id}` is the one that still gates first paint, because it is the
+shell and nothing can render without it — so ~8 s is the current floor.
+Budget and quota are full ledger scans over one immutable object per billed
+call, which grows without bound; the dossier is the HEAD-per-object problem
+7.17 describes. None of this is UI work, and it affects the CLI and any poller
+equally.
+
 ---
 
 # E. Running this with multiple agents
@@ -753,6 +860,9 @@ blanket component tests.
 
 # G. Still open
 
+- The archive explorer, ledger rows and read latency (7.16–7.18) — scoped
+  2026-08-03, none started. 7.17 must not be built on the dossier's
+  HEAD-per-object mechanism; see the unit.
 - The states the mockup does not cover — loading, empty, error, the in-flight
   run lock, draft-versus-committed, and the director-mode diff drawn on the
   timeline itself. Listed in `docs/design/control-room.md` §9. These are design
