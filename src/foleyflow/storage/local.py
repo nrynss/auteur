@@ -36,6 +36,13 @@ def _sha256_file(path: str) -> str:
     return digest.hexdigest()
 
 
+def _local_iso(mtime: float) -> str:
+    """mtime → ISO-8601 UTC, the listing contract's shape (unit 7.19)."""
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(mtime, timezone.utc).isoformat()
+
+
 class LocalBackend:
     def __init__(self, root: str):
         self.root = os.path.abspath(root)
@@ -154,9 +161,12 @@ class LocalBackend:
     def list_keys(self, prefix: str):
         """Walk the directory tree under `prefix` and return storage keys.
 
-        Emits keys, not filesystem paths, so callers cannot tell which backend
-        they are on. Sorted for the same reason as B2's listing: ULID-named
-        objects then arrive in creation order.
+        Deliberately does NOT delegate to `list_objects`: this is the hot path
+        (event logs, ledger scans) and `list_objects` hashes every file for
+        its sha256 column. Keys-only walk, no stat, no hash. Emits keys, not
+        filesystem paths, so callers cannot tell which backend they are on.
+        Sorted for the same reason as B2's listing: ULID-named objects then
+        arrive in creation order.
         """
         base = os.path.join(self.root, *[p for p in prefix.split("/") if p])
         if not os.path.isdir(base):
@@ -170,6 +180,55 @@ class LocalBackend:
                 rel = os.path.relpath(full, self.root).replace(os.sep, "/")
                 keys.append(rel)
         return sorted(keys)
+
+    def list_objects(self, prefix: str):
+        """Every object under `prefix` with metadata from `os.stat` — the
+        local backend's half of the no-HEAD listing contract (unit 7.19).
+
+        Same key space and ordering as `list_keys`. `sha256` is the local
+        file's full-content hash, exactly as `head` supplies it, so the
+        dossier's hash column is unchanged when it stops calling `head` per
+        object. A `prefix` that names a single file (a one-segment input key
+        in tests) is returned as that one object.
+        """
+        from foleyflow.storage.base import ObjectMeta
+
+        base = os.path.join(self.root, *[p for p in prefix.split("/") if p])
+        if os.path.isfile(base):
+            rel = os.path.relpath(base, self.root).replace(os.sep, "/")
+            try:
+                st = os.stat(base)
+            except OSError as e:
+                raise StorageError(
+                    f"could not stat {rel!r}: {e.strerror}") from e
+            return [ObjectMeta(
+                key=rel,
+                size_bytes=st.st_size,
+                last_modified=_local_iso(st.st_mtime),
+                sha256=_sha256_file(base),
+            )]
+        if not os.path.isdir(base):
+            return []
+        out = []
+        for dirpath, _dirnames, filenames in os.walk(base):
+            for filename in filenames:
+                if filename.endswith(".part"):
+                    continue        # an in-progress write is not an object
+                full = os.path.join(dirpath, filename)
+                rel = os.path.relpath(full, self.root).replace(os.sep, "/")
+                try:
+                    st = os.stat(full)
+                except OSError as e:
+                    raise StorageError(
+                        f"could not stat {rel!r}: {e.strerror}") from e
+                out.append(ObjectMeta(
+                    key=rel,
+                    size_bytes=st.st_size,
+                    last_modified=_local_iso(st.st_mtime),
+                    sha256=_sha256_file(full),
+                ))
+        out.sort(key=lambda m: m.key)
+        return out
 
     def __repr__(self) -> str:
         return f"LocalBackend(root={self.root!r})"

@@ -88,6 +88,83 @@ def test_head_missing_key_raises_object_not_found(tmp_path):
         backend.head("cache/nope.wav")
 
 
+# -- object listing without HEADs (unit 7.19) -------------------------------
+
+def test_list_objects_carries_stat_metadata_in_list_keys_order(tmp_path):
+    """LocalBackend.list_objects supplies Size / LastModified / sha256 from
+    os.stat for every object — the same facts head() gave one at a time, so
+    the dossier's columns are unchanged when it stops calling head."""
+    import hashlib
+
+    backend = LocalBackend(str(tmp_path / "store"))
+    payloads = {
+        "projects/p1/timelines/timeline.v1.json": b'{"v":1}',
+        "cache/0123456789abcdef.wav": b"canonical-wav-bytes",
+        "projects/p1/runs/r1/mix.wav": b"mix-bytes",
+    }
+    for key, data in payloads.items():
+        backend.put_bytes(key, data)
+
+    listed = backend.list_objects("projects/p1")
+    assert [m.key for m in listed] == sorted(k for k in payloads
+                                             if k.startswith("projects/p1"))
+    for meta in listed:
+        assert meta.size_bytes == len(payloads[meta.key])
+        assert meta.last_modified is not None
+        assert meta.sha256 == hashlib.sha256(payloads[meta.key]).hexdigest()
+
+    # The two LISTs a real dossier needs cover every candidate key.
+    all_keys = {m.key for m in backend.list_objects("projects/p1")}
+    all_keys |= {m.key for m in backend.list_objects("cache")}
+    assert all_keys == set(payloads)
+
+
+def test_list_objects_matches_list_keys_exactly(tmp_path):
+    """The two listings must never disagree — list_keys is the hot path
+    (event logs, ledger scans) and list_objects adds hashing, so they are
+    deliberately separate implementations that must return the same keys."""
+    backend = LocalBackend(str(tmp_path / "store"))
+    for i in range(5):
+        backend.put_bytes(f"proj/x/obj{i}.json", str(i).encode())
+        backend.put_bytes(f"proj/x/obj{i}.json.part", b"half")  # skipped
+    assert [m.key for m in backend.list_objects("proj/x")] == \
+        backend.list_keys("proj/x")
+
+
+def test_list_keys_stays_hash_free(tmp_path, monkeypatch):
+    """list_keys must not pay list_objects' sha256 cost — it runs on every
+    event-log and ledger scan (unit 7.18's wins depend on it being cheap).
+    Pinning the separation: a hasher that refuses must not break a keys-only
+    walk, and must break the metadata listing."""
+    import foleyflow.storage.local as local_mod
+
+    backend = LocalBackend(str(tmp_path / "store"))
+    for i in range(3):
+        backend.put_bytes(f"proj/x/obj{i}.json", str(i).encode())
+
+    def _refuse_hash(path):
+        raise AssertionError(f"list_keys must not hash files: {path!r}")
+
+    monkeypatch.setattr(local_mod, "_sha256_file", _refuse_hash)
+    assert backend.list_keys("proj/x") == \
+        [f"proj/x/obj{i}.json" for i in range(3)]
+    # The metadata listing does hash (its sha256 column), so it fails here.
+    with pytest.raises(AssertionError):
+        backend.list_objects("proj/x")
+
+
+def test_list_objects_absent_prefix_is_empty_and_a_file_prefix_works(tmp_path):
+    """An absent prefix is an empty collection (matching list_keys); a prefix
+    that names a single file — a one-segment input key in tests — is that one
+    object, so the dossier can still list it without a HEAD."""
+    backend = LocalBackend(str(tmp_path / "store"))
+    assert backend.list_objects("nope") == []
+    backend.put_bytes("k", b"single-segment")
+    listed = backend.list_objects("k")
+    assert [m.key for m in listed] == ["k"]
+    assert listed[0].size_bytes == len(b"single-segment")
+
+
 # -- factory --
 
 def test_factory_defaults_to_local(monkeypatch):

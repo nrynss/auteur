@@ -1410,6 +1410,17 @@ def _sign_strict(store: ProjectStore, key: str) -> str:
         raise StorageError(f"object vanished while signing {key!r}") from e
 
 
+def _dossier_listing_prefix(key: str) -> str:
+    """The listing prefix that covers `key` with the fewest LIST calls
+    (unit 7.19): the first two path segments (a directory), or the whole key
+    when it has fewer. A real project's candidates therefore need two LISTs —
+    `projects/{id}` and `cache` — instead of one HEAD per object."""
+    parts = key.split("/")
+    if len(parts) <= 2:
+        return key if len(parts) == 1 else parts[0]
+    return "/".join(parts[:2])
+
+
 def _dossier_artifacts(store: ProjectStore, project_id: str, state) -> List[ArtifactOut]:
     """The artifact listing behind `GET /dossier`. Composition only.
 
@@ -1418,11 +1429,16 @@ def _dossier_artifacts(store: ProjectStore, project_id: str, state) -> List[Arti
     holes, and the same content-addressed stem referenced by several runs is
     listed once — the dossier counts physical objects, not references.
 
-    Size still comes from one HEAD per candidate key. HEADs (and signs) run
-    concurrently with a bound pool — serial HEAD-per-object was ~56 s against
-    B2 on a real project (unit 7.18). Full size-from-LIST metadata is unit
-    7.17; this only parallelizes the existing contract without inventing it.
+    Size comes from LIST metadata, not HEADs (unit 7.19): the candidates are
+    grouped into a few top-level prefixes, each listed once via
+    `list_objects`, and resolved against the listing. Serial HEAD-per-object
+    was ~56 s against real B2 on a 131-key project; two paginated LISTs carry
+    the same Size/LastModified facts for free. sha256 is unchanged — the
+    recorded provenance value, or the local backend's own content hash from
+    the listing, never an ETag.
     """
+    from foleyflow.storage.base import ObjectMeta
+
     # (kind, key, optional recorded sha256) in listing order.
     candidates: List[tuple] = []
     seen: set = set()
@@ -1473,23 +1489,33 @@ def _dossier_artifacts(store: ProjectStore, project_id: str, state) -> List[Arti
     if store.get_latest_export(project_id) is not None:
         _queue("export_pointer", store.latest_export_key(project_id))
 
-    def _resolve(item: tuple) -> Optional[ArtifactOut]:
+    def _resolve(item: tuple, by_key: Dict[str, ObjectMeta]) -> Optional[ArtifactOut]:
         kind, key, sha256 = item
-        head = _head(store, key)
-        if head is None:
+        meta = by_key.get(key)
+        if meta is None:
             return None
         return ArtifactOut(
             kind=kind, key=key, url=_sign_strict(store, key),
-            size_bytes=head.size_bytes, sha256=sha256 or head.sha256)
+            size_bytes=meta.size_bytes, sha256=sha256 or meta.sha256)
 
     if not candidates:
         return []
-    # Route pool (separate from multi-get) so nested storage I/O cannot deadlock.
+    # One LIST per distinct top-level prefix instead of one HEAD per object
+    # (unit 7.19): list_objects_v2 returns Size/LastModified/ETag 1000 at a
+    # time; the local backend reads the same from os.stat. The route pool
+    # keeps the few LISTs concurrent; the resolution below is in-memory.
+    prefixes = sorted({_dossier_listing_prefix(key)
+                       for _, key, _ in candidates})
     pool = get_route_pool()
-    artifacts: List[ArtifactOut] = []
-    futures = [pool.submit(_resolve, item) for item in candidates]
+    futures = {pool.submit(store.backend.list_objects, prefix): prefix
+               for prefix in prefixes}
+    by_key: Dict[str, ObjectMeta] = {}
     for fut in futures:
-        result = fut.result()
+        for meta in fut.result():
+            by_key[meta.key] = meta
+    artifacts: List[ArtifactOut] = []
+    for item in candidates:
+        result = _resolve(item, by_key)
         if result is not None:
             artifacts.append(result)
     return artifacts

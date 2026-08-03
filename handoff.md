@@ -19,7 +19,7 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   **7 (control-room UI)** last. Tasks **9–17** are **DONE**.
 - CI (10), build identity (11), post-deploy smoke (12), doctor (13), live paid
   + fallback SFX (14), demo evidence (15), and Secret Manager (16) are in place.
-- `uv run pytest -q` → **734 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **740 passed, 1 skipped**. No provider credentials
   required for tests: the billed calls are stubbed at two seams,
   `stems.generate_many` and `sfx_cache.generate_canonical_wav`. Everything else
   — ffmpeg, the mix, the shared cache, storage, the Genblaze pipelines — runs
@@ -187,7 +187,13 @@ rescue-claimed rows visible, reconciling with the summary; `iter_attributions`
 cached (10 s, invalidated by the one writer) so pages don't pay a LIST each.
 The Spend tab gains the "Ledger — individual transactions" table (est/actual
 per row, failed chips, newer/older pagination) behind the same fail-closed
-`ledger_writable` rule, loaded lazily on first open.
+`ledger_writable` rule, loaded lazily on first open. **7.19 landed**: object
+listing without HEADs — `Backend.list_objects(prefix)` returns
+Size/LastModified/ETag (`list_objects_v2` already carried them; `list_keys`
+threw them away), LocalBackend reads the same from `os.stat` plus its usual
+content hash, and the Dossier composes from a few top-level LISTs instead of
+one HEAD per object (the measured 56 s for 131 keys). `size_bytes` unchanged,
+sha256 never derived from an ETag; docs/api.md §3.9 updated.
 
 The throwaway static dashboard (`api/static/index.html`) is deleted outright
 when 7.6 lands.

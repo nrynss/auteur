@@ -62,6 +62,15 @@ def _status_of(exc) -> Optional[int]:
     return None
 
 
+def _dt_iso(value) -> Optional[str]:
+    """boto3 returns LastModified as a tz-aware datetime; the listing contract
+    wants ISO-8601 (unit 7.19). Absent values stay None."""
+    if value is None:
+        return None
+    iso = value.isoformat()
+    return iso if isinstance(iso, str) else None
+
+
 class B2Backend:
     def __init__(self, endpoint_url: str, region: str, bucket: str,
                  key_id: str, application_key: str, prefix: str = ""):
@@ -243,18 +252,39 @@ class B2Backend:
         pass to get()/put(), and never learn which bucket or root prefix the
         backend is using.
         """
+        return [m.key for m in self.list_objects(prefix)]
+
+    def list_objects(self, prefix: str):
+        """Paginated listing with metadata — Size, LastModified, ETag — for
+        every object, 1000 at a time (unit 7.19).
+
+        `list_objects_v2` returns these fields for free and the old `list_keys`
+        threw them away; an artifact listing built from this pays one paginated
+        LIST per prefix instead of one HEAD per object. The bucket prefix is
+        stripped exactly as `list_keys` does. `sha256` stays None — the S3 API
+        exposes no content hash, and an ETag (multipart uploads especially) is
+        not one; callers use recorded provenance (docs/api.md §3.9).
+        """
+        from foleyflow.storage.base import ObjectMeta
+
         full_prefix = f"{self.prefix}/{prefix}" if self.prefix else prefix
         strip = len(self.prefix) + 1 if self.prefix else 0
-        keys = []
+        out = []
         try:
             paginator = self._client.get_paginator("list_objects_v2")
             for page in paginator.paginate(Bucket=self.bucket, Prefix=full_prefix):
                 for obj in page.get("Contents", []):
-                    keys.append(obj["Key"][strip:])
+                    out.append(ObjectMeta(
+                        key=obj["Key"][strip:],
+                        size_bytes=int(obj.get("Size", 0) or 0),
+                        last_modified=_dt_iso(obj.get("LastModified")),
+                        etag=obj.get("ETag"),
+                    ))
         except _boto_errors() as e:
             raise StorageError(f"list failed for {prefix!r} "
                                f"(status {_status_of(e)})") from e
-        return sorted(keys)
+        out.sort(key=lambda m: m.key)
+        return out
 
     def signed_url(self, key: str, expires_s: int = 3600) -> str:
         try:

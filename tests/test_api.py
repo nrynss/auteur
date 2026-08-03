@@ -1456,16 +1456,37 @@ def test_dossier_404s_for_unknown_project(client):
 def test_dossier_503s_when_storage_cannot_answer(client, store, monkeypatch):
     """A listing assembled during an outage would be a confident half-truth:
     absent and unknown must stay distinct, so the route says storage is down
-    rather than returning a dossier full of holes."""
+    rather than returning a dossier full of holes. The failure point is the
+    LIST now, not a per-object HEAD (unit 7.19)."""
     project = _seed_full_project(store)
 
-    def _boom(key):
+    def _boom(prefix):
         raise StorageError("credentials rejected")
 
-    monkeypatch.setattr(store.backend, "head", _boom)
+    monkeypatch.setattr(store.backend, "list_objects", _boom)
     r = client.get(f"{API_PREFIX}/projects/{project.id}/dossier")
     assert r.status_code == 503
     assert r.json()["error"]["code"] == "storage_unavailable"
+
+
+def test_dossier_composes_with_zero_heads(client, store, monkeypatch):
+    """Unit 7.19's acceptance: the dossier's size_bytes come from LIST
+    metadata, so `head` is never called — a backend whose `head` refuses
+    outright still serves a complete dossier."""
+    project = _seed_full_project(store)
+
+    def _refuse_head(key, *a, **k):
+        raise AssertionError(f"dossier must not HEAD an object: {key!r}")
+
+    monkeypatch.setattr(store.backend, "head", _refuse_head)
+    body = client.get(f"{API_PREFIX}/projects/{project.id}/dossier").json()
+    assert body["artifact_count"] == len(body["artifacts"])
+    assert body["artifact_count"] >= 13
+    assert all(a["size_bytes"] > 0 for a in body["artifacts"])
+    # The full-content hash column is unchanged on a local backend: the
+    # listing supplies it, so recorded provenance is not the only source.
+    hashes = [a["sha256"] for a in body["artifacts"]]
+    assert any(h is not None for h in hashes)
 
 
 def test_dossier_503s_when_signing_fails_after_a_successful_head(

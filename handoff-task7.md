@@ -810,7 +810,7 @@ history principle applied to money: one immutable object per billed call under
 
 Scope decisions this unit makes: per-project (`/projects/{id}/ledger`) or
 global (`/ledger`) or both; pagination (the ledger grows one object per call,
-so a full scan is already what makes `/budget` slow — see 7.17); and whether
+so a full scan is already what makes `/budget` slow — see 7.19); and whether
 failed rows are included by default (they should be — a failed billable call
 can still have cost money).
 
@@ -835,9 +835,10 @@ newer/older pagination, "2 of N" count) behind the same fail-closed
 contract tests (rows, pagination, isolation, rescue adoption, reconciliation
 with /budget, 404) + 2 SpendPanel render tests.
 
-**Not in this unit:** the archive explorer (7.17), and a global `/ledger` route
-(the per-project view is what the Spend tab needs; a bucket-wide one belongs
-to the explorer's LIST-metadata pagination).
+**Not in this unit:** the unclaimed view (7.17), and a global `/ledger` route.
+The per-project view is what the Spend tab needs; a bucket-wide one exists to
+surface the rows this endpoint cannot show at all — those belonging to no
+project — so it belongs with the screen that claims them.
 
 **Review fixes (8c02541 → ):**
 
@@ -866,74 +867,78 @@ to the explorer's LIST-metadata pagination).
   at index 0 mid-paging; the bound (10 s row-cache TTL) and the tradeoff are
   stated in §3.14.
 
-## 7.17 Archive explorer — M
+## 7.17 Unclaimed — M
 
-**Depends on:** nothing. (This previously read "7.16 for the ledger section",
-which is wrong now that 7.16 has landed: it shipped the per-project route only
-and explicitly assigned the bucket-wide one here, so there is no `/ledger` to
-consume — see "The bucket-wide ledger is this unit's" below.)
-**Files:** `docs/api.md` first, `storage/base.py` + `storage/b2.py` +
-`storage/local.py`, `api/schemas.py`, `api/app.py`, a new UI route.
+**Depends on:** 7.19 for the object listing. **Files:** `docs/api.md` first,
+`ledger.py`, `projects.py`, `api/schemas.py`, `api/app.py`, a new UI route.
 
-A view of the **whole bucket**, not one project: every project, every object,
-and the versions of each artifact. The per-project view already exists — that
-is the Dossier tab — and this is the archive above it.
+**This unit was "Archive explorer" and was mis-scoped.** It promised "the whole
+bucket: every project, every object, every version" — but §3.9's Dossier
+already returns exactly that for a project: source, scenes and thumbnails,
+timeline versions, stem inventories and the stem clips, mixes, QA report, run
+records, event log, manifests and the export pointer, each with key, size,
+`sha256` where recorded, and a signed URL. A bucket-wide browser is that screen
+at a wider scope, which is an ops convenience, not a director's need, and the
+`list_objects` work that made it cheap belongs to the Dossier regardless — it
+is now **7.19**.
 
-**Do not build it on the dossier's mechanism.** The dossier does one backend
-`HEAD` per object to get size, which measures **56 s for 131 keys** against real
-B2 and gets monotonically worse as the bucket grows. It does not need to:
-`list_objects_v2` already returns `Size`, `LastModified` and `ETag` for every
-object in the listing, 1000 at a time, and `B2Backend.list_keys` currently
-throws all of that away and keeps only the key. So this unit adds a
-`list_objects(prefix)` backend method returning that metadata, and the explorer
-is one paginated LIST per page rather than N HEADs — cheap where the dossier is
-not. `LocalBackend` gets the same method from `os.stat`.
+Subtract the duplication and what is left is the only thing no existing screen
+can show: **the things this system owns that no project claims.** That is this
+unit, and the name is the subject.
 
-**Versions.** Artifacts are immutable and content-addressed, so S3 object
-versions are near-meaningless here — an object is never overwritten. The
-versions that matter are FoleyFlow's own, and they are legible from the key
-space: `timelines/timeline.v{n}.json`, `runs/{run_id}/…` per run, one manifest
-per export, `exports/latest.json` as the pointer. Group by those rather than
-asking the store for object versions.
+**Three categories, three different truths.** They are not interchangeable and
+the screen must not present them as one list with one button.
 
-**The bucket-wide ledger is this unit's, not 7.16's.** 7.16 shipped
-`GET /projects/{id}/ledger` and deferred the global route to the explorer, so
-this unit builds it: a response model in `api/schemas.py` and a `GET /ledger`
-in `app.py` over the same `iter_transactions` snapshot, no project filter.
-Pagination follows §3.14's cursor and inherits the instability documented
-there.
+1. **Orphan ledger rows.** Attribution here is a nullable *field*
+   (`row["project_id"]`), so a row genuinely can have no owner — a CLI run, a
+   crashed process, a call billed before the project existed. §3.14's
+   per-project endpoint resolves each row's owner and drops anything matching
+   neither a `project_id` nor a rescue override, so these rows are listed by no
+   view and counted in no project's `/budget` — while still consuming the daily
+   `/quota` they always consumed. The money is spent, the quota is gone, and
+   the only trace is a row nothing reads.
+2. **Orphan object prefixes.** `list_projects` discovers projects by listing
+   `projects/` and keeping keys ending `/project.json` (`projects.py`), so a
+   prefix whose `project.json` is missing or unreadable is invisible to the
+   entire product while its artifacts still exist and still cost storage.
+   Nothing in FoleyFlow deletes anything — there is no `DELETE` route and no
+   backend delete method — so these accumulate and never leave.
+3. **Shared `cache/` stems.** These are **not orphans and must never be
+   claimable.** A cache key is `sha256(endpoint, prompt, duration)`: it is an
+   address, not provenance, and many projects legitimately resolve to the same
+   one. Assigning a shared stem to a project would assert something false about
+   both, and would break the sharing that makes the cache a cache. They appear
+   here because this is the only screen that can show them, and the screen says
+   *why* they have no owner and no button.
 
-It is **not** the per-project table with the filter removed. The per-project
-endpoint resolves each row's owner from its `project_id` or a rescue override
-and drops anything matching neither, so a row belonging to no project is
-listed by no view in the product today and counted in no project's `/budget` —
-while still consuming the daily `/quota` it was always going to consume. That
-is the worst arrangement: the money is spent and the quota is gone, and the
-only trace is a row nothing reads. Orphaned rows are precisely what
-`record_attribution` exists to repair, and nothing surfaces the rows it would
-repair. A bucket-wide view is the only place they can appear, which makes this
-the natural home for the rescue affordance: list the unattributed rows, then
-claim them into a project from the row itself via the existing
-`POST /projects/{id}/attributions`. Note the shape this shares with the caveat
-below — both are about things in the bucket that belong to no project, and both
-are misread by default.
+**The claim actions, and the one that does not exist.**
 
-**The provenance caveat is a display requirement, not a footnote.** The invariant
-is "cache keys are addresses, not provenance": the ~170 shared stems under
-`cache/` belong to no project, and a fallback-served clip is cached at the
-*requested* tier's address while `served_endpoint` records who actually produced
-it. A raw listing invites reading a `cache/` key as evidence a project used a
-given provider. The shared-cache section must say so where it is read, and
-per-object provenance must come from the stem inventory, never inferred from
-the key.
+- **A ledger row → an existing project.** `POST /projects/{id}/attributions`
+  already does this (first-come by `before`, adoption not rewrite). The screen
+  is the first thing that makes it reachable; today the endpoint has no UI.
+- **A ledger row → a new project.** Create a project to hold spend that
+  predates or outlived every project, then attribute to it. The rows are the
+  only record that the money moved, so they need somewhere to land.
+- **An orphan prefix → a new project record adopting it.** Write a
+  `project.json` for the existing `projects/{id}/` prefix, so the artifacts
+  under it become reachable through every normal screen. This is recovery, not
+  creation: the id is the prefix's own, and the record describes what is
+  already there.
+- **An orphan prefix → a *different* existing project: no.** Artifacts are
+  immutable and content-addressed, and ownership *is* the key path, so
+  "reassigning" means copying every object to new addresses — a new artifact
+  claiming to be an old one, which is the provenance lie §A.3 forbids. Adopt
+  the prefix under its own id or leave it; the UI must not offer a move.
 
-Signed URLs are handed out per row as the dossier does; the same TTL applies,
-so the explorer is browsable but never a durable public handle.
+Signed URLs are handed out per row as the Dossier does, with the same TTL, so
+unclaimed material is inspectable before it is claimed but never a durable
+public handle.
 
-**Acceptance:** the whole bucket is listable without a single HEAD; the
-shared-cache section cannot be read as project provenance; and every ledger row
-belonging to no project — invisible in the per-project view by construction —
-is listed here and claimable from the row.
+**Acceptance:** every ledger row belonging to no project is listed and can be
+claimed into a project — existing or newly created — after which it reconciles
+into that project's `/budget`; every `projects/` prefix with no readable
+`project.json` is listed and can be adopted by creating its record; no shared
+`cache/` stem offers a claim control, and the screen states why.
 
 ## 7.18 Backend read latency — M — **DONE**
 
@@ -949,7 +954,7 @@ only accept a still-fresh cache (leader failure does not serve stale money);
 GET /qa uses `get_project` existence instead of a full event fold; GET /budget
 folds state and scans the ledger in parallel (no double fold);
 `get_project` parallelises scenes/QA/source-mix HEADs (StorageError → 503);
-dossier concurrent HEADs (7.17 LIST-metadata still the full size win).
+dossier concurrent HEADs (7.19 LIST-metadata still the full size win).
 
 **Landed (phase-2, no Redis):**
 - **A. Write-through exact aggregates** — process-local per-project spend
@@ -995,7 +1000,60 @@ cold seed on the same process):
 
 First round still pays cold seed (ledger multi-get, event list); rounds 2–3
 are warm in-process. Dossier improved via concurrent HEADs; size-from-LIST
-remains 7.17. Raw JSON: `scripts/latency_live_results.json`.
+is **7.19** (it was 7.17 before that unit was re-scoped).
+Raw JSON: `scripts/latency_live_results.json`.
+
+## 7.19 Object listing without HEADs — S — **DONE**
+
+**Depends on:** nothing. **Files:** `storage/base.py` + `storage/b2.py` +
+`storage/local.py`, then the Dossier's composition in `api/app.py`, tests.
+
+Split out of the old 7.17, where it was carrying a screen that did not need to
+exist. It stands alone because it pays off against a screen that already
+ships.
+
+The Dossier gets `size_bytes` from **one backend HEAD per object** — measured
+**56 s for 131 keys** against real B2, and monotonically worse as the bucket
+grows. It does not need to: `list_objects_v2` already returns `Size`,
+`LastModified` and `ETag` for every object in the listing, 1000 at a time, and
+`B2Backend.list_keys` throws all of that away and keeps only the key.
+
+Add `list_objects(prefix)` to the backend interface returning that metadata;
+`LocalBackend` supplies the same from `os.stat`. Then rewire the Dossier's
+composition onto it, so the §15 closing beat is one paginated LIST per prefix
+rather than N HEADs. 7.17 consumes the same method for its object listing.
+
+`sha256` is unaffected and stays as §3.9 documents it: the recorded provenance
+value or a local backend's own hash, never inferred from an `ETag` (a
+multipart upload's ETag is not an MD5 of the content, let alone a sha256).
+
+**Acceptance:** the Dossier composes with zero HEAD requests, its
+`size_bytes` values are unchanged, and the 131-key project measurably drops
+from the 56 s baseline.
+
+**Landed:** `Backend.list_objects(prefix)` returns `ObjectMeta` (key,
+`size_bytes`, `last_modified`, `etag`, and `sha256` only where the backend can
+produce a real content hash — LocalBackend hashes the file, B2 never derives
+one from an ETag). `B2Backend` keeps Size/LastModified/ETag from the existing
+paginator and strips the bucket prefix exactly as `list_keys` did; `list_keys`
+is now the key projection of `list_objects`, so the two listings cannot
+silently disagree. `LocalBackend` reads the same from `os.stat` (plus the
+full-content hash `head` always supplied, so the dossier's sha256 column is
+byte-identical to the HEAD era), walks `.part` files out, and treats a
+one-segment prefix that names a file as that one object. `_dossier_artifacts`
+groups its candidates into a few top-level prefixes (`projects/{id}`, `cache`,
+the source's) via `_dossier_listing_prefix`, lists each once on the route
+pool, and resolves candidates against the listing in memory — zero HEADs,
+same `size_bytes`, same order, and `ObjectMeta.sha256` keeps the local hash
+column full. docs/api.md §3.9 rewritten to the LIST contract. Tests: storage
+(local metadata/order/.part/absent/file-prefix parity with list_keys; B2
+metadata + prefix stripping + no-sha256-from-ETag via a fake paginator),
+`test_dossier_composes_with_zero_heads` (a `head` that refuses outright still
+serves a complete dossier — the acceptance, pinned), and the 503-on-outage
+test now faults `list_objects` (the new read path).
+
+**Not in this unit:** the archive explorer (7.17) — it consumes the same
+`list_objects` method — and the bucket-wide `GET /ledger` it owns.
 
 ---
 
@@ -1049,11 +1107,15 @@ blanket component tests.
 
 # G. Still open
 
-- The archive explorer (7.17) — scoped 2026-08-03, re-scoped 2026-08-03 after
-  7.16 landed. **7.18 (read latency) is DONE; 7.16 (ledger rows) is DONE.**
-  7.17 must not be built on the dossier's HEAD-per-object mechanism, and it now
-  owns the bucket-wide `GET /ledger` that 7.16 deferred — the only view that
-  can show ledger rows belonging to no project. See the unit.
+- **Unclaimed (7.17)** — the archive explorer: a bucket-wide object browser,
+  which is §3.9's Dossier at a wider scope; what only it can show is the
+  material no project claims — orphan ledger rows and orphan `projects/`
+  prefixes, each claimable, with shared `cache/` stems shown but never
+  claimable — and it owns the bucket-wide `GET /ledger` that 7.16 deferred.
+  It consumes 7.19's `list_objects` (already landed, already paying off
+  against the Dossier).
+  **7.18 (read latency), 7.16 (ledger rows) and 7.19 (no-HEAD listing) are
+  DONE.**
 - The states the mockup does not cover — loading, empty, error, the in-flight
   run lock, draft-versus-committed, and the director-mode diff drawn on the
   timeline itself. Listed in `docs/design/control-room.md` §9. These are design

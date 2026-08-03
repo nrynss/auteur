@@ -628,12 +628,16 @@ demo's closing beat, so it is a single call that returns everything rather
 than something the UI assembles.
 
 Composition only: no artifacts are written and nothing is downloaded to build
-the listing. Size comes from one backend HEAD per object; sha256 comes from
-provenance where one is recorded (the source video, each stem) or from a local
-backend's own hash. B2's S3 API exposes no sha256, so in a deployed store that
-column is the recorded value or absent — never a guess. `url` is signed with
-the same TTL as every other artifact link, so a dossier is browsable but never
-a durable public handle.
+the listing. Size comes from **listing metadata, not HEAD requests** (unit
+7.19): the candidates are grouped into a few top-level prefixes (`projects/{id}`,
+`cache`, and the source's) and each prefix is listed once via `list_objects_v2`
+— 1000 objects a page — which returns `Size`/`LastModified`/`ETag` for free.
+sha256 comes from provenance where one is recorded (the source video, each
+stem) or from a local backend's own hash. B2's S3 API exposes no sha256 — and
+a multipart upload's ETag is not a content hash — so in a deployed store that
+column is the recorded value or absent, never a guess derived from the
+listing. `url` is signed with the same TTL as every other artifact link, so a
+dossier is browsable but never a durable public handle.
 
 ---
 

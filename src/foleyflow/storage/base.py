@@ -41,6 +41,29 @@ class ObjectHead:
     sha256: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class ObjectMeta:
+    """One stored object as a listing reports it (unit 7.19).
+
+    `list_objects_v2` returns Size, LastModified and ETag for every object in
+    the listing, 1000 at a time, and LocalBackend supplies the same from
+    `os.stat` — so an artifact listing can be composed with zero HEAD requests
+    (the dossier measured 56 s of HEADs against a real 131-key project).
+
+    `sha256` follows the same rule as `ObjectHead.sha256`: a full-content hash
+    of the stored object when the backend can supply one without a download
+    (LocalBackend hashes the file), else None. It is NEVER derived from an
+    ETag — a multipart upload's ETag is not an MD5 of the content, let alone a
+    sha256 (docs/api.md §3.9).
+    """
+
+    key: str
+    size_bytes: int
+    last_modified: Optional[str] = None   # ISO-8601; None when unknown
+    etag: Optional[str] = None            # opaque, backend-specific
+    sha256: Optional[str] = None
+
+
 class StorageError(RuntimeError):
     """A backend operation failed. Raised instead of leaking boto3/OS errors so
     callers can treat every backend the same way."""
@@ -153,6 +176,23 @@ class Backend(Protocol):
         event log without opening anything. Returns [] for an empty prefix
         rather than raising — an absent prefix is an empty collection, not an
         error.
+        """
+        ...
+
+    def list_objects(self, prefix: str) -> List[ObjectMeta]:
+        """Every object under `prefix` with its listing metadata (unit 7.19).
+
+        The same key space and ordering as `list_keys`, plus the Size,
+        LastModified and ETag the listing already carries — so callers compose
+        artifact listings without one `head` per object (the dossier measured
+        56 s of HEADs against a real 131-key project; `list_objects_v2`
+        returns the same facts 1000 at a time, and LocalBackend reads them
+        from `os.stat`). `sha256` is only ever the backend's own full-content
+        hash (LocalBackend), never an ETag-derived guess.
+
+        Returns [] for an empty prefix, matching `list_keys`. Absent and
+        unknown stay distinct, as everywhere else in this interface: a backend
+        that cannot answer raises `StorageError`.
         """
         ...
 

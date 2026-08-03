@@ -462,3 +462,62 @@ def test_a_failed_run_with_no_record_does_not_poll_as_running(store, project):
 
     assert body["status"] == "failed"
     assert body["error_code"] == "internal_error"
+
+
+# -- unit 7.19: B2 list_objects keeps the listing metadata -------------------
+
+def test_b2_list_objects_carries_size_and_etag_and_strips_the_prefix():
+    """`list_objects_v2` already returns Size/LastModified/ETag; the backend
+    must keep them (the dossier's no-HEAD listing depends on it) and strip the
+    bucket prefix exactly as list_keys does."""
+    import datetime
+    import foleyflow.storage.b2 as b2mod
+    from foleyflow.storage.base import ObjectMeta
+
+    class Client:
+        def __init__(self):
+            self.pages = [
+                {"Contents": [
+                    {"Key": "projects/p1/timelines/timeline.v1.json",
+                     "Size": 12, "LastModified": datetime.datetime(
+                         2026, 8, 3, 10, 0, 0, tzinfo=datetime.timezone.utc),
+                     "ETag": '"aaa"'},
+                    {"Key": "cache/0123456789abcdef.wav",
+                     "Size": 345, "ETag": '"bbb"'},
+                ]},
+                {"Contents": [
+                    {"Key": "projects/p1/mix.wav", "Size": 78},
+                ]},
+            ]
+
+        def get_paginator(self, name):
+            assert name == "list_objects_v2"
+            return self
+
+        def paginate(self, **kw):
+            assert kw["Bucket"] == "bucket"
+            assert kw["Prefix"] == "projects/p1"
+            for page in self.pages:
+                yield page
+
+    backend = b2mod.B2Backend.__new__(b2mod.B2Backend)
+    backend.bucket, backend.prefix = "bucket", ""
+    backend._client = Client()
+
+    listed = backend.list_objects("projects/p1")
+    assert isinstance(listed[0], ObjectMeta)
+    # Bucket prefix stripped; sorted by key; metadata preserved.
+    assert [m.key for m in listed] == [
+        "cache/0123456789abcdef.wav", "projects/p1/mix.wav",
+        "projects/p1/timelines/timeline.v1.json"]
+    assert {m.key: m.size_bytes for m in listed} == {
+        "projects/p1/mix.wav": 78,
+        "projects/p1/timelines/timeline.v1.json": 12,
+        "cache/0123456789abcdef.wav": 345}
+    assert listed[-1].last_modified == "2026-08-03T10:00:00+00:00"
+    assert listed[0].etag == '"bbb"'
+    # sha256 is never invented from an ETag (docs/api.md §3.9).
+    assert all(m.sha256 is None for m in listed)
+
+    # list_keys is the key projection of list_objects — they cannot disagree.
+    assert backend.list_keys("projects/p1") == [m.key for m in listed]
