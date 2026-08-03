@@ -5,6 +5,7 @@
    * is 7.10, the player is 7.9, director mode is 7.12. */
   import { onMount } from "svelte";
 
+  import { BRAND_NAME } from "../brand";
   import BudgetChip from "./BudgetChip.svelte";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import DirectorPanel, {
@@ -799,7 +800,7 @@
 {:else if project}
   <div class="app">
     <header class="chrome">
-      <span class="brand">FoleyFlow</span>
+      <span class="brand">{BRAND_NAME}</span>
       <div class="proj">
         <h1>{project.title}</h1>
         <span class="ver num">

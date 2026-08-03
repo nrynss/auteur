@@ -38,6 +38,33 @@ npm run build:fast  # typegen + vite build, no type-check (iteration only)
 The Docker build runs `npm ci && npm run build` in a Node stage and copies
 only the output into the Python image, so no Node ships to Cloud Run.
 
+## Branding (task 19)
+
+The whole rendered brand surface is build-time configuration — a deployment
+can rebrand without a patch:
+
+| Variable | Default | What it sets |
+|---|---|---|
+| `VITE_BRAND_NAME` | `FoleyFlow` | product name: chrome wordmarks, page titles, the mount-error message |
+| `VITE_BRAND_TITLE_TEMPLATE` | `{name} — {page}` | page-title shape; `{name}` and `{page}` are the placeholders |
+| `VITE_BRAND_FAVICON` | inline SVG waveform mark | any href — a data URI or a path under `/public` (copied into the build verbatim) |
+
+```sh
+VITE_BRAND_NAME="KinoPost" \
+VITE_BRAND_TITLE_TEMPLATE="{name} · {page}" \
+VITE_BRAND_FAVICON="data:image/svg+xml,…" \
+npm run build
+```
+
+Only what a user sees is externalised. The CLI, the package, `FOLEYFLOW_*` env
+vars, the storage key space and the `foleyflow-theme` localStorage key stay
+brand-neutral. Colours need nothing: `src/lib/theme.css` tokens are consumed
+by components, never raw values (unit 7.7). The static `<title>` in
+`index.html` is injected at build time from the same template the SPA uses, so
+the pre-hydration title and the runtime titles cannot drift apart. CI builds
+once with defaults and once rebranded, and greps the bundles (task 19's
+acceptance).
+
 ## Versions
 
 Svelte 5, Vite 8, TypeScript 5 (svelte-check and openapi-typescript pin TS

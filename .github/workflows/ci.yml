@@ -96,6 +96,33 @@ jobs:
         working-directory: ui
         run: npm run build
 
+      # Task 19 acceptance: the default build keeps the brand, and a build
+      # with the branding variables set renders NO occurrence of the default
+      # name anywhere in the served UI. Vite statically replaces
+      # import.meta.env.VITE_BRAND_* at build time, so this is a real check
+      # of the bundle, not of the source.
+      - name: Default build keeps the brand
+        working-directory: ui
+        run: |
+          grep -q '<title>FoleyFlow — Control room</title>' \
+            ../src/foleyflow/api/static/index.html
+          grep -rnq "FoleyFlow" ../src/foleyflow/api/static/
+
+      - name: Rebranded build renders no default name
+        working-directory: ui
+        run: |
+          VITE_BRAND_NAME="KinoPost" \
+          VITE_BRAND_TITLE_TEMPLATE="{name} · {page}" \
+          VITE_BRAND_FAVICON="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%231721A3'/%3E%3C/svg%3E" \
+          npm run build
+          if grep -rn "FoleyFlow" ../src/foleyflow/api/static/; then
+            echo "error: default brand name leaked into the rebranded build" >&2
+            exit 1
+          fi
+          grep -q '<title>KinoPost · Control room</title>' \
+            ../src/foleyflow/api/static/index.html
+          grep -rnq "KinoPost" ../src/foleyflow/api/static/
+
       - name: Confirm no built assets are tracked
         run: |
           tracked=$(git ls-files src/foleyflow/api/static/)

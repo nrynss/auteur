@@ -359,7 +359,7 @@ keyed by `(scope_id, project_id)`. Fixtures no longer hand-invalidate ledger
 caches on backend swap — a fresh temp-dir is a fresh scope. Isolation tests
 cover A→B→A for rows, spend, attrs, quota, write_ok, and event logs.
 
-## 19. Externalise the brand — S
+## 19. Externalise the brand — S — **DONE**
 
 **Depends on:** nothing. **Files:** `ui/index.html`, `ui/src/App.svelte`,
 `ui/src/lib/control/ControlRoom.svelte`,
@@ -385,6 +385,28 @@ brand-neutral or never rendered. Externalise only what a user sees.
 **Acceptance:** a build with the branding variables set renders no occurrence
 of the default name anywhere in the served UI, and the default build is
 byte-identical in appearance to today.
+
+**Landed (19):** `ui/src/lib/brand.ts` — `BRAND_NAME`, `BRAND_TITLE_TEMPLATE`
+and `brandPageTitle(page)` read `VITE_BRAND_NAME` / `VITE_BRAND_TITLE_TEMPLATE`
+at build time (Vite statically replaces `import.meta.env.VITE_BRAND_*`), with
+today's values as defaults. All eight strings — plus the two Director-mode
+chat sender labels, which landed after this task's file list was written and
+render the name too — now go through the brand module. `vite.config.ts` owns
+the `<title>` and favicon: a `transformIndexHtml` plugin injects both from the
+same env (default favicon is today's inline SVG waveform mark, moved into the
+config), using the same title template as the SPA so the pre-hydration title
+and the runtime titles cannot drift apart under a rebrand. The Dockerfile's
+UI stage declares optional `VITE_BRAND_*` ARGs, so `docker build
+--build-arg VITE_BRAND_NAME=…` rebrands the shipped image without patching it
+(unset → defaults). Colours untouched.
+
+**Verification is build-level, not unit-level:** CI builds once with defaults
+and once with `VITE_BRAND_NAME="KinoPost"` plus a custom template and favicon,
+and greps the *bundles* — the default build must still name the brand, and the
+rebranded build must contain no occurrence of `FoleyFlow` anywhere in the
+served output (task 19's acceptance, checked on every PR). `brand.ts` has unit
+tests pinning the defaults; the override path cannot be exercised in vitest
+(env is loaded at startup), which is exactly why the CI check exists.
 
 ## 20. Read-only configuration view — M
 

@@ -14,6 +14,7 @@
    */
   import type { DirectorResponse } from "../api/projects";
   import Spinner from "../components/Spinner.svelte";
+  import { BRAND_NAME } from "../brand";
 
   /** The document a proposal was diffed against — what the director was
    * looking at when they asked. */
@@ -134,7 +135,7 @@
           </div>
         {:else if turn.proposal}
           <div class="msg">
-            <span class="who">FoleyFlow · {turn.proposal.model}</span>
+            <span class="who">{BRAND_NAME} · {turn.proposal.model}</span>
             <div class="body">{turn.text}</div>
             {#if turn.outcome === "reviewing"}
               <div class="diff" role="region" aria-label="Proposed edit">
@@ -186,7 +187,7 @@
           </div>
         {:else}
           <div class="msg">
-            <span class="who">FoleyFlow · {modelName()}</span>
+            <span class="who">{BRAND_NAME} · {modelName()}</span>
             <div class="body">{turn.text}</div>
           </div>
         {/if}

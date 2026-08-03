@@ -3,6 +3,7 @@
    * Only fields the list API exposes: no invented readiness. */
   import { onMount } from "svelte";
 
+  import { BRAND_NAME } from "../brand";
   import Button from "../components/Button.svelte";
   import Chip from "../components/Chip.svelte";
   import Panel from "../components/Panel.svelte";
@@ -78,7 +79,7 @@
 </script>
 
 <header class="chrome">
-  <span class="brand">FoleyFlow</span>
+  <span class="brand">{BRAND_NAME}</span>
   <span class="dim">projects</span>
   <span class="spacer"></span>
   {#if storageHint}

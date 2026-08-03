@@ -51,6 +51,13 @@ RUN npm ci
 
 COPY ui/ ./
 COPY --from=build /schema/openapi.json ./openapi.json
+# Optional rebrand point: pass --build-arg VITE_BRAND_NAME=… (also
+# VITE_BRAND_TITLE_TEMPLATE / VITE_BRAND_FAVICON) to docker build — the ARG
+# values are in the build environment, so vite picks them up. Unset → the
+# defaults in ui/vite.config.ts / ui/src/lib/brand.ts (today's values).
+ARG VITE_BRAND_NAME
+ARG VITE_BRAND_TITLE_TEMPLATE
+ARG VITE_BRAND_FAVICON
 # vite.config.ts writes the bundle to ../src/foleyflow/api/static — i.e.
 # /app/src/foleyflow/api/static in this stage — so the runtime image can copy
 # the built assets straight into the installed package.

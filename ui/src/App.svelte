@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
+  import { brandPageTitle } from "./lib/brand";
   import ControlRoom from "./lib/control/ControlRoom.svelte";
   import PrimitivesGallery from "./lib/PrimitivesGallery.svelte";
   import CreateProject from "./lib/projects/CreateProject.svelte";
@@ -13,14 +14,16 @@
   // · /unclaimed → material no project claims (7.17)
   let route = $state<Route>(parseRoute(window.location.pathname));
 
+  // Page titles use the build-time brand (task 19): a rebranded deployment
+  // renders its own name here, and the template is configurable too.
   const pageTitle = $derived(
     route.name === "create"
-      ? "FoleyFlow — New project"
+      ? brandPageTitle("New project")
       : route.name === "project"
-        ? "FoleyFlow — Control room"
+        ? brandPageTitle("Control room")
         : route.name === "unclaimed"
-          ? "FoleyFlow — Unclaimed"
-          : "FoleyFlow — Projects",
+          ? brandPageTitle("Unclaimed")
+          : brandPageTitle("Projects"),
   );
 
   function go(path: string) {

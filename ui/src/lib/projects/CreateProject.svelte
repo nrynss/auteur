@@ -6,6 +6,7 @@
   import Panel from "../components/Panel.svelte";
   import Spinner from "../components/Spinner.svelte";
   import ThemeToggle from "../components/ThemeToggle.svelte";
+  import { BRAND_NAME } from "../brand";
   import { ApiError } from "../api/client";
   import {
     analyzeProject,
@@ -429,7 +430,7 @@
     onclick={(e) => {
       e.preventDefault();
       go("/");
-    }}>FoleyFlow</a
+    }}>{BRAND_NAME}</a
   >
   <span class="dim">new project</span>
   <span class="spacer"></span>
