@@ -9,6 +9,8 @@ last.
 
 Built for the **Backblaze Generative AI Media Hackathon**.
 
+**Watch the demo: <https://www.youtube.com/watch?v=_e2xdmZS_hU>** (2:42)
+
 ## Why it exists
 
 Generative tools erode craft not because the output is bad, but because
@@ -38,7 +40,7 @@ goes. [docs/api.md](docs/api.md) is the HTTP contract.
 
 ## Status
 
-**Live: <https://auteur.nryn.dev>**
+**Live: <https://auteur.nryn.dev>** · **Demo: <https://www.youtube.com/watch?v=_e2xdmZS_hU>**
 
 A silent clip goes in and a B2-backed Foley export comes out, over the API, on
 the deployed app. One package (`src/foleyflow`), one command (`auteur`, still
