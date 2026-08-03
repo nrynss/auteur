@@ -271,6 +271,99 @@ class TimelineVersionsResponse(BaseModel):
     latest: Optional[int] = None
 
 
+# -- director mode (unit 7.12, docs/api.md §3.16) ---------------------------
+
+class DirectorRequest(BaseModel):
+    """Chat proposes, never applies: the whole current document plus a
+    plain-language instruction. Same document shape as a commit (order is
+    index); `timeline_version` is that document's version, carried for
+    display so the diff can name what it was proposed against."""
+
+    instruction: str
+    timeline_version: Optional[int] = None
+    duration: float
+    ambience: str
+    events: List[TimelineEventIn]
+
+    @field_validator("instruction")
+    @classmethod
+    def _instruction(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("instruction must not be empty")
+        if len(stripped) > 2000:
+            raise ValueError("instruction must be at most 2000 characters")
+        return stripped
+
+    @field_validator("duration")
+    @classmethod
+    def _finite_duration(cls, v: float) -> float:
+        import math
+        if not math.isfinite(v) or v < 0:
+            raise ValueError("duration must be a non-negative finite number")
+        return v
+
+
+class DirectorPlacement(BaseModel):
+    """One event's placement, old or new, for the per-index diff."""
+
+    start_time: float
+    duration: float
+
+
+class DirectorEditOut(BaseModel):
+    """One changed event: the ghosted-old → solid-new pair a UI renders."""
+
+    index: int
+    old: DirectorPlacement
+    new: DirectorPlacement
+
+
+class DirectorEventOut(BaseModel):
+    """An event in the proposed document. Placement may differ from the base;
+    seed/source_duration_s are copied through untouched (the model never
+    invents or moves a freeze). No stem_key/scene_id — those are stamped by
+    the server onto committed versions, and the proposal is not committed."""
+
+    index: int
+    name: str
+    kind: str
+    intensity: str
+    start_time: float
+    duration: float
+    seed: Optional[int] = None
+    source_duration_s: Optional[float] = None
+
+
+class DirectorTimelineOut(BaseModel):
+    """The proposed document, diffed against the request document."""
+
+    duration: float
+    ambience: str
+    events: List[DirectorEventOut]
+
+
+class DirectorResponse(BaseModel):
+    """The outcome of one director turn. `status` is the turn's domain
+    outcome (proposed / no_changes / invalid_output), never an HTTP error —
+    an invalid model output still billed the call and counted against quota.
+    `cost_usd` is what this call is estimated (or actually) recorded as;
+    `ledger_writable` false means the row did not land and the UI must fail
+    closed (§3.10)."""
+
+    project_id: str
+    base_version: int
+    model: str
+    instruction: str
+    status: str
+    message: str
+    cost_usd: float
+    cost_source: str
+    ledger_writable: bool
+    timeline: DirectorTimelineOut
+    edits: List[DirectorEditOut]
+
+
 # -- scenes -----------------------------------------------------------------
 
 class SceneStatsOut(BaseModel):

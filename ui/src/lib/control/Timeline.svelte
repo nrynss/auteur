@@ -24,6 +24,7 @@
     type Draft,
   } from "./draft";
   import type { TimelineEventOut } from "../api/projects";
+  import type { DirectorResponse } from "../api/projects";
   import type { Snippet } from "svelte";
 
   interface Props {
@@ -50,6 +51,10 @@
     /** Interactions enabled: not locked, viewing the draft (or latest when no
      * draft exists yet — the first edit forks one). */
     editable?: boolean;
+    /** An active director-mode proposal (unit 7.12): blocks render at the
+     * proposed positions, ghosted outlines at the old ones, and editing is
+     * suspended until the director applies or discards. */
+    proposal?: DirectorResponse | null;
     /** Committed versions for the chips. */
     versions?: number[] | null;
     /** What is being shown: the draft/latest, or a historical version. */
@@ -79,6 +84,7 @@
     inspectorActions,
     draft = null,
     editable = false,
+    proposal = null,
     versions = null,
     viewing = "draft" as number | "draft",
     onEdit,
@@ -115,26 +121,51 @@
   // committed version being viewed. DraftEvent is structurally a
   // TimelineEventOut (same fields, mutable copies) — the preview, lanes and
   // transient ticks all read through here, so the browser preview follows a
-  // nudge instantly ("hear only translation", free).
+  // nudge instantly ("hear only translation", free). An active director
+  // proposal (unit 7.12) shows the PROPOSED document — solid blocks at where
+  // the model suggested — with ghosted outlines at the old positions.
   const display = $derived(
-    draft
+    proposal
       ? {
-          version: draft.baseVersion,
-          duration: draft.duration,
-          ambience: draft.ambience,
-          // DraftEvent is structurally TimelineEventOut — no cast, so adding
-          // a field to TimelineEventOut breaks this assignment at build time.
-          events: draft.events,
+          version: proposal.base_version,
+          duration: proposal.timeline.duration,
+          ambience: proposal.timeline.ambience,
+          events: proposal.timeline.events,
         }
-      : timeline,
+      : draft
+        ? {
+            version: draft.baseVersion,
+            duration: draft.duration,
+            ambience: draft.ambience,
+            // DraftEvent is structurally TimelineEventOut — no cast, so adding
+            // a field to TimelineEventOut breaks this assignment at build time.
+            events: draft.events,
+          }
+        : timeline,
   );
 
   const isDraftView = $derived(!!draft && viewing === "draft");
+  const isProposalView = $derived(proposal != null && proposal.edits.length > 0);
   const isHistorical = $derived(typeof viewing === "number" && timeline !== null);
   // Editing is live on the draft AND on the latest committed before a draft
   // exists — the first edit forks one (applyEdit in ControlRoom). Only a
-  // historical view is off-limits.
-  const canEdit = $derived(editable && !locked && viewing === "draft" && display != null);
+  // historical view is off-limits, and an active proposal suspends editing
+  // until the director applies or discards (the proposal is the decision).
+  const canEdit = $derived(
+    editable && !locked && viewing === "draft" && !proposal && display != null,
+  );
+
+  /** Ghost blocks: the OLD placements of touched events, hollowed out. New
+   * placements are the solid blocks via `display`; these say "was here". */
+  const ghosts = $derived(
+    proposal
+      ? proposal.edits.map((e) => ({
+          index: e.index,
+          leftPx: e.old.start_time * PPS,
+          widthPx: Math.max(e.old.duration * PPS, 12),
+        }))
+      : [],
+  );
 
   const lanes = $derived(display ? groupLanes(display.events) : []);
   const widthPx = $derived((display?.duration ?? 0) * PPS);
@@ -353,7 +384,9 @@
 
     <span class="spacer"></span>
 
-    {#if isHistorical}
+    {#if isProposalView}
+      <span class="note proposal">proposal — ghosted old positions · nothing applied</span>
+    {:else if isHistorical}
       <span class="note historic">viewing v{viewing} — historical</span>
       <button
         type="button"
@@ -376,7 +409,7 @@
     {/if}
 
     {#if draft}
-      {#if isDraftView}
+      {#if isDraftView && !isProposalView}
         <button type="button" class="head-btn primary" disabled={locked || commitPending} onclick={onCommit} title={commitPending ? "Committing…" : "Write this draft as one new immutable version"}>
           {commitPending ? "Committing…" : `Commit v${nextVersion ?? ""}`}
         </button>
@@ -386,6 +419,17 @@
       {/if}
     {/if}
   </div>
+
+  {#if isProposalView && proposal}
+    <div class="headline proposal" role="status">
+      <span class="word">Director proposal</span>
+      <span class="detail">
+        {proposal.edits.length} {proposal.edits.length === 1 ? "event" : "events"} at their proposed positions
+        (hollow blocks = current positions). The preview still plays the current document; nothing is
+        applied until you approve in the Director tab.
+      </span>
+    </div>
+  {/if}
 
   {#if isDraftView && commitError}
     <div class="headline err" role="alert">
@@ -466,10 +510,21 @@
             <div class="lane">
               {#each lane.events as ev}
                 {@const p = placeEvent(ev, PPS)}
+                {#if isProposalView}
+                  {@const ghost = ghosts.find((g) => g.index === ev.index)}
+                  {#if ghost && (ghost.leftPx !== p.leftPx || ghost.widthPx !== p.widthPx)}
+                    <div
+                      class="ghost"
+                      style={`left:${ghost.leftPx}px;width:${ghost.widthPx}px`}
+                      aria-hidden="true"
+                    ></div>
+                  {/if}
+                {/if}
                 <div
                   class="block"
                   class:selected={selected === ev.index}
                   class:draft={isDraftView}
+                  class:proposed={isProposalView}
                   style={`left:${p.leftPx}px;width:${p.widthPx}px`}
                   role="button"
                   tabindex="0"
@@ -707,6 +762,10 @@
     color: var(--warn);
   }
 
+  .note.proposal {
+    color: var(--accent);
+  }
+
   .note.snap,
   .note.free {
     text-transform: none;
@@ -765,6 +824,16 @@
   .headline.err .word {
     font-weight: var(--w-590);
     color: var(--stop);
+    flex: 0 0 auto;
+  }
+
+  .headline.proposal {
+    background: var(--accent-q);
+  }
+
+  .headline.proposal .word {
+    font-weight: var(--w-590);
+    color: var(--accent);
     flex: 0 0 auto;
   }
 
@@ -901,6 +970,24 @@
 
   .block.draft.selected {
     border-color: var(--accent);
+  }
+
+  .block.proposed {
+    border-style: dashed;
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent-q) 55%, var(--sunken));
+  }
+
+  .ghost {
+    position: absolute;
+    top: 7px;
+    bottom: 7px;
+    border: 1px dashed var(--faint);
+    border-radius: 5px;
+    background: transparent;
+    opacity: 0.55;
+    pointer-events: none;
+    box-shadow: none;
   }
 
   .block .bname {

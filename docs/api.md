@@ -1035,4 +1035,106 @@ artifact claiming to be an old one, the provenance lie §A.3 forbids.
 
 ---
 
+### 3.16 Director mode — text in, timeline edits out
+
+```
+POST /api/v1/projects/{id}/director
+{
+  "instruction": "move all the footsteps 40 ms earlier",
+  "timeline_version": 2,
+  "duration": 15.04,
+  "ambience": "desert wind",
+  "events": [
+    {"name": "boot on gravel", "start_time": 0.0, "duration": 0.4, "intensity": "low", "kind": "rhythmic", "seed": null, "source_duration_s": null}
+  ]
+}
+```
+
+**Chat proposes, never applies.** The client sends the current timeline
+**document** (the whole thing — the same shape as a commit, §3.4; order is
+index) plus a plain-language instruction. The server asks the director model
+(`gemini-3.5-flash-lite`, decision 9) for a proposed document, schema-validates
+it, diffs it against what the client sent, and returns the diff. Nothing is
+written: the endpoint never allocates a version, never claims a job slot, and
+a proposal costs nothing to approve. Approval is the client committing the
+proposed document through the normal `PUT /timeline` path, which applies every
+freeze and run-lock rule it already owns.
+
+Every turn is one provider call, recorded in the cost ledger and counted
+against the model's `/quota` like every other call. The call is attributed to
+the project (`project_id` on the ledger row, §3.11), so a chat that proposes
+spend shows up in `/budget` and the Spend tab.
+
+`200`:
+
+```json
+{
+  "project_id": "proj_01KYJD1RKETS3KTX5HA3H5JPDQ",
+  "base_version": 2,
+  "model": "gemini-3.5-flash-lite",
+  "instruction": "move all the footsteps 40 ms earlier",
+  "status": "proposed",
+  "message": "moved 1 event",
+  "cost_usd": 0.005,
+  "cost_source": "estimate",
+  "ledger_writable": true,
+  "timeline": {
+    "duration": 15.04,
+    "ambience": "desert wind",
+    "events": [
+      {"index": 0, "name": "boot on gravel", "kind": "rhythmic", "intensity": "low", "start_time": 0.04, "duration": 0.4, "seed": null, "source_duration_s": null}
+    ]
+  },
+  "edits": [
+    {"index": 0, "old": {"start_time": 0.0, "duration": 0.4}, "new": {"start_time": 0.04, "duration": 0.4}}
+  ]
+}
+```
+
+`timeline` is the **proposed document** — every event, with `index`, placement
+moved to where the instruction asked, and `seed`/`source_duration_s` copied
+through untouched (the model may never invent or move a freeze).
+`edits` is the per-index diff against the request document (`old` → `new`),
+which is what a UI renders as ghosted old positions against new. `status` is
+the turn's outcome, not an HTTP error:
+
+| `status` | Meaning |
+|---|---|
+| `proposed` | At least one event moved; `edits` and `timeline` describe it |
+| `no_changes` | Model answered, proposed nothing different — `edits` is empty |
+| `invalid_output` | Model answered but the output failed schema validation (missing/extra indexes, non-finite or out-of-range times). The row is still billed and counted — the call happened |
+
+`cost_usd` is the estimate echoed for this call (`cost_source: "estimate"`
+unless the provider returned an actual figure), and `ledger_writable` reports
+whether the row actually landed (§3.10's fail-closed rule: when false, the
+call may still have billed the provider while the ledger records nothing, so a
+UI must not present the cost as recorded).
+
+**Placement-only scope.** The model may change `start_time` and `duration` —
+the free edits that window the clips that already exist — and nothing else. It
+cannot add, remove, rename, or re-key events, and it cannot touch
+`seed`/`source_duration_s`. Renames, deletes and intensity changes stay in the
+inspector where their generation consequences are explicit. The validation
+refuses a proposal that omits, invents, or duplicates an index; the proposal
+always carries exactly the request document's events in the same order.
+
+| HTTP | `code` | When |
+|---|---|---|
+| 200 | — | A proposal turn completed (see `status` for the outcome) |
+| 400 | `invalid_request` | Empty instruction, or the request document failed validation |
+| 404 | `project_not_found` | Unknown project |
+| 422 | `precondition_failed` | No timeline yet — analyze first |
+| 429 | `quota_exhausted` | The director model's daily/minute budget is spent (§3.10) |
+| 502 | `provider_error` | The model call itself failed (network, credentials) |
+| 503 | `storage_unavailable` | Storage cannot answer |
+
+The proposal is made against the document the client sent — which is what the
+director is looking at, draft or committed — and `timeline_version` is that
+document's version, carried for display. A proposal made before a mix stamps a
+new version stays valid against the document it was diffed against; approval
+re-forked from the proposal's own base is never refused for staleness the
+commit's existing merge affordance does not already handle.
+
+---
+
 ## 4. Concurrency

@@ -165,6 +165,11 @@ video_model = "gemini-2.5-flash"
 vision_model = "gemini-2.5-flash"
 localization_model = "fal-ai/marlin/find"
 default_vlm = "gemini-2.5-flash"
+# Director mode (unit 7.12, docs/api.md §3.16): the chat proposes timeline
+# edits; the model id must be declared under [models] so quota accounting and
+# the ledger resolve it. Flash Lite's 500/day budget is why it is the choice
+# over gemini-2.5-flash's 20/day (decision 9).
+director_model = "gemini-3.5-flash-lite"
 
 # Free-tier rate limits, as shown in Google AI Studio. `requests_per_day` is
 # the binding constraint for FoleyFlow, not RPM: 20/day is a handful of

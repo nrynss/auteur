@@ -744,7 +744,7 @@ is no SSE; this polls.
 
 **Landed (7.11):** `ui/src/lib/spend/` — regenerate cost probe + confirm_cost_usd echo, Mix/Export ConfirmDialogs, export override, 2s poll + run lock banner, stuck-run on lease expiry. Wired into ControlRoom chrome + Timeline inspector. Contained: no timeline edit.
 
-## 7.12 Director mode — L
+## 7.12 Director mode — L — **DONE**
 
 **Depends on:** 7.3, 7.10.
 
@@ -758,6 +758,70 @@ it costs anything.
 
 Model is `gemini-3.5-flash-lite` (decision 9). Every turn is a provider call:
 it goes through the ledger and counts against quota like everything else.
+
+**Landed (7.12):** `POST /projects/{id}/director` (docs/api.md §3.16) +
+`ui/src/lib/control/DirectorPanel.svelte` in a new Director tab + ghosted
+diff on the timeline.
+
+- **Chat proposes, never applies, structurally.** The endpoint writes nothing:
+  no version is allocated, no job slot is claimed, and a proposal costs
+  nothing to approve. The client sends the whole current document (draft or
+  latest — same shape as a commit, order is index) plus an instruction; the
+  server asks the model for a proposed placement list, validates it, clamps
+  it, and returns the per-index diff (`edits`: old → new placements) plus the
+  full proposed document. Approval is the client committing the proposal
+  through the existing `PUT /timeline`, which owns every freeze and run-lock
+  rule the proposal would otherwise have to duplicate.
+- **Every turn is one billed, quota-counted provider call** through
+  `execute_with_ledger` under `set_project_context`, so a chat that proposes
+  spend shows up in `/budget`, the Spend tab and `/quota` like any other call.
+  The cost is echoed back on the response and the panel stamps it on the
+  diff — and `ledger_writable: false` **fails closed**: the call may have
+  billed the provider while the row did not land, so the UI says "billed but
+  not recorded" instead of presenting a clean figure (§3.10).
+- **Schema-validated output, outcome as a domain status, not an HTTP error.**
+  `status` is `proposed` / `no_changes` / `invalid_output`. A model that
+  answers garbage is a billed failed turn (`invalid_output`, still costed and
+  still quota-counted), distinguishable from a dead provider (`502
+  provider_error`) and a spent budget (`429 quota_exhausted`, same gate as
+  analyze). No retry on garbage: the transcript says what happened and the
+  director rephrases — a repair loop would silently double-bill.
+- **Placement-only scope.** The model may change `start_time`/`duration` —
+  the free edits that window existing clips — and nothing else. It cannot
+  add, remove, rename, re-key or reorder events (any index-set deviation is
+  `invalid_output` — a hallucinated re-key would silently rebind every later
+  event), and it cannot touch `seed`/`source_duration_s`, which are copied
+  through untouched so the proposal can never move a cache address or invent
+  a clip nobody has paid for. Renames, deletes and intensity stay in the
+  inspector where their generation consequences are explicit.
+- **Clamps, honest.** Out-of-range placements clamp to [0, clip] with a
+  minimum span (mirroring the draft's own clamps so an approved proposal
+  applies exactly), rounded to the 1 ms working resolution — float subtraction
+  must not leak a trailing 0.00000000000000036 into an immutable proposal.
+- **The diff renders on the timeline itself** (design doc §9's open item):
+  during a proposal the blocks move to the proposed positions and hollow
+  ghosted outlines mark the old ones, with a banner saying the preview still
+  plays the current document — nothing is applied or audible until approval.
+  Editing is suspended while a proposal is on the table (one decision at a
+  time; the composer is disabled too).
+- **Apply = merge into the draft, not a commit.** A proposal applied onto a
+  live draft keeps the director's other edits; with no draft it re-forks from
+  the proposal's own base document (which never goes stale — the proposal
+  carries the document it was diffed against). The transcript records
+  applied/discarded/stale per turn, and the active proposal is cleared as
+  `stale` when the display document changes underneath it (commit, restore,
+  version switch, run refresh) — re-asking is free, ghosting over the wrong
+  content is not.
+- **Tests:** 18 backend (contract, clamps, freeze preservation, index-set
+  validation, quota 429, provider 502, attributed ledger row + no version
+  written, quota counted, ledger-writable fail-closed, pure parser/validator)
+  + 8 DirectorPanel render tests + 4 mount-level ControlRoom flow tests
+  (propose → ghost → apply → commit writes exactly one version with the moved
+  position; discard; stale-on-version-switch).
+
+**Not in this unit:** a retry/repair loop for garbage model output, deletes or
+additions as model operations (the inspector owns those), and a keyboard map
+for the chat (7.14).
 
 ## 7.13 Project creation and upload — M — **DONE**
 

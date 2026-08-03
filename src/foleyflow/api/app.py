@@ -32,6 +32,11 @@ from foleyflow.api.schemas import (
     BudgetThresholdOut,
     CreateProjectRequest,
     CreateProjectResponse,
+    DirectorEditOut,
+    DirectorEventOut,
+    DirectorRequest,
+    DirectorResponse,
+    DirectorTimelineOut,
     DossierResponse,
     EventListResponse,
     EventOut,
@@ -733,6 +738,117 @@ def create_app(store: Optional[ProjectStore] = None,
         versions = store.list_timeline_versions(project_id)
         return TimelineVersionsResponse(versions=versions,
                                         latest=versions[-1] if versions else None)
+
+    # -- director mode (unit 7.12, docs/api.md §3.16) -----------------------
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/director",
+              response_model=DirectorResponse, tags=["timeline"])
+    def director(project_id: str, body: DirectorRequest) -> DirectorResponse:
+        """One director turn: text in, a proposed document diff out.
+
+        **Chat proposes, never applies** — this endpoint writes nothing. The
+        client sends the whole current document (the same shape as a commit)
+        plus an instruction; the director model returns a proposed placement
+        list; the server schema-validates it, clamps it, diffs it against the
+        request document, and returns the proposal with `status`
+        proposed/no_changes/invalid_output. Approval is the client committing
+        the proposal through PUT /timeline, which owns every freeze and
+        run-lock rule.
+
+        Every turn is one provider call through the ledger, attributed to the
+        project and counted against the model's /quota like any other call. No
+        job slot is claimed: a proposal is read-only, so it does not engage
+        the run lock, and it may run while a mix is in flight.
+        """
+        from foleyflow.director import director_model, propose
+        from foleyflow.ledger import ledger_writable, set_project_context
+        from foleyflow.quota import get_quota
+
+        _check_project_id(project_id)
+        state = _load_state(store, project_id)   # 404 before doing any work
+        versions = store.list_timeline_versions(project_id)
+        if not versions:
+            raise err.PreconditionFailed(
+                "The project has no timeline to propose against",
+                detail={"project_id": project_id, "required": "POST /analyze"},
+            )
+
+        model = director_model()
+        quota = get_quota(model)
+        # Same gate as analyze: an undeclared budget is not "unlimited", and a
+        # spent budget is a first-class 429 (docs/api.md §3.10).
+        if quota.per_day.limit is None:
+            raise err.InvalidRequest(
+                f"Model {model!r} declares no request budget and cannot be "
+                "used for director mode", detail={"model": model})
+        if quota.status == "blocked":
+            raise err.QuotaExhausted(model, resets_at=quota.resets_at,
+                                     used=quota.per_day.used,
+                                     limit=quota.per_day.limit)
+
+        # The document the director is looking at — draft or committed. The
+        # proposal is diffed against exactly this, so "old" is honest. A
+        # nonexistent base_version is only display metadata and does not block
+        # a proposal (the document the client sent is the truth to diff
+        # against); 404-ing on it would make the draft flow impossible.
+        base_version = (body.timeline_version
+                        if body.timeline_version is not None
+                        else versions[-1])
+        timeline = _commit_request_to_timeline(
+            TimelineCommitRequest(duration=body.duration,
+                                  ambience=body.ambience,
+                                  events=body.events))
+
+        try:
+            # The ledger row lands attributed to the project: the provider
+            # seam never sees the project — the context does it (same pattern
+            # as the job runner's _execute).
+            with set_project_context(project_id):
+                proposal = propose(body.instruction, timeline,
+                                   clip_duration=state.duration_s
+                                   or state.project.duration_s
+                                   or body.duration)
+        except Exception as exc:
+            # Exception type only in the detail — a provider error message can
+            # embed a request URL, bucket name or key fragment, and this
+            # detail is served verbatim to the client (same rule as the
+            # job runner's _safe_error). The message stays in the log.
+            raise err.ProviderError(
+                f"The director model call failed: {type(exc).__name__}",
+                detail={"model": model}) from exc
+
+        # The proposed document as the wire shape (index = array position).
+        proposed_events = [
+            DirectorEventOut(
+                index=i,
+                name=ev.name,
+                kind=ev.kind,
+                intensity=ev.intensity,
+                start_time=ev.start_time,
+                duration=ev.duration,
+                seed=ev.seed,
+                source_duration_s=ev.source_duration_s,
+            )
+            for i, ev in enumerate(proposal["timeline"].events)
+        ]
+
+        return DirectorResponse(
+            project_id=project_id,
+            base_version=base_version,
+            model=model,
+            instruction=body.instruction,
+            status=proposal["status"],
+            message=proposal["message"],
+            cost_usd=proposal["cost_usd"],
+            cost_source=proposal["cost_source"],
+            ledger_writable=ledger_writable(),
+            timeline=DirectorTimelineOut(
+                duration=proposal["timeline"].duration,
+                ambience=proposal["timeline"].ambience,
+                events=proposed_events,
+            ),
+            edits=proposal["edits"],
+        )
 
     # -- scenes -----------------------------------------------------------
 

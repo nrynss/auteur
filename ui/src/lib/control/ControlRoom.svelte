@@ -7,6 +7,10 @@
 
   import BudgetChip from "./BudgetChip.svelte";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
+  import DirectorPanel, {
+    type DirectorBase,
+    type DirectorTurn,
+  } from "./DirectorPanel.svelte";
   import DossierPanel from "./DossierPanel.svelte";
   import SpendPanel from "./SpendPanel.svelte";
   import EvidencePanel from "./EvidencePanel.svelte";
@@ -27,7 +31,9 @@
     forkDraft,
     loadDraft,
     missingFreezeCount,
+    moveEvent,
     rebaseDraft,
+    resizeEnd,
     saveDraft,
     type Draft,
   } from "./draft";
@@ -45,8 +51,10 @@
     getScenes,
     getTimeline,
     getTimelineVersions,
+    proposeDirector,
     putTimeline,
     type BudgetResponse,
+    type DirectorResponse,
     type QuotaResponse,
     type DossierResponse,
     type EventOut,
@@ -77,7 +85,7 @@
 
   let { id }: Props = $props();
 
-  type Tab = "readiness" | "evidence" | "spend" | "history" | "dossier";
+  type Tab = "readiness" | "evidence" | "director" | "spend" | "history" | "dossier";
 
   let project = $state<ProjectDetail | null>(null);
   let scenes = $state<SceneOut[]>([]);
@@ -342,6 +350,7 @@
   async function refreshAfterRun() {
     try {
       await loadCore();
+      clearDirectorActive();
       // A run bills new rows; the next Spend-tab open must see them.
       ledger = null;
       ledgerRequested = false;
@@ -429,6 +438,7 @@
       draftStaleCount = 0;
       draftNote = null;
       timeline = saved;
+      clearDirectorActive();
       const v = await quiet(getTimelineVersions(id), onAncillaryFailure);
       if (v) versions = v;
       const p = await quiet(getProject(id), onAncillaryFailure);
@@ -471,6 +481,7 @@
     historyTimeline = fetched;
     viewing = v;
     commitError = null;
+    clearDirectorActive();
   }
 
   function viewDraft() {
@@ -498,6 +509,7 @@
     historyTimeline = null;
     draftStaleCount = 0;
     commitError = null;
+    clearDirectorActive();
     statusLine =
       `Undo to v${v}: the draft now starts from that version's document. ` +
       `Commit writes it as the next version beside the others.`;
@@ -516,6 +528,7 @@
     draftStaleCount = 0;
     commitError = null;
     draftNote = null;
+    clearDirectorActive();
     statusLine = "Draft discarded — the committed versions are untouched.";
   }
 
@@ -528,6 +541,7 @@
     saveDraft(id, draft);
     draftStaleCount = 0;
     commitError = null;
+    clearDirectorActive();
     statusLine =
       `Merged v${timeline.version}'s recorded durations, addresses and seeds ` +
       `into the draft — your placement edits are untouched.`;
@@ -561,6 +575,154 @@
       "Draft restored from a previous session — not committed.";
     checkDraftStale();
   }
+
+  // -- 7.12: director mode — chat proposes, never applies -------------------
+  // The transcript lives here (not in the panel) so the active proposal is
+  // single-sourced: it drives the timeline ghosts, and Apply merges it into
+  // the draft. The panel is presentational.
+
+  let directorTurns = $state<DirectorTurn[]>([]);
+  let directorBusy = $state(false);
+  /** The proposal under review — its turn is the source of the diff. */
+  const directorActive = $derived<DirectorTurn | null>(
+    directorTurns.findLast(
+      (t) => t.proposal !== null && t.outcome === "reviewing",
+    ) ?? null,
+  );
+  /** What the timeline shows: draft (when one exists) else latest committed.
+   * The proposal is diffed against exactly this document, so "old" is what
+   * the director was looking at. Historical views propose nothing (the
+   * composer explains). */
+  const directorBase = $derived<DirectorBase | null>(
+    viewing !== "draft"
+      ? null
+      : draft
+        ? {
+            version: draft.baseVersion,
+            duration: draft.duration,
+            ambience: draft.ambience,
+            events: draft.events,
+          }
+        : timeline,
+  );
+
+  function markDirectorTurn(
+    target: DirectorTurn,
+    outcome: DirectorTurn["outcome"],
+  ) {
+    directorTurns = directorTurns.map((t) =>
+      t === target ? { ...t, outcome } : t,
+    );
+  }
+
+  async function directorSend(instruction: string) {
+    const base = directorBase;
+    if (!base || directorBusy || directorActive) return;
+    directorBusy = true;
+    directorTurns = [
+      ...directorTurns,
+      { role: "user", text: instruction, proposal: null, base: null, outcome: "noted" },
+    ];
+    try {
+      const p = await proposeDirector(id, {
+        instruction,
+        timeline_version: base.version,
+        duration: base.duration,
+        ambience: base.ambience,
+        events: base.events.map((e) => ({
+          name: e.name,
+          kind: e.kind,
+          intensity: e.intensity,
+          start_time: e.start_time,
+          duration: e.duration,
+          seed: e.seed ?? null,
+          source_duration_s: e.source_duration_s ?? null,
+        })),
+      });
+      directorTurns = [
+        ...directorTurns,
+        {
+          role: "assistant",
+          text: p.message,
+          proposal: p,
+          base,
+          outcome: p.status === "proposed" ? "reviewing" : "noted",
+        },
+      ];
+    } catch (e) {
+      const detail =
+        e instanceof ApiError ? (e.detail as Record<string, unknown>) : {};
+      const message =
+        e instanceof ApiError
+          ? e.code === "quota_exhausted"
+            ? `The daily request budget for ${String(detail.model_id ?? "the director model")} is spent — the turn was not billed.`
+            : e.message
+          : e instanceof Error
+            ? e.message
+            : String(e);
+      directorTurns = [
+        ...directorTurns,
+        { role: "assistant", text: message, proposal: null, base: null, outcome: "failed" },
+      ];
+    } finally {
+      directorBusy = false;
+    }
+  }
+
+  /** Apply = merge the proposal's placements into the draft. Still an edit:
+   * commit is a separate explicit step that writes one new immutable version.
+   * When a draft already exists on the same base, the director's other edits
+   * stay; otherwise the proposal re-forks from the document it was diffed
+   * against (which never goes stale — the proposal carries its own base). */
+  function directorApply() {
+    const turn = directorActive;
+    if (!turn?.proposal || !turn.base || locked) return;
+    const p = turn.proposal;
+    const base =
+      draft && draft.baseVersion === p.base_version ? draft : null;
+    let next: Draft | null = base;
+    if (!next) {
+      next = forkDraft(p.base_version, turn.base);
+    }
+    for (const e of p.edits) {
+      next = moveEvent(next, e.index, e.new.start_time, { snap: false });
+      next = resizeEnd(
+        next,
+        e.index,
+        e.new.start_time + e.new.duration,
+        { snap: false },
+      );
+    }
+    draft = next;
+    saveDraft(id, next);
+    commitError = null;
+    checkDraftStale();
+    markDirectorTurn(turn, "applied");
+    viewing = "draft";
+    historyTimeline = null;
+    statusLine =
+      `Proposal applied to the draft — ${p.edits.length} ` +
+      `${p.edits.length === 1 ? "event" : "events"} moved. Commit writes one ` +
+      `new version; nothing was billed for the move.`;
+  }
+
+  function directorDiscard() {
+    const turn = directorActive;
+    if (!turn) return;
+    markDirectorTurn(turn, "discarded");
+    statusLine = "Proposal discarded — the timeline is untouched.";
+  }
+
+  /** The display document changed underneath a proposal (a commit, a restore,
+   * a run stamping a new version). The proposal was diffed against a document
+   * that is no longer on screen, so it is cleared — re-asking is free. */
+  function clearDirectorActive() {
+    const turn = directorTurns.find(
+      (t) => t.proposal !== null && t.outcome === "reviewing",
+    );
+    if (turn) markDirectorTurn(turn, "stale");
+  }
+
 
   onMount(() => {
     let cancelled = false;
@@ -618,6 +780,7 @@
   const tabs: { key: Tab; label: string }[] = [
     { key: "readiness", label: "Readiness" },
     { key: "evidence", label: "Evidence" },
+    { key: "director", label: "Director" },
     { key: "spend", label: "Spend" },
     { key: "history", label: "History" },
     { key: "dossier", label: "Dossier" },
@@ -737,6 +900,19 @@
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-evidence" id="tab-evidence" hidden={tab !== "evidence"}>
           <EvidencePanel {qa} {scenes} />
         </div>
+        <div class="panel" role="tabpanel" aria-labelledby="tabbtn-director" id="tab-director" hidden={tab !== "director"}>
+          <DirectorPanel
+            projectId={id}
+            turns={directorTurns}
+            busy={directorBusy}
+            locked={locked}
+            active={directorActive?.proposal ?? null}
+            baseTimeline={directorBase}
+            onSend={(instruction) => void directorSend(instruction)}
+            onApply={directorApply}
+            onDiscard={directorDiscard}
+          />
+        </div>
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-spend" id="tab-spend" hidden={tab !== "spend"}>
           <SpendPanel
             {budget}
@@ -764,7 +940,8 @@
       failed={ancillaryFailed}
       locked={locked}
       draft={draft}
-      editable={!locked && viewing === "draft"}
+      editable={!locked && viewing === "draft" && !directorActive}
+      proposal={directorActive?.proposal ?? null}
       versions={versions?.versions ?? null}
       viewing={viewing}
       selectedIndex={selectedEventIndex}

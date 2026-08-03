@@ -75,6 +75,28 @@ export function putTimeline(
   });
 }
 
+// -- director mode (unit 7.12, docs/api.md §3.16) --------------------------
+// Chat proposes, never applies: the client sends the WHOLE current document
+// plus an instruction; the server returns a schema-validated proposal (status
+// proposed / no_changes / invalid_output), never writing a version. Approval
+// is the client committing the proposal through the normal putTimeline path.
+
+export type DirectorRequest = Schema["DirectorRequest"];
+export type DirectorResponse = Schema["DirectorResponse"];
+export type DirectorEditOut = Schema["DirectorEditOut"];
+
+/** One director turn — a provider call, billed and quota-counted. */
+export function proposeDirector(
+  id: string,
+  body: DirectorRequest,
+): Promise<DirectorResponse> {
+  return api<DirectorResponse>(`${P}/${id}/director`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 export function getEvents(id: string): Promise<EventListResponse> {
   return api<EventListResponse>(`${P}/${id}/events`);
 }
