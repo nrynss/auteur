@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
@@ -257,8 +258,30 @@ def create_app(store: Optional[ProjectStore] = None,
     def get_project(project_id: str) -> ProjectDetail:
         _check_project_id(project_id)
         state = _load_state(store, project_id)
-        scenes = store.load_scenes(project_id)
-        readiness = _readiness(state, scenes, store.load_qa_report(project_id))
+        # Independent I/O after the event-log fold: scenes, QA report, and the
+        # HEAD-then-sign checks for source/mix were serial against B2 and added
+        # several RTTs to first paint (unit 7.18). Bound pool; export/manifest
+        # use plain _sign (no HEAD) and stay cheap/sync.
+        mix_video_key = (state.latest_mix or {}).get("video_key")
+        try:
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                scenes_f = pool.submit(store.load_scenes, project_id)
+                qa_f = pool.submit(store.load_qa_report, project_id)
+                source_url_f = pool.submit(
+                    _sign_if_exists, store, state.project.input_key)
+                mix_url_f = pool.submit(
+                    _sign_if_exists, store, mix_video_key)
+                scenes = scenes_f.result()
+                qa_report = qa_f.result()
+                source_url = source_url_f.result()
+                mix_url = mix_url_f.result()
+        except ObjectNotFound as e:
+            # Same classification as _load_state: absent vs unreachable.
+            raise err.ProjectNotFound(project_id) from e
+        except StorageError as e:
+            raise err.StorageUnavailable(
+                "Project storage is unreachable") from e
+        readiness = _readiness(state, scenes, qa_report)
         return ProjectDetail(
             **_summary(state.project, state.status,
                        budget_usd=state.budget_usd).model_dump(),
@@ -273,9 +296,8 @@ def create_app(store: Optional[ProjectStore] = None,
             # HEAD-then-sign: B2's signed_url is pure crypto and does not check
             # existence, so a reserved input_key would otherwise always get a
             # URL that 404s on fetch. LocalBackend happens to check; both must.
-            source_url=_sign_if_exists(store, state.project.input_key),
-            mix_url=_sign_if_exists(
-                store, (state.latest_mix or {}).get("video_key")),
+            source_url=source_url,
+            mix_url=mix_url,
             # Signed, not a bare key: the point of the readiness screen is that
             # the finished video is one click away, and B2 objects are private.
             export_url=_sign(store, (state.export or {}).get("export_key")),
@@ -623,7 +645,9 @@ def create_app(store: Optional[ProjectStore] = None,
             artifact_count=len(artifacts),
             total_bytes=sum(a.size_bytes or 0 for a in artifacts),
             artifacts=artifacts,
-            budget=_budget_response(store, project_id),
+            # Reuse the folded state so the budget block does not re-list every
+            # event after the dossier already paid for a state load.
+            budget=_budget_response(store, project_id, state=state),
         )
 
     # -- timeline ---------------------------------------------------------
@@ -717,10 +741,26 @@ def create_app(store: Optional[ProjectStore] = None,
              response_model=QaReportResponse, tags=["qa"])
     def get_qa(project_id: str) -> QaReportResponse:
         """Latest QA report. Continuity is written at analysis; audio lands
-        once a mix is measured."""
+        once a mix is measured.
+
+        Project existence is a single ``project.json`` GET — not a full event
+        log fold. Folding the log only to 404 was multi-second against B2
+        (unit 7.18); the report itself is one more object.
+        """
         _check_project_id(project_id)
-        _load_state(store, project_id)
-        raw = store.load_qa_report(project_id)
+        try:
+            store.get_project(project_id)
+        except ObjectNotFound as e:
+            raise err.ProjectNotFound(project_id) from e
+        except StorageError as e:
+            raise err.StorageUnavailable(
+                "Project storage is unreachable") from e
+        try:
+            raw = store.load_qa_report(project_id)
+        except StorageError as e:
+            # load_qa_report maps ObjectNotFound → None; other faults surface.
+            raise err.StorageUnavailable(
+                "Project storage is unreachable") from e
         if raw is None:
             raise err.QaNotFound(project_id)
         return QaReportResponse(**raw)
@@ -983,9 +1023,11 @@ def create_app(store: Optional[ProjectStore] = None,
         Counted from the cost ledger — never a provider balance. Estimates,
         like `/quota`; `ledger_writable: false` means fiction, alerts are
         unreliable, and the UI must stop presenting the numbers.
+
+        Existence, spend, and ledger_writable are handled once inside
+        ``_budget_response`` (no double event-log fold).
         """
         _check_project_id(project_id)
-        _load_state(store, project_id)   # 404 before doing any work
         return _budget_response(store, project_id)
 
     @app.put(f"{API_PREFIX}/projects/{{project_id}}/budget",
@@ -1303,61 +1345,81 @@ def _dossier_artifacts(store: ProjectStore, project_id: str, state) -> List[Arti
     same 503 every other read uses. Absent objects are skipped, not listed as
     holes, and the same content-addressed stem referenced by several runs is
     listed once — the dossier counts physical objects, not references.
+
+    Size still comes from one HEAD per candidate key. HEADs (and signs) run
+    concurrently with a bound pool — serial HEAD-per-object was ~56 s against
+    B2 on a real project (unit 7.18). Full size-from-LIST metadata is unit
+    7.17; this only parallelizes the existing contract without inventing it.
     """
-    artifacts: List[ArtifactOut] = []
+    # (kind, key, optional recorded sha256) in listing order.
+    candidates: List[tuple] = []
     seen: set = set()
 
-    def _add(kind: str, key: str, *, sha256: Optional[str] = None) -> None:
-        if key in seen:
+    def _queue(kind: str, key: str, *, sha256: Optional[str] = None) -> None:
+        if not key or key in seen:
             return
         seen.add(key)
-        head = _head(store, key)
-        if head is None:
-            return
-        artifacts.append(ArtifactOut(
-            kind=kind, key=key, url=_sign_strict(store, key),
-            size_bytes=head.size_bytes, sha256=sha256 or head.sha256))
+        candidates.append((kind, key, sha256))
 
     # Source first, then the derived record sets, then per-run artifacts —
     # creation order throughout, so the listing is deterministic.
-    _add("source", state.project.input_key,
-         sha256=state.source_sha256 or state.project.source_sha256 or None)
+    _queue("source", state.project.input_key,
+           sha256=state.source_sha256 or state.project.source_sha256 or None)
 
     for version in store.list_timeline_versions(project_id):
-        _add("timeline", store.timeline_key(project_id, version))
+        _queue("timeline", store.timeline_key(project_id, version))
 
     scenes = store.load_scenes(project_id)
     if scenes:
-        _add("scene_index", store.scenes_key(project_id))
+        _queue("scene_index", store.scenes_key(project_id))
         for scene in scenes:
             thumb = scene.get("thumbnail_key")
             if thumb:
-                _add("scene_thumbnail", thumb)
+                _queue("scene_thumbnail", thumb)
 
     if store.load_qa_report(project_id) is not None:
-        _add("qa_report", store.qa_report_key(project_id))
+        _queue("qa_report", store.qa_report_key(project_id))
 
     for event in store.list_events(project_id):
-        _add("event", f"{store.events_prefix(project_id)}{event.id}.json")
+        _queue("event", f"{store.events_prefix(project_id)}{event.id}.json")
 
     for run in store.list_runs(project_id):
-        _add("run_record", store.run_key(project_id, run.id))
+        _queue("run_record", store.run_key(project_id, run.id))
         stems = store.load_stem_inventory(project_id, run.id)
         if stems:
-            _add("stems", store.run_artifact_key(project_id, run.id,
-                                                  "stems.json"))
+            _queue("stems", store.run_artifact_key(project_id, run.id,
+                                                    "stems.json"))
             for stem in stems:
                 b2_key = stem.get("b2_key")
                 if b2_key:
-                    _add("stem", b2_key, sha256=stem.get("sha256"))
-        _add("mix", store.mix_key(project_id, run.id))
-        _add("final_export", store.mix_video_key(project_id, run.id))
+                    _queue("stem", b2_key, sha256=stem.get("sha256"))
+        _queue("mix", store.mix_key(project_id, run.id))
+        _queue("final_export", store.mix_video_key(project_id, run.id))
         if store.load_manifest(project_id, run.id) is not None:
-            _add("manifest", store.manifest_key(project_id, run.id))
+            _queue("manifest", store.manifest_key(project_id, run.id))
 
     if store.get_latest_export(project_id) is not None:
-        _add("export_pointer", store.latest_export_key(project_id))
+        _queue("export_pointer", store.latest_export_key(project_id))
 
+    def _resolve(item: tuple) -> Optional[ArtifactOut]:
+        kind, key, sha256 = item
+        head = _head(store, key)
+        if head is None:
+            return None
+        return ArtifactOut(
+            kind=kind, key=key, url=_sign_strict(store, key),
+            size_bytes=head.size_bytes, sha256=sha256 or head.sha256)
+
+    if not candidates:
+        return []
+    # Bound workers: dozens of objects is common; hundreds would open too many
+    # sockets if unbounded.
+    workers = max(1, min(24, len(candidates)))
+    artifacts: List[ArtifactOut] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for result in pool.map(_resolve, candidates):
+            if result is not None:
+                artifacts.append(result)
     return artifacts
 
 
@@ -1665,15 +1727,30 @@ def _estimate(model: str) -> float:
     return estimate_cost(model, {})
 
 
-def _budget_response(store: ProjectStore, project_id: str) -> BudgetResponse:
+def _budget_response(store: ProjectStore, project_id: str, *,
+                     state=None) -> BudgetResponse:
     """The §3.11 budget payload for one project, shared by GET/PUT /budget and
-    the dossier's compact block."""
+    the dossier's compact block.
+
+    ``state`` may be an already-folded ProjectState so callers that paid for
+    the event log (dossier) do not fold it again. State fold and ledger spend
+    are independent and run in parallel when both are needed.
+    """
     from foleyflow.ledger import ledger_writable, project_spend
     from foleyflow.providers.config import get_budget_thresholds
 
     try:
-        state = store.get_state(project_id)
-        spend = project_spend(project_id)
+        if state is None:
+            # Project fold (budget_usd) and full ledger spend do not depend on
+            # each other — serialising them stacked two multi-second B2 scans
+            # on GET /budget (unit 7.18).
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                state_f = pool.submit(store.get_state, project_id)
+                spend_f = pool.submit(project_spend, project_id)
+                state = state_f.result()
+                spend = spend_f.result()
+        else:
+            spend = project_spend(project_id)
         budget = state.budget_usd
         # Remaining may be negative when spend has passed the advisory figure —
         # a soft budget reports overage rather than clamping at zero.
@@ -1688,6 +1765,9 @@ def _budget_response(store: ProjectStore, project_id: str) -> BudgetResponse:
                     threshold=t,
                     crossed=spend["total"] >= budget * t,
                 ))
+    except ObjectNotFound as e:
+        # Distinct from a ledger/backend outage: missing project is 404.
+        raise err.ProjectNotFound(project_id) from e
     except StorageError as e:
         # Same classification as every other read that cannot proceed: a
         # ledger outage must not read as a $0 balance or a 500.

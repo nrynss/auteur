@@ -385,3 +385,16 @@ def test_failed_analysis_is_not_masked_by_a_qa_flag(store, project):
 
 def test_load_qa_before_any_report_is_none(store, project):
     assert store.load_qa_report(project.id) is None
+
+
+def test_list_events_concurrent_fetch_is_chronological_and_complete(store, project):
+    """Concurrent multi-get must not reorder or drop events (unit 7.18)."""
+    for i in range(15):
+        store.append_event(project.id, f"postproduction.test.bulk.{i}",
+                           payload={"i": i})
+    events = store.list_events(project.id)
+    bulk = [e for e in events if e.type.startswith("postproduction.test.bulk.")]
+    assert len(bulk) == 15
+    assert [e.payload["i"] for e in bulk] == list(range(15))
+    # ULID ids are creation-ordered; concurrent fetch must preserve that.
+    assert [e.id for e in events] == sorted(e.id for e in events)

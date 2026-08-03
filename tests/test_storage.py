@@ -109,3 +109,56 @@ def test_b2_without_config_fails_loud_rather_than_degrading(monkeypatch):
 def test_unknown_backend_kind_raises(monkeypatch):
     with pytest.raises(StorageError):
         get_backend("dropbox")
+
+
+# -- concurrent multi-get (unit 7.18) ---------------------------------------
+
+def test_get_bytes_many_matches_serial_get(tmp_path):
+    """Concurrent multi-get returns the same bytes as serial get_bytes."""
+    from foleyflow.storage.base import get_bytes_many
+
+    backend = LocalBackend(str(tmp_path / "store"))
+    payloads = {f"obj/{i}.json": f'{{"i":{i}}}'.encode() for i in range(20)}
+    for key, data in payloads.items():
+        backend.put_bytes(key, data, content_type="application/json")
+
+    keys = list(payloads.keys())
+    serial = {k: backend.get_bytes(k) for k in keys}
+    concurrent = get_bytes_many(backend, keys, max_workers=8)
+    assert concurrent == serial
+    # Insertion order follows the input key sequence.
+    assert list(concurrent.keys()) == keys
+
+
+def test_get_bytes_many_skip_missing_omits_absent_keys(tmp_path):
+    from foleyflow.storage.base import ObjectNotFound, get_bytes_many
+
+    backend = LocalBackend(str(tmp_path / "store"))
+    backend.put_bytes("a.json", b"A")
+    backend.put_bytes("c.json", b"C")
+
+    out = get_bytes_many(backend, ["a.json", "b.json", "c.json"],
+                         skip_missing=True)
+    assert out == {"a.json": b"A", "c.json": b"C"}
+
+    with pytest.raises(ObjectNotFound):
+        get_bytes_many(backend, ["a.json", "b.json"], skip_missing=False)
+
+
+def test_get_bytes_many_propagates_storage_error(tmp_path):
+    """A non-ObjectNotFound fault must fail the whole multi-get — never drop
+    rows silently (event log / ledger correctness)."""
+    from foleyflow.storage.base import get_bytes_many
+
+    class Flaky(LocalBackend):
+        def get_bytes(self, key):
+            if key == "bad.json":
+                raise StorageError("simulated outage")
+            return super().get_bytes(key)
+
+    backend = Flaky(str(tmp_path / "store"))
+    backend.put_bytes("ok.json", b"ok")
+    backend.put_bytes("bad.json", b"x")
+
+    with pytest.raises(StorageError, match="simulated outage"):
+        get_bytes_many(backend, ["ok.json", "bad.json"], max_workers=4)

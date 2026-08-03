@@ -53,6 +53,7 @@ from foleyflow.storage.base import (
     ObjectNotFound,
     PreconditionFailed,
     StorageError,
+    get_bytes_many,
 )
 
 # Lifecycle event types — SPEC.md §8.4's domain-neutral names. Deliberately not
@@ -461,7 +462,15 @@ class ProjectStore:
         sorted key listing is enough."""
         keys = [k for k in self.backend.list_keys("projects/")
                 if k.endswith("/project.json")]
-        projects = [Project.from_dict(self._get_json(k)) for k in keys]
+        if not keys:
+            return []
+        # Concurrent GETs: listing every project.json serially is one B2 RTT
+        # per project (same pattern as list_events).
+        blobs = get_bytes_many(self.backend, keys)
+        projects = [
+            Project.from_dict(json.loads(blobs[k].decode("utf-8")))
+            for k in keys if k in blobs
+        ]
         return sorted(projects, key=lambda p: p.id, reverse=True)
 
     # -- events -----------------------------------------------------------
@@ -486,9 +495,22 @@ class ProjectStore:
 
     def list_events(self, project_id: str) -> List[Event]:
         """Chronological. ULID event ids sort in creation order, so the sorted
-        key listing is already the ordered log."""
-        keys = self.backend.list_keys(self.events_prefix(project_id))
-        return [Event.from_dict(self._get_json(k)) for k in sorted(keys)]
+        key listing is already the ordered log.
+
+        Events are fetched concurrently: against B2 each GET is tens–hundreds
+        of ms, and a busy project has dozens of events — serial GETs were the
+        dominant cost of GET /projects/{id} (unit 7.18).
+        """
+        keys = sorted(self.backend.list_keys(self.events_prefix(project_id)))
+        if not keys:
+            return []
+        # skip_missing=False: a listed event object must exist; a miss or a
+        # storage fault fails the whole log rather than silently dropping rows.
+        blobs = get_bytes_many(self.backend, keys, skip_missing=False)
+        return [
+            Event.from_dict(json.loads(blobs[k].decode("utf-8")))
+            for k in keys
+        ]
 
     # -- runs -------------------------------------------------------------
 
@@ -576,10 +598,18 @@ class ProjectStore:
         return Run.from_dict(self._get_json(self.run_key(project_id, run_id)))
 
     def list_runs(self, project_id: str) -> List[Run]:
-        """Oldest first."""
-        keys = [k for k in self.backend.list_keys(f"{self._root(project_id)}/runs/")
-                if k.endswith("/run.json")]
-        return [Run.from_dict(self._get_json(k)) for k in sorted(keys)]
+        """Oldest first. Concurrent GETs — same B2 RTT tax as list_events."""
+        keys = sorted(
+            k for k in self.backend.list_keys(f"{self._root(project_id)}/runs/")
+            if k.endswith("/run.json")
+        )
+        if not keys:
+            return []
+        blobs = get_bytes_many(self.backend, keys, skip_missing=False)
+        return [
+            Run.from_dict(json.loads(blobs[k].decode("utf-8")))
+            for k in keys
+        ]
 
     # -- timelines --------------------------------------------------------
 

@@ -60,6 +60,7 @@ def _isolate_ambient_deploy_config(tmp_path, monkeypatch):
     monkeypatch.setattr(storage_pkg, "get_backend", offline_get_backend)
 
     ledger._invalidate_row_cache()
+    ledger._invalidate_writable_cache()
     ledger.invalidate_project_spend_cache()
 
     yield
@@ -67,4 +68,5 @@ def _isolate_ambient_deploy_config(tmp_path, monkeypatch):
     # Drop any rows this test left in process-local caches so the next test
     # starts from a clean slate even if it reuses the same project ids.
     ledger._invalidate_row_cache()
+    ledger._invalidate_writable_cache()
     ledger.invalidate_project_spend_cache()

@@ -9,6 +9,8 @@ LocalBackend so they need no credentials and cannot touch real B2.
 from __future__ import annotations
 
 import json
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -28,6 +30,7 @@ def storage_ledger(tmp_path, monkeypatch):
     # patching the package attribute is enough.
     monkeypatch.setattr("foleyflow.storage.get_backend", lambda *a, **k: backend)
     ledger._invalidate_row_cache()
+    ledger._invalidate_writable_cache()
     return backend
 
 
@@ -326,3 +329,238 @@ def test_record_attribution_refuses_file_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(ledger, "LEDGER_PATH", str(tmp_path / "ledger.jsonl"))
     with pytest.raises(ValueError, match="storage-mode only"):
         ledger.record_attribution("proj_A")
+
+
+# -- unit 7.18: concurrent load, writable cache, single-flight --------------
+
+def test_concurrent_row_load_preserves_spend_and_iter(storage_ledger):
+    """project_spend / iter_transactions stay correct with multi-get rows."""
+    with ledger.set_project_context("proj_A"):
+        for i in range(12):
+            ledger.log_transaction("gemini-2.5-flash", f"h{i}", 0.01,
+                                   success=True)
+    with ledger.set_project_context("proj_B"):
+        ledger.log_transaction("gemini-2.5-flash", "b1", 0.40, success=True)
+
+    ledger._invalidate_row_cache()
+    rows = ledger.iter_transactions()
+    assert len(rows) == 13
+    a = ledger.project_spend("proj_A")
+    b = ledger.project_spend("proj_B")
+    assert a["total"] == pytest.approx(0.12)
+    assert b["total"] == pytest.approx(0.40)
+
+
+def test_ledger_writable_caches_probe_within_ttl(storage_ledger, monkeypatch):
+    """Second ledger_writable() within TTL must not re-PUT the probe."""
+    puts = {"n": 0}
+    real_put = storage_ledger.put_bytes
+
+    def counting_put(key, data, content_type=None):
+        puts["n"] += 1
+        return real_put(key, data, content_type=content_type)
+
+    monkeypatch.setattr(storage_ledger, "put_bytes", counting_put)
+    ledger._invalidate_writable_cache()
+    monkeypatch.setattr(ledger, "_write_ok", True)
+
+    assert ledger.ledger_writable() is True
+    assert puts["n"] == 1
+    assert ledger.ledger_writable() is True
+    assert puts["n"] == 1, "probe cache should absorb the second call"
+
+
+def test_ledger_writable_failed_write_reports_false_without_reprobe(
+        storage_ledger, monkeypatch):
+    """Failed log_transaction pins unwritable immediately (fail-closed)."""
+    puts = {"n": 0}
+    real_put = storage_ledger.put_bytes
+    real_put_if = storage_ledger.put_if_absent
+
+    def counting_put(key, data, content_type=None):
+        puts["n"] += 1
+        return real_put(key, data, content_type=content_type)
+
+    class Broken(LocalBackend):
+        def put_if_absent(self, key, data, content_type=None):
+            raise StorageError("bucket rejected write")
+
+        def put_bytes(self, key, data, content_type=None):
+            return counting_put(key, data, content_type=content_type)
+
+    broken = Broken(storage_ledger.root)
+    monkeypatch.setattr("foleyflow.storage.get_backend", lambda *a, **k: broken)
+    monkeypatch.setattr(ledger, "_write_ok", True)
+    ledger._invalidate_writable_cache()
+
+    assert ledger.ledger_writable() is True
+    probe_puts = puts["n"]
+    ledger.log_transaction("gemini-2.5-flash", "x", 0.01, success=True)
+    assert ledger._write_ok is False
+    assert ledger.ledger_writable() is False
+    assert puts["n"] == probe_puts, "pinned False must not re-PUT the probe"
+
+
+def test_read_storage_rows_single_flight(storage_ledger, monkeypatch):
+    """Two concurrent _read_storage_rows share one list_keys scan."""
+    for i in range(5):
+        ledger.log_transaction("m", f"h{i}", 0.01, success=True)
+    ledger._invalidate_row_cache()
+
+    lists = {"n": 0}
+    real_list = storage_ledger.list_keys
+    gate = threading.Event()
+    entered = threading.Event()
+
+    def slow_list(prefix):
+        lists["n"] += 1
+        entered.set()
+        # Hold the first scanner so a concurrent caller arrives mid-flight.
+        gate.wait(timeout=2.0)
+        return real_list(prefix)
+
+    monkeypatch.setattr(storage_ledger, "list_keys", slow_list)
+
+    results = []
+    errors = []
+
+    def reader():
+        try:
+            results.append(ledger._read_storage_rows(force=True))
+        except Exception as exc:  # pragma: no cover - surface in assert
+            errors.append(exc)
+
+    t1 = threading.Thread(target=reader)
+    t2 = threading.Thread(target=reader)
+    t1.start()
+    assert entered.wait(timeout=2.0)
+    t2.start()
+    # Give t2 a moment to hit the single-flight wait before releasing list.
+    time.sleep(0.05)
+    gate.set()
+    t1.join(timeout=5.0)
+    t2.join(timeout=5.0)
+
+    assert errors == []
+    assert len(results) == 2
+    assert len(results[0]) == 5
+    assert results[0] == results[1]
+    assert lists["n"] == 1, "single-flight should list once for concurrent callers"
+
+
+def test_row_cache_discards_pre_write_snapshot_after_mid_flight_write(
+        storage_ledger, monkeypatch):
+    """A write during an in-flight scan must not reinstall a stale cache.
+
+    Without an epoch check, the leader would finish list+get of the old
+    set, then overwrite the post-write invalidation with a fresh 10s TTL —
+    undercounting spend/quota until expiry (adversarial review P0).
+    """
+    with ledger.set_project_context("proj_A"):
+        ledger.log_transaction("gemini-2.5-flash", "seed", 0.10, success=True)
+    ledger._invalidate_row_cache()
+
+    real_list = storage_ledger.list_keys
+    gate = threading.Event()
+    entered = threading.Event()
+    lists = {"n": 0}
+
+    def slow_list(prefix):
+        lists["n"] += 1
+        if lists["n"] == 1:
+            entered.set()
+            gate.wait(timeout=3.0)
+        return real_list(prefix)
+
+    monkeypatch.setattr(storage_ledger, "list_keys", slow_list)
+
+    result_holder: list = []
+    error_holder: list = []
+
+    def reader():
+        try:
+            result_holder.append(ledger._read_storage_rows(force=True))
+        except Exception as exc:  # pragma: no cover
+            error_holder.append(exc)
+
+    t = threading.Thread(target=reader)
+    t.start()
+    assert entered.wait(timeout=2.0)
+
+    # Write lands while the first scan is still listing — invalidates + epoch++.
+    with ledger.set_project_context("proj_A"):
+        ledger.log_transaction("gemini-2.5-flash", "mid", 0.25, success=True)
+    gate.set()
+    t.join(timeout=5.0)
+
+    assert error_holder == []
+    # The in-flight snapshot may or may not have seen "mid" (list timing),
+    # but the *cache* must not pin a pre-write view. A follow-up read must
+    # include the new row in spend.
+    spend = ledger.project_spend("proj_A")
+    assert spend["total"] == pytest.approx(0.35), (
+        "post-write spend must include the mid-flight row; "
+        f"got {spend!r} after {lists['n']} list(s)"
+    )
+    rows = ledger.iter_transactions()
+    hashes = {r["params_hash"] for r in rows}
+    assert "mid" in hashes
+    assert "seed" in hashes
+
+
+def test_single_flight_waiter_does_not_serve_stale_on_leader_failure(
+        storage_ledger, monkeypatch):
+    """If the leader's fetch fails, waiters must not return expired cache.
+
+    Install a snapshot, expire its TTL, then fail the refresh: waiters that
+    blindly returned non-None cache would report old money while the leader
+    raises (adversarial review P1).
+    """
+    with ledger.set_project_context("proj_A"):
+        ledger.log_transaction("gemini-2.5-flash", "old", 0.10, success=True)
+    # Populate cache with the seed row.
+    assert len(ledger._read_storage_rows(force=True)) == 1
+    # Expire TTL but leave the list in place (the bug condition).
+    ledger._row_cache_at = time.monotonic() - ledger._ROW_CACHE_TTL_S - 1.0
+    stale = list(ledger._row_cache)
+    assert stale is not None
+
+    real_list = storage_ledger.list_keys
+    gate = threading.Event()
+    entered = threading.Event()
+    calls = {"n": 0}
+
+    def failing_list(prefix):
+        calls["n"] += 1
+        entered.set()
+        gate.wait(timeout=2.0)
+        raise StorageError("bucket unreachable")
+
+    monkeypatch.setattr(storage_ledger, "list_keys", failing_list)
+
+    outcomes: list = []
+
+    def reader():
+        try:
+            outcomes.append(("ok", ledger._read_storage_rows(force=True)))
+        except Exception as exc:
+            outcomes.append(("err", exc))
+
+    t1 = threading.Thread(target=reader)
+    t2 = threading.Thread(target=reader)
+    t1.start()
+    assert entered.wait(timeout=2.0)
+    t2.start()
+    time.sleep(0.05)
+    gate.set()
+    t1.join(timeout=5.0)
+    t2.join(timeout=5.0)
+
+    assert len(outcomes) == 2
+    # Both must fail — neither may succeed with the expired snapshot.
+    assert all(kind == "err" for kind, _ in outcomes), outcomes
+    assert all(isinstance(exc, StorageError) for _, exc in outcomes)
+    # Cache must not look fresh after a failed flight.
+    now = time.monotonic()
+    if ledger._row_cache is not None:
+        assert (now - ledger._row_cache_at) >= ledger._ROW_CACHE_TTL_S

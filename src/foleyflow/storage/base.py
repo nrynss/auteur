@@ -19,8 +19,9 @@ into permanent run records. Messages here name the *key* — which the caller
 already knows — never the resolved local path, bucket, or provider URL.
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import List, Optional, Protocol, runtime_checkable
+from typing import Dict, List, Optional, Protocol, Sequence, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -153,3 +154,81 @@ class Backend(Protocol):
         error.
         """
         ...
+
+
+# Bound concurrent GETs against object storage. Dozens of serial B2 round-trips
+# dominate GET /projects/{id} and ledger scans; unbounded fan-out would open
+# hundreds of sockets on a large ledger.
+_DEFAULT_MULTI_GET_WORKERS = 24
+
+
+def get_bytes_many(
+    backend: Backend,
+    keys: Sequence[str],
+    *,
+    max_workers: int = _DEFAULT_MULTI_GET_WORKERS,
+    skip_missing: bool = False,
+) -> Dict[str, bytes]:
+    """Fetch many small objects concurrently.
+
+    Returns a dict keyed by storage key. Insertion order follows ``keys``
+    (first occurrence of each unique key), so callers can rebuild ordered
+    lists by iterating the original key sequence.
+
+    ``ObjectNotFound`` handling matches the two call-site patterns this exists
+    for:
+
+    * ``skip_missing=False`` (event logs, run records): a listed key must
+      exist; any miss fails the whole call rather than silently dropping a
+      row from the log.
+    * ``skip_missing=True`` (ledger rows): a race between list and get is
+      tolerated by omitting that key — same as the historical serial loop.
+
+    Any other ``StorageError`` (or unexpected exception wrapped as one) fails
+    the whole operation. Never silently drop events/rows on a transient
+    backend fault.
+    """
+    if not keys:
+        return {}
+
+    # Preserve first-seen order while deduplicating work.
+    unique: List[str] = list(dict.fromkeys(keys))
+    workers = max(1, min(max_workers, len(unique)))
+
+    def _fetch(key: str) -> bytes:
+        return backend.get_bytes(key)
+
+    out: Dict[str, bytes] = {}
+    if len(unique) == 1 or workers == 1:
+        for key in unique:
+            try:
+                out[key] = _fetch(key)
+            except ObjectNotFound:
+                if not skip_missing:
+                    raise
+            # Other StorageError / unexpected: propagate.
+        return out
+
+    hard_error: Optional[BaseException] = None
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        future_map = {pool.submit(_fetch, key): key for key in unique}
+        for fut in as_completed(future_map):
+            key = future_map[fut]
+            try:
+                out[key] = fut.result()
+            except ObjectNotFound as exc:
+                if not skip_missing and hard_error is None:
+                    hard_error = exc
+            except StorageError as exc:
+                if hard_error is None:
+                    hard_error = exc
+            except Exception as exc:
+                if hard_error is None:
+                    hard_error = StorageError(
+                        f"failed to read {key!r}: {type(exc).__name__}: {exc}"
+                    )
+        if hard_error is not None:
+            raise hard_error
+
+    # Re-order by input key sequence so dict iteration matches list order.
+    return {k: out[k] for k in unique if k in out}

@@ -19,7 +19,7 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   **7 (control-room UI)** last. Tasks **9–17** are **DONE**.
 - CI (10), build identity (11), post-deploy smoke (12), doctor (13), live paid
   + fallback SFX (14), demo evidence (15), and Secret Manager (16) are in place.
-- `uv run pytest -q` → **695 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **706 passed, 1 skipped**. No provider credentials
   required for tests: the billed calls are stubbed at two seams,
   `stems.generate_many` and `sfx_cache.generate_canonical_wav`. Everything else
   — ffmpeg, the mix, the shared cache, storage, the Genblaze pipelines — runs
@@ -160,8 +160,11 @@ original video at their transient offsets via Web Audio, labelled "not the
 measured mix". Two honest enablers: stamped `Event.stem_key` (event→audio
 link, refreshed per run) and `GET /preview/stems/{key}` (same-origin stem
 streaming — B2 has no CORS). Transient hit-point ticks on the timeline
-ruler. Suite 695, npm test 62, svelte-check 0/0. Remaining: frontend chain
-from 7.10.
+ruler. Suite 706, npm test 62, svelte-check 0/0. Remaining: frontend chain
+from 7.10. **7.18 landed**: backend read latency — concurrent multi-get for
+events/runs/ledger rows, cached `ledger_writable` probe, single-flight row
+cache (10s TTL), cheap GET /qa existence, parallel I/O on GET /projects/{id}
+and /budget, concurrent HEADs for dossier.
 
 The throwaway static dashboard (`api/static/index.html`) is deleted outright
 when 7.6 lands.

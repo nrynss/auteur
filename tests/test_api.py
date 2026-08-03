@@ -1046,6 +1046,23 @@ def test_qa_404s_before_a_report_exists(client, project):
     assert r.json()["error"]["code"] == "qa_not_found"
 
 
+def test_qa_404s_missing_project_without_event_log_fold(client, store, monkeypatch):
+    """GET /qa proves existence via project.json, not a full list_events fold
+    (unit 7.18). A missing project must 404 without touching the event log."""
+    lists = {"n": 0}
+    real_list = store.backend.list_keys
+
+    def counting_list(prefix):
+        lists["n"] += 1
+        return real_list(prefix)
+
+    monkeypatch.setattr(store.backend, "list_keys", counting_list)
+    r = client.get(f"{API_PREFIX}/projects/{VALID_ID}/qa")
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "project_not_found"
+    assert lists["n"] == 0, "missing project must not list the event prefix"
+
+
 def test_qa_report_distinguishes_blocking_and_warning(client, store, project):
     from foleyflow.qa import build_report
     from foleyflow.scenes import Scene, SceneStats

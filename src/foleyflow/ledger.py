@@ -72,6 +72,15 @@ LEDGER_PATH: Optional[str] = os.environ.get("FOLEYFLOW_LEDGER_PATH") or None
 # self-healing; file mode always re-probes the path (see ledger_writable).
 _write_ok: bool = True
 
+# Storage-mode probe cache for ledger_writable(). A real PUT on every /quota
+# and /budget poll was measured at multi-second cost against B2 (unit 7.18).
+# Short TTL is enough to collapse poll storms; failed log_transaction still
+# pins False immediately via _set_write_ok(False).
+_WRITABLE_CACHE_TTL_S = 15.0
+_writable_cache: Optional[bool] = None
+_writable_cache_at: float = 0.0
+_writable_cache_lock = threading.Lock()
+
 # The project a row belongs to. Set by the job runner around each run's work
 # (see set_project_context); execute_with_ledger and log_transaction never see
 # a project — the context does the attribution. None means unattributed: a
@@ -100,9 +109,22 @@ def set_project_context(project_id: Optional[str]):
 # cached listing is safe for a few seconds; without it every get_quota call
 # re-lists and re-GETs every row, and get_all_quotas multiplies that by the
 # number of quota-bearing models. Invalidated on every successful write.
-_ROW_CACHE_TTL_S = 2.0
+#
+# TTL raised from 2s → 10s for read-heavy GET /quota and /budget (unit 7.18):
+# concurrent polls share one scan (single-flight below). A successful write
+# bumps ``_row_cache_epoch`` so an in-flight scan that started *before* the
+# write cannot reinstall a pre-write snapshot under a fresh TTL (that would
+# undercount spend/quota for up to 10s). Tradeoff: continuous writes under a
+# long scan can force a re-fetch; the money figures stay exact.
+_ROW_CACHE_TTL_S = 10.0
 _row_cache: Optional[List[dict]] = None
 _row_cache_at: float = 0.0
+_row_cache_epoch: int = 0
+# Single-flight: concurrent _read_storage_rows callers share one in-flight
+# list+multi-get rather than stampeding the backend.
+_row_sf_lock = threading.Lock()
+_row_sf_cv = threading.Condition(_row_sf_lock)
+_row_sf_in_flight: bool = False
 
 # Running per-project spend for the alert path (task 9b addendum).
 # project_spend is a full ledger scan; the row cache is invalidated on every
@@ -138,14 +160,34 @@ def uses_storage_ledger() -> bool:
 
 
 def _set_write_ok(ok: bool) -> None:
-    global _write_ok
+    """Pin process writability and keep the probe cache consistent.
+
+    False is fail-closed: the next ledger_writable() returns False without a
+    PUT, so /quota stops presenting fiction immediately. True is set after a
+    successful log_transaction and also refreshes the positive probe cache.
+    """
+    global _write_ok, _writable_cache, _writable_cache_at
     _write_ok = ok
+    with _writable_cache_lock:
+        _writable_cache = ok
+        _writable_cache_at = time.monotonic()
 
 
 def _invalidate_row_cache() -> None:
-    global _row_cache, _row_cache_at
-    _row_cache = None
-    _row_cache_at = 0.0
+    """Drop the row snapshot and bump the epoch so in-flight scans discard."""
+    global _row_cache, _row_cache_at, _row_cache_epoch
+    with _row_sf_lock:
+        _row_cache = None
+        _row_cache_at = 0.0
+        _row_cache_epoch += 1
+
+
+def _invalidate_writable_cache() -> None:
+    """Drop the storage-mode probe result (tests / deliberate re-probe)."""
+    global _writable_cache, _writable_cache_at
+    with _writable_cache_lock:
+        _writable_cache = None
+        _writable_cache_at = 0.0
 
 
 def get_params_hash(arguments: Dict[str, Any]) -> str:
@@ -408,6 +450,36 @@ def _is_transaction_key(key: str) -> bool:
             and not key.startswith(ATTR_PREFIX))
 
 
+def _fetch_storage_rows() -> List[dict]:
+    """List ledger keys and multi-get their bodies (no cache).
+
+    Concurrent GETs: serial per-row downloads dominated GET /quota and
+    /budget against B2 (unit 7.18). ``skip_missing`` matches the old loop —
+    a row may vanish between list and get; other storage faults propagate.
+    """
+    from foleyflow.storage import StorageError, get_backend, get_bytes_many
+
+    backend = get_backend()
+    try:
+        keys = backend.list_keys(LEDGER_PREFIX)
+    except StorageError:
+        raise
+    tx_keys = [k for k in keys if _is_transaction_key(k)]
+    if not tx_keys:
+        return []
+    blobs = get_bytes_many(backend, tx_keys, skip_missing=True)
+    rows: List[dict] = []
+    for key in tx_keys:
+        raw = blobs.get(key)
+        if raw is None:
+            continue
+        try:
+            rows.append(json.loads(raw))
+        except (TypeError, json.JSONDecodeError):
+            continue
+    return rows
+
+
 def _read_storage_rows(*, force: bool = False) -> List[dict]:
     """Every stored transaction, oldest first (ULID keys sort by creation).
 
@@ -415,35 +487,59 @@ def _read_storage_rows(*, force: bool = False) -> List[dict]:
     ``get_all_quotas`` and before/after ``summarize_ledger`` pairs would
     otherwise pay against object storage. Append-only semantics make the
     snapshot safe; successful writes invalidate it.
+
+    Concurrent callers share one in-flight scan (single-flight) so a poll
+    storm does not multiply list+GET traffic against the bucket.
+
+    Correctness under concurrency (money surfaces):
+    * Invalidate bumps an epoch; a flight only installs the cache when the
+      epoch is unchanged — a write mid-scan cannot reinstall a pre-write
+      snapshot with a fresh TTL.
+    * Waiters only return a *fresh* cache after wait (TTL still valid). A
+      leader that fails leaves waiters to re-lead, not to serve expired
+      data as success while the leader 503s.
     """
-    global _row_cache, _row_cache_at
-    from foleyflow.storage import ObjectNotFound, StorageError, get_backend
+    global _row_cache, _row_cache_at, _row_sf_in_flight
 
-    now = time.monotonic()
-    if (not force and _row_cache is not None
-            and (now - _row_cache_at) < _ROW_CACHE_TTL_S):
-        return _row_cache
+    while True:
+        with _row_sf_cv:
+            while True:
+                now = time.monotonic()
+                cache_fresh = (
+                    _row_cache is not None
+                    and (now - _row_cache_at) < _ROW_CACHE_TTL_S
+                )
+                # Cold hit: only non-force callers. force=True re-scans when
+                # it becomes leader, but a waiter that shared an in-flight
+                # force scan still accepts the installed result below.
+                if cache_fresh and not force:
+                    return _row_cache
+                if not _row_sf_in_flight:
+                    _row_sf_in_flight = True
+                    epoch_at_start = _row_cache_epoch
+                    break
+                _row_sf_cv.wait(timeout=60.0)
+                # Shared flight finished (or timed out). Accept only a
+                # still-fresh install — never a non-None expired snapshot.
+                now = time.monotonic()
+                if (_row_cache is not None
+                        and (now - _row_cache_at) < _ROW_CACHE_TTL_S):
+                    return _row_cache
 
-    backend = get_backend()
-    try:
-        keys = backend.list_keys(LEDGER_PREFIX)
-    except StorageError:
-        raise
-    rows: List[dict] = []
-    for key in keys:
-        if not _is_transaction_key(key):
-            continue
         try:
-            raw = backend.get_bytes(key)
-        except ObjectNotFound:
-            continue
-        try:
-            rows.append(json.loads(raw))
-        except (TypeError, json.JSONDecodeError):
-            continue
-    _row_cache = rows
-    _row_cache_at = now
-    return rows
+            rows = _fetch_storage_rows()
+            with _row_sf_cv:
+                if _row_cache_epoch == epoch_at_start:
+                    _row_cache = rows
+                    _row_cache_at = time.monotonic()
+                    return rows
+                # Write landed during the scan: discard. Outer loop re-leads
+                # so the answer includes the new row rather than caching a lie.
+        finally:
+            with _row_sf_cv:
+                _row_sf_in_flight = False
+                _row_sf_cv.notify_all()
+
 
 
 def iter_transactions(path: Optional[str] = None) -> List[dict]:
@@ -470,6 +566,11 @@ def ledger_writable(path: Optional[str] = None) -> bool:
     round-trip — that is the non-silent part of a swallowed write failure.
     That pin is storage-mode only and clears on the next successful write; file
     mode always re-probes the path, so the two modes are not symmetric.
+
+    In storage mode the probe result is cached briefly (see
+    ``_WRITABLE_CACHE_TTL_S``): /quota and /budget used to PUT a probe object
+    on every request, which dominated latency against B2. Cache does not
+    change the contract — figures are still fiction when unwritable.
     """
     if not _write_ok and path is None and _file_ledger_path() is None:
         return False
@@ -484,13 +585,26 @@ def ledger_writable(path: Optional[str] = None) -> bool:
         except OSError:
             return False
 
+    # Storage mode: serve a recent probe result rather than PUT every time.
+    global _writable_cache, _writable_cache_at
+    with _writable_cache_lock:
+        now = time.monotonic()
+        if (_writable_cache is not None
+                and (now - _writable_cache_at) < _WRITABLE_CACHE_TTL_S):
+            return _writable_cache
+
     try:
         from foleyflow.storage import get_backend
         get_backend().put_bytes(
             _WRITABLE_PROBE_KEY, b"ok", content_type="text/plain")
-        return True
+        result = True
     except Exception:
-        return False
+        result = False
+
+    with _writable_cache_lock:
+        _writable_cache = result
+        _writable_cache_at = time.monotonic()
+    return result
 
 
 def summarize_ledger(path: Optional[str] = None) -> Dict[str, Any]:
@@ -778,14 +892,17 @@ def iter_attributions() -> List[dict]:
     if _file_ledger_path() is not None:
         return []          # file mode keeps no attributions
 
-    from foleyflow.storage import ObjectNotFound, get_backend
+    from foleyflow.storage import get_backend, get_bytes_many
 
     backend = get_backend()
+    keys = list(backend.list_keys(ATTR_PREFIX))
+    if not keys:
+        return []
+    blobs = get_bytes_many(backend, keys, skip_missing=True)
     out: List[dict] = []
-    for key in backend.list_keys(ATTR_PREFIX):
-        try:
-            raw = backend.get_bytes(key)
-        except ObjectNotFound:
+    for key in keys:
+        raw = blobs.get(key)
+        if raw is None:
             continue
         try:
             data = json.loads(raw)

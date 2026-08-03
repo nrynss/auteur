@@ -783,13 +783,24 @@ so the explorer is browsable but never a durable public handle.
 **Acceptance:** the whole bucket is listable without a single HEAD, and the
 shared-cache section cannot be read as project provenance.
 
-## 7.18 Backend read latency — M
+## 7.18 Backend read latency — M — **DONE**
 
 **Depends on:** nothing. Measured 2026-08-03 against the live bucket.
 
+**Landed:** Concurrent `get_bytes_many` (bound pool) for `list_events`,
+`list_runs`, `list_projects`, ledger rows, and attributions; storage-mode
+`ledger_writable` probe cached 15s (fail-closed pin still immediate);
+ledger row cache single-flight + 10s TTL with write invalidation **and an
+epoch so a mid-flight write cannot reinstall a pre-write snapshot**; waiters
+only accept a still-fresh cache (leader failure does not serve stale money);
+GET /qa uses `get_project` existence instead of a full event fold; GET /budget
+folds state and scans the ledger in parallel (no double fold);
+`get_project` parallelises scenes/QA/source-mix HEADs (StorageError → 503);
+dossier concurrent HEADs (7.17 LIST-metadata still the full size win). Suite 706.
+
 The control room's first paint no longer waits on the slowest fetch (panels
-fill in independently, the dossier is lazy), but the underlying calls are slow
-enough to matter on their own:
+fill in independently, the dossier is lazy), but the underlying calls were slow
+enough to matter on their own (pre-fix, live B2 2026-08-03):
 
 | endpoint | measured |
 |---|---|
@@ -802,11 +813,9 @@ enough to matter on their own:
 | `GET /projects/{id}/scenes` | 0.7 s |
 
 `/projects/{id}` is the one that still gates first paint, because it is the
-shell and nothing can render without it — so ~8 s is the current floor.
-Budget and quota are full ledger scans over one immutable object per billed
-call, which grows without bound; the dossier is the HEAD-per-object problem
-7.17 describes. None of this is UI work, and it affects the CLI and any poller
-equally.
+shell and nothing can render without it. Budget and quota are full ledger
+scans over one immutable object per billed call; the dossier remains
+HEAD-per-object until 7.17.
 
 ---
 
@@ -860,8 +869,8 @@ blanket component tests.
 
 # G. Still open
 
-- The archive explorer, ledger rows and read latency (7.16–7.18) — scoped
-  2026-08-03, none started. 7.17 must not be built on the dossier's
+- The archive explorer and ledger rows (7.16–7.17) — scoped 2026-08-03.
+  **7.18 (read latency) is DONE.** 7.17 must not be built on the dossier's
   HEAD-per-object mechanism; see the unit.
 - The states the mockup does not cover — loading, empty, error, the in-flight
   run lock, draft-versus-committed, and the director-mode diff drawn on the

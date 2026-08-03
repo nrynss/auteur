@@ -22,9 +22,18 @@ from foleyflow.storage.base import (
     ObjectNotFound,
     PreconditionFailed,
     StorageError,
+    get_bytes_many,
 )
 from foleyflow.storage.local import LocalBackend
 from foleyflow.storage.factory import get_backend
 
-__all__ = ["Backend", "ObjectHead", "StorageError", "ObjectNotFound", "PreconditionFailed",
-           "LocalBackend", "get_backend"]
+__all__ = [
+    "Backend",
+    "ObjectHead",
+    "StorageError",
+    "ObjectNotFound",
+    "PreconditionFailed",
+    "LocalBackend",
+    "get_backend",
+    "get_bytes_many",
+]
