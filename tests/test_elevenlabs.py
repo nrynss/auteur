@@ -108,6 +108,28 @@ def test_today_usage_sums_rows(monkeypatch):
     assert usage["cost_usd"] == pytest.approx(4.2)
 
 
+def test_today_usage_ignores_other_models_on_the_same_key(monkeypatch):
+    """The workspace also carries TTS and other apps; the SFX cap and quota
+    row must be driven by SFX spend only, or the demo would be gated by
+    unrelated usage on the account."""
+    tts = {"model": "eleven_multilingual_v2", "product_type": "Speech",
+           "hashed_xi_api_key": "k1", "timestamp": TODAY,
+           "total_usage": 813, "total_minutes": 0.9,
+           "total_cost": 14.31, "usage_count": 2,
+           "total_charge_count": 0.8, "api_key_name": "FoleyFlow"}
+    cols = _canned_response([])["columns"]
+    monkeypatch.setattr(
+        elevenlabs, "_http_post",
+        lambda path, payload: _canned_response([
+            _row(count=6, cost=1.76, usage=100),
+            [tts[c] for c in cols],
+        ]))
+    usage = elevenlabs.today_usage(
+        now=datetime(2026, 8, 3, 12, tzinfo=timezone.utc))
+    assert usage["requests"] == 6          # SFX only, not 8
+    assert usage["cost_usd"] == pytest.approx(1.76)  # not 16.07
+
+
 def test_today_usage_fails_soft_when_the_endpoint_is_unreachable(monkeypatch):
     def _boom(path, payload):
         raise ElevenLabsUsageError("offline pin")

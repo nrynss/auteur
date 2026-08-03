@@ -169,7 +169,13 @@ def next_reset_utc(now: Optional[datetime] = None) -> datetime:
 
 def today_usage(now: Optional[datetime] = None, *,
                 use_cache: bool = True) -> dict:
-    """Today's totals (UTC day): requests / credits / cost_usd.
+    """Today's totals (UTC day) for the paid SFX model: requests / credits /
+    cost_usd.
+
+    Scoped to ``eleven_text_to_sound_v2``: the workspace analytics covers the
+    whole workspace, which also carries unrelated models on the same key (TTS
+    measured at $14.31 on 2026-08-03). The SFX cap and quota row must be
+    driven by SFX spend, not by whatever else shares the account.
 
     ``available: False`` (with an ``error`` string) when the query failed —
     the caller decides what unavailable means; it never raises. Cached by day
@@ -190,11 +196,12 @@ def today_usage(now: Optional[datetime] = None, *,
         if use_cache:
             _store(key, CACHE_TTL_S, result)
         return result
+    sfx = [r for r in rows if r["model"] == PAID_SFX_MODEL]
     result = {
         "available": True,
-        "requests": sum(r["requests"] for r in rows),
-        "credits": sum(r["credits"] for r in rows),
-        "cost_usd": round(sum(r["cost_usd"] for r in rows), 4),
+        "requests": sum(r["requests"] for r in sfx),
+        "credits": sum(r["credits"] for r in sfx),
+        "cost_usd": round(sum(r["cost_usd"] for r in sfx), 4),
     }
     if use_cache:
         _store(key, CACHE_TTL_S, result)

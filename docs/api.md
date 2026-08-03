@@ -708,11 +708,12 @@ balance.
 
 The one exception is the paid SFX tier (`eleven_text_to_sound_v2`): it declares
 `requests_per_day` and `usage_source = "elevenlabs"`, so its `used` count and
-`per_day.cost_usd` come from the **ElevenLabs workspace usage report** (real
-requests and real dollars on the key, UTC day), not the ledger — and its day
-window rolls over at the same UTC midnight as the hard cap. When that report is
-unreachable the row falls back to the ledger count and carries no dollar figure
-rather than a guessed one.
+`per_day.cost_usd` come from the **ElevenLabs workspace usage report** — real
+requests and real dollars for the SFX model on the key (the workspace also
+carries unrelated TTS on the same account; that is deliberately not counted),
+UTC day — not the ledger. Its day window rolls over at the same UTC midnight
+as the hard cap. When that report is unreachable the row falls back to the
+ledger count and carries no dollar figure rather than a guessed one.
 
 ---
 
@@ -724,11 +725,11 @@ Billable repair still requires `confirm_cost_usd` (explicit per-action consent).
 
 **The paid SFX tier has one hard stop that is not advisory**: `hard_cap_usd` on
 `eleven_text_to_sound_v2` (providers.toml, `$15/day` by default, `0` to
-disable). Once the *workspace usage report* shows the UTC day's spend at or
-past the cap, billable regenerate and mix work against the paid tier is refused
-with `429 spend_cap_reached` until the next UTC midnight — free navigation,
-the advisory budget and the free local tier are unaffected. The ledger's own
-day estimates keep the gate closed during a usage-report outage.
+disable). Once the workspace usage report shows the SFX model's UTC-day spend
+at or past the cap, billable regenerate and mix work against the paid tier is
+refused with `429 spend_cap_reached` until the next UTC midnight — free
+navigation, the advisory budget and the free local tier are unaffected. The
+ledger's own day estimates keep the gate closed during a usage-report outage.
 
 ```
 GET /api/v1/projects/{id}/budget
