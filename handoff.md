@@ -906,6 +906,20 @@ The gate immediately earned its keep — three real bugs jsdom missed:
   null — no throw), and the `?` overlay autofocus is pinned so the Escape
   path stays wired.
 
+**More coverage: navigation + performance (the browser gate is 21 tests).**
+- **`navigation.spec.ts` (5)** — real in-app navigation, not deep-links:
+  index → create → brand back-link; index → unclaimed → back; index →
+  project card → control room, and browser Back returns; control-room tabs
+  switch content and aria-selected; `?` opens help from the index too.
+- **`performance.spec.ts` (3)** — scoped honestly: the browser stubs the API,
+  so it cannot load-test the real server (that is the backend's job —
+  `scripts/latency_bench.py` / `latency_live.py` already exist). The browser
+  asserts what it CAN: a first-load budget per route (a hang-detector, not a
+  benchmark — 3s with an instant stub), no resource accumulation across
+  re-navigations (leak detection), and a smoke soak — 8× overlay open/close
+  plus all tabs — staying error-free and responsive (window listeners must be
+  removed on close, not piled up).
+
 ## 23. Repo and image identity — S
 
 **Depends on:** 20, and best done after 22. **Files:** `pyproject.toml` (`[project.scripts]`),
