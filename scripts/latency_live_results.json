@@ -1,0 +1,294 @@
+{
+  "base_url": "https://foleyflow-142385844755.us-east4.run.app",
+  "project_id": "proj_01KYJD1RKETS3KTX5HA3H5JPDQ",
+  "health": {
+    "status": "ok",
+    "storage": "ok",
+    "version": "0.1.0",
+    "git_sha": "a4f1dc43f8915e16dfd61772103ff5780e89fcc0",
+    "build_time": "2026-08-03T03:20:40Z",
+    "worker": null
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "samples": [
+        {
+          "name": "GET /projects/{id}",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ",
+          "status": 200,
+          "wall_ms": 1991.6466389986454,
+          "ok": true,
+          "error": null,
+          "bytes": 2403
+        },
+        {
+          "name": "GET /quota",
+          "path": "/api/v1/quota",
+          "status": 200,
+          "wall_ms": 271.03153899952304,
+          "ok": true,
+          "error": null,
+          "bytes": 1052
+        },
+        {
+          "name": "GET /projects/{id}/budget",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ/budget",
+          "status": 200,
+          "wall_ms": 1442.3026720032794,
+          "ok": true,
+          "error": null,
+          "bytes": 205
+        },
+        {
+          "name": "GET /projects/{id}/qa",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ/qa",
+          "status": 200,
+          "wall_ms": 340.86632399703376,
+          "ok": true,
+          "error": null,
+          "bytes": 712
+        },
+        {
+          "name": "GET /projects/{id}/dossier",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ/dossier",
+          "status": 200,
+          "wall_ms": 1738.4657100046752,
+          "ok": true,
+          "error": null,
+          "bytes": 30230
+        },
+        {
+          "name": "GET /projects/{id}/timeline",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ/timeline",
+          "status": 200,
+          "wall_ms": 552.1087999950396,
+          "ok": true,
+          "error": null,
+          "bytes": 890
+        },
+        {
+          "name": "GET /projects/{id}/scenes",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ/scenes",
+          "status": 200,
+          "wall_ms": 294.0113530057715,
+          "ok": true,
+          "error": null,
+          "bytes": 3035
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "samples": [
+        {
+          "name": "GET /projects/{id}",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ",
+          "status": 200,
+          "wall_ms": 356.81480600032955,
+          "ok": true,
+          "error": null,
+          "bytes": 2403
+        },
+        {
+          "name": "GET /quota",
+          "path": "/api/v1/quota",
+          "status": 200,
+          "wall_ms": 272.6651179982582,
+          "ok": true,
+          "error": null,
+          "bytes": 1052
+        },
+        {
+          "name": "GET /projects/{id}/budget",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ/budget",
+          "status": 200,
+          "wall_ms": 453.9975059888093,
+          "ok": true,
+          "error": null,
+          "bytes": 205
+        },
+        {
+          "name": "GET /projects/{id}/qa",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ/qa",
+          "status": 200,
+          "wall_ms": 301.27344399807043,
+          "ok": true,
+          "error": null,
+          "bytes": 712
+        },
+        {
+          "name": "GET /projects/{id}/dossier",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ/dossier",
+          "status": 200,
+          "wall_ms": 885.230917003355,
+          "ok": true,
+          "error": null,
+          "bytes": 30230
+        },
+        {
+          "name": "GET /projects/{id}/timeline",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ/timeline",
+          "status": 200,
+          "wall_ms": 307.2981129953405,
+          "ok": true,
+          "error": null,
+          "bytes": 890
+        },
+        {
+          "name": "GET /projects/{id}/scenes",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ/scenes",
+          "status": 200,
+          "wall_ms": 311.39415499637835,
+          "ok": true,
+          "error": null,
+          "bytes": 3035
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "samples": [
+        {
+          "name": "GET /projects/{id}",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ",
+          "status": 200,
+          "wall_ms": 342.63339299650397,
+          "ok": true,
+          "error": null,
+          "bytes": 2403
+        },
+        {
+          "name": "GET /quota",
+          "path": "/api/v1/quota",
+          "status": 200,
+          "wall_ms": 263.17519300209824,
+          "ok": true,
+          "error": null,
+          "bytes": 1052
+        },
+        {
+          "name": "GET /projects/{id}/budget",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ/budget",
+          "status": 200,
+          "wall_ms": 295.6126119970577,
+          "ok": true,
+          "error": null,
+          "bytes": 205
+        },
+        {
+          "name": "GET /projects/{id}/qa",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ/qa",
+          "status": 200,
+          "wall_ms": 293.32725700805895,
+          "ok": true,
+          "error": null,
+          "bytes": 712
+        },
+        {
+          "name": "GET /projects/{id}/dossier",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ/dossier",
+          "status": 200,
+          "wall_ms": 1015.2241430041613,
+          "ok": true,
+          "error": null,
+          "bytes": 30230
+        },
+        {
+          "name": "GET /projects/{id}/timeline",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ/timeline",
+          "status": 200,
+          "wall_ms": 301.4902119903127,
+          "ok": true,
+          "error": null,
+          "bytes": 890
+        },
+        {
+          "name": "GET /projects/{id}/scenes",
+          "path": "/api/v1/projects/proj_01KYJD1RKETS3KTX5HA3H5JPDQ/scenes",
+          "status": 200,
+          "wall_ms": 289.53567300050054,
+          "ok": true,
+          "error": null,
+          "bytes": 3035
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "by_endpoint": [
+      {
+        "endpoint": "GET /projects/{id}",
+        "n": 3,
+        "first_ms": 1991.6,
+        "min_ms": 342.6,
+        "median_ms": 356.8,
+        "max_ms": 1991.6,
+        "mean_ms": 897.0
+      },
+      {
+        "endpoint": "GET /quota",
+        "n": 3,
+        "first_ms": 271.0,
+        "min_ms": 263.2,
+        "median_ms": 271.0,
+        "max_ms": 272.7,
+        "mean_ms": 269.0
+      },
+      {
+        "endpoint": "GET /projects/{id}/budget",
+        "n": 3,
+        "first_ms": 1442.3,
+        "min_ms": 295.6,
+        "median_ms": 454.0,
+        "max_ms": 1442.3,
+        "mean_ms": 730.6
+      },
+      {
+        "endpoint": "GET /projects/{id}/qa",
+        "n": 3,
+        "first_ms": 340.9,
+        "min_ms": 293.3,
+        "median_ms": 301.3,
+        "max_ms": 340.9,
+        "mean_ms": 311.8
+      },
+      {
+        "endpoint": "GET /projects/{id}/dossier",
+        "n": 3,
+        "first_ms": 1738.5,
+        "min_ms": 885.2,
+        "median_ms": 1015.2,
+        "max_ms": 1738.5,
+        "mean_ms": 1213.0
+      },
+      {
+        "endpoint": "GET /projects/{id}/timeline",
+        "n": 3,
+        "first_ms": 552.1,
+        "min_ms": 301.5,
+        "median_ms": 307.3,
+        "max_ms": 552.1,
+        "mean_ms": 387.0
+      },
+      {
+        "endpoint": "GET /projects/{id}/scenes",
+        "n": 3,
+        "first_ms": 294.0,
+        "min_ms": 289.5,
+        "median_ms": 294.0,
+        "max_ms": 311.4,
+        "mean_ms": 298.3
+      }
+    ]
+  },
+  "baseline_live_s": {
+    "GET /projects/{id}": 8.4,
+    "GET /quota": 11.1,
+    "GET /projects/{id}/budget": 25.1,
+    "GET /projects/{id}/qa": 7.2,
+    "GET /projects/{id}/dossier": 56.0,
+    "GET /projects/{id}/timeline": 0.7,
+    "GET /projects/{id}/scenes": 0.7
+  }
+}

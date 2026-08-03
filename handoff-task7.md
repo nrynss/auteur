@@ -827,21 +827,23 @@ cold seed on the same process):
 | `GET /budget` | ~254 ms | ~101 ms | state checkpoint + O(1) spend |
 | `GET /qa` | ~100 ms | ~100 ms | already cheap |
 
-Live B2 pre-fix (wave 1 context):
+**Live HTTP (deployed `a4f1dc4`, standoff `proj_01KYJD1RKETS3KTX5HA3H5JPDQ`,
+2026-08-03)** — `uv run python scripts/latency_live.py --base-url $URL
+--project-id proj_01KYJD… --rounds 3`:
 
-| endpoint | measured |
-|---|---|
-| `GET /projects/{id}` | **8.4 s** |
-| `GET /quota` | **11.1 s** |
-| `GET /projects/{id}/budget` | **25.1 s** |
-| `GET /projects/{id}/qa` | 7.2 s |
-| `GET /projects/{id}/dossier` | 56.0 s |
-| `GET /projects/{id}/timeline` | 0.7 s |
-| `GET /projects/{id}/scenes` | 0.7 s |
+| endpoint | pre-fix (2026-08-03) | live first | live median (3 rounds) | speedup (med) |
+|---|---:|---:|---:|---:|
+| `GET /projects/{id}` | **8.4 s** | 1.99 s | **0.36 s** | **23×** |
+| `GET /quota` | **11.1 s** | 0.27 s | **0.27 s** | **41×** |
+| `GET /projects/{id}/budget` | **25.1 s** | 1.44 s | **0.45 s** | **55×** |
+| `GET /projects/{id}/qa` | 7.2 s | 0.34 s | **0.30 s** | **24×** |
+| `GET /projects/{id}/dossier` | 56.0 s | 1.74 s | **1.02 s** | **55×** |
+| `GET /projects/{id}/timeline` | 0.7 s | 0.55 s | 0.31 s | 2× |
+| `GET /projects/{id}/scenes` | 0.7 s | 0.29 s | 0.29 s | 2× |
 
-`/projects/{id}` still gates first paint. Phase-2 cuts asymptotic ledger work
-for budget/quota after seed and halves the event-log cost on warm project
-folds; dossier size-without-HEAD remains 7.17.
+First round still pays cold seed (ledger multi-get, event list); rounds 2–3
+are warm in-process. Dossier improved via concurrent HEADs; size-from-LIST
+remains 7.17. Raw JSON: `scripts/latency_live_results.json`.
 
 ---
 
