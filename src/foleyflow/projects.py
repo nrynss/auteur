@@ -235,7 +235,12 @@ class ProjectState:
         # duration are only known after the upload is confirmed, which happens
         # long after the project record is written. budget_usd is likewise
         # latest-wins from the log (task 9) with a legacy fallback.
-        payload["source_sha256"] = self.source_sha256 or self.project.source_sha256
+        # `or None` on the hash: an adopted or spend-holding project carries
+        # source_sha256="" (the str field's only absent spelling), and an
+        # empty string in a provenance manifest would read as a fabricated
+        # hash (unit 7.17 review) — absent stays absent.
+        payload["source_sha256"] = (self.source_sha256
+                                     or self.project.source_sha256) or None
         payload["duration_s"] = self.duration_s or self.project.duration_s
         payload["budget_usd"] = self.budget_usd
         return payload

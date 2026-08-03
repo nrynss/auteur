@@ -91,11 +91,10 @@ def test_head_missing_key_raises_object_not_found(tmp_path):
 # -- object listing without HEADs (unit 7.19) -------------------------------
 
 def test_list_objects_carries_stat_metadata_in_list_keys_order(tmp_path):
-    """LocalBackend.list_objects supplies Size / LastModified / sha256 from
-    os.stat for every object — the same facts head() gave one at a time, so
-    the dossier's columns are unchanged when it stops calling head."""
-    import hashlib
-
+    """LocalBackend.list_objects supplies Size / LastModified from os.stat for
+    every object — the listing's contract (unit 7.19). sha256 is deliberately
+    absent: the listing is hash-free, and a caller needing a content hash opts
+    in per candidate via head (7.19 review)."""
     backend = LocalBackend(str(tmp_path / "store"))
     payloads = {
         "projects/p1/timelines/timeline.v1.json": b'{"v":1}',
@@ -111,7 +110,11 @@ def test_list_objects_carries_stat_metadata_in_list_keys_order(tmp_path):
     for meta in listed:
         assert meta.size_bytes == len(payloads[meta.key])
         assert meta.last_modified is not None
-        assert meta.sha256 == hashlib.sha256(payloads[meta.key]).hexdigest()
+        # Hash-free by contract: the dossier must never pay to hash the whole
+        # shared cache just to resolve the stems one project uses.
+        assert meta.sha256 is None
+        # The per-candidate opt-in is head — the same value it always gave.
+        assert backend.head(meta.key).sha256 is not None
 
     # The two LISTs a real dossier needs cover every candidate key.
     all_keys = {m.key for m in backend.list_objects("projects/p1")}
@@ -132,10 +135,11 @@ def test_list_objects_matches_list_keys_exactly(tmp_path):
 
 
 def test_list_keys_stays_hash_free(tmp_path, monkeypatch):
-    """list_keys must not pay list_objects' sha256 cost — it runs on every
-    event-log and ledger scan (unit 7.18's wins depend on it being cheap).
-    Pinning the separation: a hasher that refuses must not break a keys-only
-    walk, and must break the metadata listing."""
+    """Neither listing pays a hash — list_keys runs on every event-log and
+    ledger scan (unit 7.18's wins depend on it being cheap) and list_objects
+    lists whole prefixes (the dossier would otherwise hash the whole shared
+    cache to resolve a handful of stems — 7.19 review). The hash lives in
+    head, the per-candidate opt-in."""
     import foleyflow.storage.local as local_mod
 
     backend = LocalBackend(str(tmp_path / "store"))
@@ -143,14 +147,16 @@ def test_list_keys_stays_hash_free(tmp_path, monkeypatch):
         backend.put_bytes(f"proj/x/obj{i}.json", str(i).encode())
 
     def _refuse_hash(path):
-        raise AssertionError(f"list_keys must not hash files: {path!r}")
+        raise AssertionError(f"listings must not hash files: {path!r}")
 
     monkeypatch.setattr(local_mod, "_sha256_file", _refuse_hash)
     assert backend.list_keys("proj/x") == \
         [f"proj/x/obj{i}.json" for i in range(3)]
-    # The metadata listing does hash (its sha256 column), so it fails here.
+    assert [m.key for m in backend.list_objects("proj/x")] == \
+        [f"proj/x/obj{i}.json" for i in range(3)]
+    # The hash is only ever paid per candidate, via head.
     with pytest.raises(AssertionError):
-        backend.list_objects("proj/x")
+        backend.head("proj/x/obj0.json")
 
 
 def test_list_objects_absent_prefix_is_empty_and_a_file_prefix_works(tmp_path):

@@ -1325,9 +1325,37 @@ def create_app(store: Optional[ProjectStore] = None,
     def claim_ledger(body: ClaimLedgerRequest) -> ClaimLedgerResponse:
         """Create a spend-holding project and attribute every currently-
         unclaimed row to it (3.15). No upload target — there is no video —
-        and the source stays absent until one is ever uploaded."""
+        and the source stays absent until one is ever uploaded.
+
+        Refuses before minting anything when there is nothing to claim (a
+        no-op claim must not leave an empty archive behind) or when the
+        ledger cannot hold attributions (file mode: a rescue would be refused
+        after the project already existed — a 500 with a stray project).
+        """
         from foleyflow.ids import new_project_id
-        from foleyflow.ledger import record_attribution
+        from foleyflow.ledger import (
+            _attribution_owner, _file_ledger_path, iter_attributions,
+            iter_transactions, record_attribution)
+
+        if _file_ledger_path() is not None:
+            # Mirrors the sibling /attributions route: a rescue in file mode
+            # would split-brain between the JSONL rows and the backend attr
+            # records — refuse before creating anything.
+            raise err.InvalidRequest(
+                "attribution rescues are storage-mode only; the local-JSONL "
+                "ledger keeps no attributions")
+        try:
+            orphan_count = sum(
+                1 for r in iter_transactions()
+                if r.get("project_id") is None
+                and _attribution_owner(r, iter_attributions()) is None)
+        except StorageError as e:
+            raise err.StorageUnavailable(
+                "Cost ledger is unreachable") from e
+        if orphan_count == 0:
+            raise err.PreconditionFailed(
+                "No unclaimed ledger rows to claim — there is nothing to "
+                "archive", detail={"required": "unclaimed rows"})
 
         # The conventional input path, which does not exist: this project has
         # no video, and every absent-source path (source_url null, ingest 422)
@@ -1339,7 +1367,13 @@ def create_app(store: Optional[ProjectStore] = None,
             input_key=f"projects/{project_id}/input/source.mp4",
             source_sha256="", source_filename="",
             budget_usd=body.budget_usd, actor="user")
-        claimed = record_attribution(project.id)
+        try:
+            claimed = record_attribution(project.id)
+        except ValueError as e:
+            # The pre-check should have caught file mode, but a mode flip or
+            # a future refusal shape must not 500 with the project already
+            # written — map it to the same 422 the sibling route uses.
+            raise err.InvalidRequest(str(e)) from e
         return ClaimLedgerResponse(
             project=_adopt_summary(store, project), claimed=claimed)
 
@@ -1639,10 +1673,24 @@ def _dossier_artifacts(store: ProjectStore, project_id: str, state) -> List[Arti
     grouped into a few top-level prefixes, each listed once via
     `list_objects`, and resolved against the listing. Serial HEAD-per-object
     was ~56 s against real B2 on a 131-key project; two paginated LISTs carry
-    the same Size/LastModified facts for free. sha256 is unchanged — the
-    recorded provenance value, or the local backend's own content hash from
-    the listing, never an ETag.
+    the same Size/LastModified facts for free.
+
+    **sha256 is opt-in and per-candidate, never per-listing.** The listing is
+    hash-free (a local backend must not hash the whole shared `cache/` to
+    resolve the handful of stems a project uses — unit 7.19 review). The
+    column is the recorded provenance value, or — where the backend's `head`
+    supplies a content hash cheaply (LocalBackend) — one HEAD for exactly the
+    candidates that lack a recorded one. B2's `head` never has a sha256, so on
+    the deployed backend the fallback is skipped entirely: zero HEADs.
+
+    **A candidate missing from the listing is verified by one HEAD, not
+    dropped.** LISTs are snapshots; an object written moments before the
+    dossier is requested (the demo's closing beat right after a run completes)
+    may not have surfaced yet, and this view's entire purpose is completeness.
+    The miss-fallback restores per-object authority for just those keys —
+    absent stays skipped, present is listed.
     """
+    from foleyflow.storage import LocalBackend
     from foleyflow.storage.base import ObjectMeta
 
     # (kind, key, optional recorded sha256) in listing order.
@@ -1695,11 +1743,8 @@ def _dossier_artifacts(store: ProjectStore, project_id: str, state) -> List[Arti
     if store.get_latest_export(project_id) is not None:
         _queue("export_pointer", store.latest_export_key(project_id))
 
-    def _resolve(item: tuple, by_key: Dict[str, ObjectMeta]) -> Optional[ArtifactOut]:
+    def _resolve_meta(item: tuple, meta: ObjectMeta) -> ArtifactOut:
         kind, key, sha256 = item
-        meta = by_key.get(key)
-        if meta is None:
-            return None
         return ArtifactOut(
             kind=kind, key=key, url=_sign_strict(store, key),
             size_bytes=meta.size_bytes, sha256=sha256 or meta.sha256)
@@ -1710,6 +1755,13 @@ def _dossier_artifacts(store: ProjectStore, project_id: str, state) -> List[Arti
     # (unit 7.19): list_objects_v2 returns Size/LastModified/ETag 1000 at a
     # time; the local backend reads the same from os.stat. The route pool
     # keeps the few LISTs concurrent; the resolution below is in-memory.
+    #
+    # Scaling note: `_dossier_listing_prefix` collapses `cache/{hash}.wav` to
+    # `cache`, so the listing covers the whole shared cache — O(total cache
+    # size) per dossier, not O(project usage). That is the point: stems are
+    # content-addressed in one flat namespace, so the alternative is one HEAD
+    # per referenced stem (the 56 s problem). One LIST is still one call, and
+    # it is what the 7.17 explorer will reuse for the same reason.
     prefixes = sorted({_dossier_listing_prefix(key)
                        for _, key, _ in candidates})
     pool = get_route_pool()
@@ -1719,11 +1771,45 @@ def _dossier_artifacts(store: ProjectStore, project_id: str, state) -> List[Arti
     for fut in futures:
         for meta in fut.result():
             by_key[meta.key] = meta
+
     artifacts: List[ArtifactOut] = []
+    # Candidates that need a HEAD after the listing: missing from it (LIST
+    # eventual consistency — verify rather than silently drop) or, on a
+    # backend whose head supplies a content hash cheaply (LocalBackend), a
+    # candidate with no recorded sha256. On B2 the second class never heads:
+    # head has no hash to give, and a round trip for nothing is the 56 s
+    # problem wearing a new name.
+    local_hash = isinstance(store.backend, LocalBackend)
+    pending: List[tuple] = []   # (item, meta_or_None)
     for item in candidates:
-        result = _resolve(item, by_key)
-        if result is not None:
-            artifacts.append(result)
+        kind, key, sha256 = item
+        meta = by_key.get(key)
+        if meta is None:
+            pending.append((item, None))
+        else:
+            recorded = sha256 or meta.sha256
+            if recorded is None and local_hash:
+                pending.append((item, meta))
+            else:
+                artifacts.append(_resolve_meta(item, meta))
+
+    if pending:
+        head_futures = {
+            pool.submit(_head, store, item[1]): (item, meta)
+            for item, meta in pending
+        }
+        for fut in head_futures:
+            item, meta = head_futures[fut]
+            head = fut.result()
+            if head is None:
+                continue    # genuinely absent — the skip a hole deserves
+            kind, key, sha256 = item
+            recorded = sha256 or head.sha256
+            artifacts.append(ArtifactOut(
+                kind=kind, key=key, url=_sign_strict(store, key),
+                size_bytes=(meta.size_bytes if meta is not None
+                            else head.size_bytes),
+                sha256=recorded))
     return artifacts
 
 

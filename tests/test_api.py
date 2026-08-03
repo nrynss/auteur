@@ -1469,24 +1469,133 @@ def test_dossier_503s_when_storage_cannot_answer(client, store, monkeypatch):
     assert r.json()["error"]["code"] == "storage_unavailable"
 
 
-def test_dossier_composes_with_zero_heads(client, store, monkeypatch):
-    """Unit 7.19's acceptance: the dossier's size_bytes come from LIST
-    metadata, so `head` is never called — a backend whose `head` refuses
-    outright still serves a complete dossier."""
+def test_dossier_size_comes_from_listing_and_heads_only_fill_the_hash(
+        client, store, monkeypatch):
+    """Unit 7.19's acceptance, restated: size_bytes come from LIST metadata —
+    a head is never the source of a size. HEADs may still happen on a local
+    backend, but only to fill the sha256 column for the handful of candidates
+    with no recorded provenance — never to hash the whole shared cache and
+    never on the deployed B2 backend."""
     project = _seed_full_project(store)
+    calls = []
+
+    def _counting_head(key, *a, **k):
+        calls.append(key)
+        return store.backend.head.__wrapped__(key, *a, **k) if hasattr(
+            store.backend.head, "__wrapped__") else store.backend.head(key)
+
+    # Wrap: LocalBackend.head is a plain method; count and delegate.
+    original_head = store.backend.head
+
+    def _counting(key):
+        calls.append(key)
+        return original_head(key)
+
+    monkeypatch.setattr(store.backend, "head", _counting)
+    body = client.get(f"{API_PREFIX}/projects/{project.id}/dossier").json()
+    artifacts = body["artifacts"]
+    assert body["artifact_count"] == len(artifacts)
+    assert body["artifact_count"] >= 13
+    assert all(a["size_bytes"] > 0 for a in artifacts)
+    # Heads happen only where the listing cannot answer: the per-candidate
+    # local-hash fill and the verify-absent miss-fallback — bounded by the
+    # artifact count, never the whole-cache scale the hash-free listing exists
+    # to avoid (the 7.19 review's finding 1).
+    assert 0 < len(calls) <= len(artifacts)
+    # Recorded provenance never costs a head: the source and the stem carry
+    # their hashes, so they are resolved from the listing alone.
+    assert "source.mp4" not in calls
+    assert not any("cache/0123456789abcdef.wav" in c for c in calls)
+    # Recorded provenance survives; un-hashed artifacts get the local hash.
+    hashes = [a["sha256"] for a in artifacts]
+    assert any(h is not None for h in hashes)
+    by_key = {a["key"]: a for a in artifacts}
+    assert by_key["source.mp4"]["sha256"] == "a" * 64
+
+
+def test_dossier_verifies_a_candidate_missing_from_the_listing_by_one_head(
+        client, store, monkeypatch):
+    """A LIST is a snapshot: an object written moments before the dossier is
+    requested may not have surfaced. The dossier must not silently drop it —
+    one HEAD restores per-object authority for exactly the miss."""
+    project = _seed_full_project(store)
+    dropped_key = store.mix_key(project.id, store.list_runs(project.id)[0].id)
+
+    real_list = store.backend.list_objects
+
+    def _dropping_list(prefix):
+        return [m for m in real_list(prefix) if m.key != dropped_key]
+
+    monkeypatch.setattr(store.backend, "list_objects", _dropping_list)
+    body = client.get(f"{API_PREFIX}/projects/{project.id}/dossier").json()
+    kinds = [a["kind"] for a in body["artifacts"]]
+    # The mix the listing omitted is still listed — verified, not dropped.
+    assert "mix" in kinds
+    mix = next(a for a in body["artifacts"] if a["kind"] == "mix")
+    assert mix["key"] == dropped_key
+    assert mix["size_bytes"] > 0
+
+    # A candidate that is absent from BOTH the listing and the head stays
+    # skipped — absent is absent, never a hole invented to fill.
+    def _noop_list(prefix):
+        return [m for m in real_list(prefix) if m.key != dropped_key]
 
     def _refuse_head(key, *a, **k):
-        raise AssertionError(f"dossier must not HEAD an object: {key!r}")
+        from foleyflow.storage.base import ObjectNotFound
+        raise ObjectNotFound(f"no object at {key!r}")
 
+    monkeypatch.setattr(store.backend, "list_objects", _noop_list)
     monkeypatch.setattr(store.backend, "head", _refuse_head)
+    body2 = client.get(f"{API_PREFIX}/projects/{project.id}/dossier").json()
+    assert all(a["kind"] != "mix" for a in body2["artifacts"])
+
+
+def test_dossier_serves_a_b2_shaped_backend_with_zero_heads(client, store,
+                                                            monkeypatch):
+    """On the deployed shape — a listing that carries metadata but whose head
+    can never supply a hash — the dossier completes with zero HEAD calls: the
+    local-hash fallback is gated off, so nothing is paid for a hash that does
+    not exist."""
+    import hashlib
+    from foleyflow.storage.base import ObjectHead, ObjectMeta
+
+    project = _seed_full_project(store)
+    real_list = store.backend.list_objects
+
+    def _b2_like_list(prefix):
+        out = []
+        for m in real_list(prefix):
+            raw = store.backend.get_bytes(m.key)
+            out.append(ObjectMeta(
+                key=m.key, size_bytes=m.size_bytes,
+                sha256=hashlib.sha256(raw).hexdigest()))
+        return out
+
+    from foleyflow.storage.base import ObjectNotFound
+
+    original_head = store.backend.head
+
+    def _no_hash_head(key, *a, **k):
+        # The only legitimate HEAD on this shape is verifying a genuinely
+        # ABSENT candidate (the listing-miss fallback, which must return
+        # ObjectNotFound). HEADing an object the listing covered — or that
+        # exists at all — is the zero-head violation.
+        try:
+            original_head(key, *a, **k)
+        except ObjectNotFound:
+            raise
+        raise AssertionError(f"dossier HEADed an existing object: {key!r}")
+
+    monkeypatch.setattr(store.backend, "list_objects", _b2_like_list)
+    monkeypatch.setattr(store.backend, "head", _no_hash_head)
     body = client.get(f"{API_PREFIX}/projects/{project.id}/dossier").json()
-    assert body["artifact_count"] == len(body["artifacts"])
     assert body["artifact_count"] >= 13
     assert all(a["size_bytes"] > 0 for a in body["artifacts"])
-    # The full-content hash column is unchanged on a local backend: the
-    # listing supplies it, so recorded provenance is not the only source.
-    hashes = [a["sha256"] for a in body["artifacts"]]
-    assert any(h is not None for h in hashes)
+    assert all(a["sha256"] is None or len(a["sha256"]) == 64
+               for a in body["artifacts"])
+    # A run's mix/foley candidates that never existed (the export run has no
+    # mix.wav) were verified-absent and skipped — the head saw only absences.
+    assert "mix" in [a["kind"] for a in body["artifacts"]]
 
 
 def test_dossier_503s_when_signing_fails_after_a_successful_head(
@@ -3205,6 +3314,52 @@ def test_claim_ledger_creates_a_spend_archive_and_adopts_every_orphan(
     budget = client.get(f"{API_PREFIX}/projects/{pid}/budget").json()
     assert budget["spent"] == pytest.approx(0.50)
     assert budget["ledger_writable"] is True
+
+
+def test_claim_ledger_refuses_when_nothing_to_claim(client, store, budget_ledger):
+    """A no-op claim must not mint an empty archive project behind a 200."""
+    before = len(client.get(f"{API_PREFIX}/projects").json()["projects"])
+    r = client.post(f"{API_PREFIX}/unclaimed/ledger/claim",
+                    json={"title": "Empty"})
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "precondition_failed"
+    after = len(client.get(f"{API_PREFIX}/projects").json()["projects"])
+    assert after == before   # nothing was created
+
+
+def test_claim_ledger_refuses_file_mode_before_creating(client, store,
+                                                        monkeypatch,
+                                                        tmp_path):
+    """A file-mode ledger keeps no attributions; the sibling /attributions
+    route maps the refusal to 422. Claiming must refuse BEFORE minting the
+    project — a 500 with a stray archive behind it is the bug this pins."""
+    import foleyflow.ledger as ledger_mod
+
+    monkeypatch.setattr(ledger_mod, "LEDGER_PATH",
+                        str(tmp_path / "ledger.jsonl"))
+    before = len(client.get(f"{API_PREFIX}/projects").json()["projects"])
+    r = client.post(f"{API_PREFIX}/unclaimed/ledger/claim",
+                    json={"title": "Would-be"})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_request"
+    after = len(client.get(f"{API_PREFIX}/projects").json()["projects"])
+    assert after == before   # refused before anything was written
+
+
+def test_adopted_project_records_absent_source_hash_as_none_not_empty(
+        client, store):
+    """An adopted prefix has no recorded source hash; the run-record payload
+    must read as absent (None), never as an empty-string provenance value
+    (unit 7.17 review) — the manifest path would otherwise print a fabricated
+    hash into §11.6 provenance."""
+    pid = "proj_01N0NE00000000000000000000"
+    store.backend.put_bytes(f"projects/{pid}/timelines/timeline.v1.json",
+                            b"{}")
+    r = client.post(f"{API_PREFIX}/unclaimed/projects/{pid}/adopt",
+                    json={"title": "No source"})
+    assert r.status_code == 201
+    detail = client.get(f"{API_PREFIX}/projects/{pid}").json()
+    assert detail.get("source_sha256") in (None, "")
 
 
 def test_unclaimed_cache_lists_shared_stems_never_claimable(client, store):

@@ -185,11 +185,15 @@ class LocalBackend:
         """Every object under `prefix` with metadata from `os.stat` — the
         local backend's half of the no-HEAD listing contract (unit 7.19).
 
-        Same key space and ordering as `list_keys`. `sha256` is the local
-        file's full-content hash, exactly as `head` supplies it, so the
-        dossier's hash column is unchanged when it stops calling `head` per
-        object. A `prefix` that names a single file (a one-segment input key
-        in tests) is returned as that one object.
+        Same key space and ordering as `list_keys`. **Deliberately does NOT
+        hash** (7.19 review): the dossier lists whole prefixes, so hashing
+        every file in the walk would burn the whole shared `cache/` to
+        resolve the handful of stems a project uses. `sha256` is None here,
+        exactly as B2's listing leaves it; a caller that needs a content hash
+        opts in per candidate (one `head`, whose sha256 is the local file's
+        full-content hash — the same value `head` always supplied). A `prefix`
+        that names a single file (a one-segment input key in tests) is
+        returned as that one object.
         """
         from foleyflow.storage.base import ObjectMeta
 
@@ -205,7 +209,6 @@ class LocalBackend:
                 key=rel,
                 size_bytes=st.st_size,
                 last_modified=_local_iso(st.st_mtime),
-                sha256=_sha256_file(base),
             )]
         if not os.path.isdir(base):
             return []
@@ -225,7 +228,6 @@ class LocalBackend:
                     key=rel,
                     size_bytes=st.st_size,
                     last_modified=_local_iso(st.st_mtime),
-                    sha256=_sha256_file(full),
                 ))
         out.sort(key=lambda m: m.key)
         return out

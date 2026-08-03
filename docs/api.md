@@ -633,11 +633,16 @@ the listing. Size comes from **listing metadata, not HEAD requests** (unit
 `cache`, and the source's) and each prefix is listed once via `list_objects_v2`
 — 1000 objects a page — which returns `Size`/`LastModified`/`ETag` for free.
 sha256 comes from provenance where one is recorded (the source video, each
-stem) or from a local backend's own hash. B2's S3 API exposes no sha256 — and
-a multipart upload's ETag is not a content hash — so in a deployed store that
-column is the recorded value or absent, never a guess derived from the
-listing. `url` is signed with the same TTL as every other artifact link, so a
-dossier is browsable but never a durable public handle.
+stem); for the handful of candidates lacking one, a local backend's `head`
+supplies the file's own hash — a per-candidate opt-in, never a whole-listing
+hash (the dossier must not pay to hash the shared `cache/` it lists). B2's S3
+API exposes no sha256 — and a multipart upload's ETag is not a content hash —
+so in a deployed store that column is the recorded value or absent, never a
+guess derived from the listing. A candidate missing from the listing (an
+object written moments before the request) is verified by one `HEAD` rather
+than silently dropped; a genuinely absent one is skipped as before. `url` is
+signed with the same TTL as every other artifact link, so a dossier is
+browsable but never a durable public handle.
 
 ---
 
@@ -1009,12 +1014,17 @@ Create a project to hold spend that predates or outlived every project, then
 attribute every currently-unclaimed row to it (first-come by `before` = now,
 §3.11). No upload target exists — there is no video — and the project's source
 is absent until one is ever uploaded. `201` — the new project's summary plus
-`claimed`, the count of rows the rescue adopted.
+`claimed`, the count of rows the rescue adopted. Refused before anything is
+created when there are no unclaimed rows (a no-op claim must not mint an empty
+archive) or when the ledger is file-mode (which keeps no attributions — the
+same refusal as `/attributions`).
 
 | Status | When |
 |---|---|
 | `400 invalid_id` | Malformed project id (adopt) |
+| `400 invalid_request` | File-mode ledger — no attributions (claim) |
 | `409 already_claimed` | The prefix already has a readable project record (adopt) |
+| `422 precondition_failed` | No unclaimed rows to claim |
 | `503 storage_unavailable` | Storage cannot answer |
 
 Claiming rows into an **existing** project uses `POST /projects/{id}/attributions`
