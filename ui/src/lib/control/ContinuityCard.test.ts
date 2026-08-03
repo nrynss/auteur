@@ -15,8 +15,8 @@ const issue = {
 };
 
 const scenes = [
-  { id: "scene_04", index: 3, start_s: 7.833, end_s: 10.625, stats: { mean_luma: 106.66 } },
-  { id: "scene_05", index: 4, start_s: 10.625, end_s: 15.042, stats: { mean_luma: 138.42 } },
+  { id: "scene_04", index: 4, start_s: 7.833, end_s: 10.625, stats: { mean_luma: 106.66 } },
+  { id: "scene_05", index: 5, start_s: 10.625, end_s: 15.042, stats: { mean_luma: 138.42 } },
 ] as never[];
 
 function renderCard(runId: string | null) {
@@ -86,7 +86,7 @@ describe("ContinuityCard", () => {
         scenes: [
           {
             id: "scene_05",
-            index: 4,
+            index: 5,
             start_s: 10.625,
             end_s: 15.042,
             duration_s: 4.417,

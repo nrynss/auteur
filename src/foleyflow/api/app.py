@@ -309,7 +309,10 @@ def create_app(store: Optional[ProjectStore] = None,
         readiness = _readiness(state, scenes, qa_report)
         return ProjectDetail(
             **_summary(state.project, state.status,
-                       budget_usd=state.budget_usd).model_dump(),
+                       budget_usd=state.budget_usd,
+                       # ffprobe's duration, folded from the ingest event.
+                       duration_s=state.duration_s or state.project.duration_s
+                       ).model_dump(),
             source_sha256=state.source_sha256 or state.project.source_sha256 or None,
             latest_run_id=state.latest_run_id,
             timeline_version=state.timeline_version,
@@ -561,16 +564,24 @@ def create_app(store: Optional[ProjectStore] = None,
         shared stem — the lineage records the requested event index either
         way.
 
-        A billable regeneration must be confirmed: the estimate is shown to
-        the client, and `confirm_cost_usd` must come back equal to it (SPEC
-        §9.4) — the request is refused otherwise, so a client cannot spend
-        money it never displayed.
+        The estimate the client confirms is the re-mix's cache-miss projection
+        (plan_requests + cache probe, the same path the mix route prices with),
+        not one request's price: a repair re-mixes the whole timeline, and the
+        run bills every stem that is not cached at its own address — the target
+        under its fresh variant, plus whatever the previous mix never cached.
+        Quoting the target alone and billing several was the $0.30 → $1.50
+        surprise this replaced. A billable regeneration must be confirmed: the
+        estimate is shown to the client, and `confirm_cost_usd` must come back
+        equal to it (SPEC §9.4) — the request is refused otherwise, so a
+        client cannot spend money it never displayed.
         """
         from foleyflow.api.jobs import SlotTaken
-        from foleyflow.ledger import estimate_cost
+        from foleyflow.assemble import plan_requests
+        from foleyflow.ledger import project_spend
         from foleyflow.routing import SfxRequest, clamp_duration, route_event
-        from foleyflow.sfx import build_arguments
+        from foleyflow.sfx_cache import project_generation_cost, project_mix_cost
         from foleyflow.tiers import TierError, get_tier
+        from foleyflow.workflow import work_dir
 
         _check_project_id(project_id)
         state = _load_state(store, project_id)
@@ -607,23 +618,83 @@ def create_app(store: Optional[ProjectStore] = None,
                 duration_s=clamp_duration(tier.endpoint, request.duration_s),
                 category=request.category, tier=tier.name)
 
-        estimated = estimate_cost(request.endpoint, build_arguments(request))
+        # The repair's render re-mixes at tier "full" with the target under a
+        # fresh variant nonce and every other stem at its plain address (see
+        # _repair_work). The consent figure is therefore the cache-miss
+        # projection of that exact plan: the target is a miss by construction,
+        # and so is every stem the previous mix never cached. The placeholder
+        # variant below can never collide with a real repair nonce (those are
+        # "r" + run-id hex), and any fresh nonce probes as a miss anyway.
+        duration = (state.duration_s or state.project.duration_s
+                    or timeline.duration)
+        target = (request.endpoint, request.prompt,
+                  round(request.duration_s, 2))
+        planned = None
+        projection: dict = {"projected_cost_usd": None, "hits": None,
+                            "misses": None, "stem_count": None}
+        if duration:
+            try:
+                planned = plan_requests(timeline, duration, tier="full")
+                projection = project_mix_cost(
+                    store.backend, work_dir(), planned,
+                    variant_fn=lambda req: "pending" if (
+                        req.endpoint, req.prompt,
+                        round(req.duration_s, 2)) == target else "")
+            except (OSError, StorageError, ValueError, KeyError) as exc:
+                # The projection is advisory; a probe failure must not refuse
+                # the repair — but it must not open the consent gate on an
+                # unknown bill either (see the fallback below).
+                print(f"[api] repair projection unavailable: "
+                      f"{type(exc).__name__}: {exc}")
+                projection = {"projected_cost_usd": None, "hits": None,
+                              "misses": None, "stem_count": None}
+
+        estimated = projection["projected_cost_usd"]
+        hits = projection["hits"]
+        misses = projection["misses"]
+        if estimated is None and planned is not None:
+            # The cache probe failed: quote every planned stem as a miss (the
+            # worst case the re-mix can bill) and say the split is unknown.
+            # Under-quoting is the one direction that lets a client confirm a
+            # figure smaller than the bill.
+            estimated = project_generation_cost(planned)
+            hits = misses = None
+        if estimated is None:
+            # Nothing planned (no duration): nothing billable to quote.
+            estimated = 0.0
+        estimated = round(float(estimated), 4)
+
         if estimated > 0 and body.confirm_cost_usd is None:
             raise err.PreconditionFailed(
                 "Regeneration is billable; confirm the estimated cost shown "
-                "before proceeding (SPEC §9.4)",
+                "before proceeding",
+                # The citation is deliberately not in the message: a user
+                # reading an API error should not be pointed at an internal
+                # design document (SPEC §9.4, archived under
+                # docs/design/development/archives/).
                 detail={"project_id": project_id, "event_index": event_index,
                         "estimated_cost_usd": estimated,
+                        "cache_hits": hits, "cache_misses": misses,
                         "require": "confirm_cost_usd"})
         if body.confirm_cost_usd is not None and \
                 abs(body.confirm_cost_usd - estimated) > 1e-9:
             raise err.PreconditionFailed(
                 "confirm_cost_usd must match the estimate shown",
                 detail={"estimated_cost_usd": estimated,
-                        "confirm_cost_usd": body.confirm_cost_usd})
+                        "confirm_cost_usd": body.confirm_cost_usd,
+                        "cache_hits": hits, "cache_misses": misses})
 
         # Budget is advisory only (task 9d): confirm_cost_usd is the consent
         # gate for billable repair; the soft budget never refuses work.
+
+        spent: Optional[float] = None
+        try:
+            spent = float(project_spend(project_id)["total"])
+        except (StorageError, OSError, TypeError, ValueError) as exc:
+            print(f"[api] repair spend unreadable: {type(exc).__name__}: {exc}")
+            spent = None
+        projected_total = (
+            None if spent is None else round(spent + estimated, 4))
 
         try:
             run = runner.submit(
@@ -634,13 +705,22 @@ def create_app(store: Optional[ProjectStore] = None,
                           "event_name": event.name,
                           "endpoint": request.endpoint,
                           "tier": request.tier,
-                          "estimated_cost_usd": estimated},
+                          "estimated_cost_usd": estimated,
+                          "projected_cost_usd": estimated,
+                          "cache_hits": hits,
+                          "cache_misses": misses},
                 actor="user")
         except SlotTaken as e:
             raise err.AlreadyRunning(project_id, e.existing.run_id,
                                      e.existing.kind) from e
         return RunAccepted(run_id=run.id, kind="repair",
-                           estimated_cost_usd=estimated)
+                           estimated_cost_usd=estimated,
+                           projected_cost_usd=estimated,
+                           spent_usd=None if spent is None else round(spent, 4),
+                           budget_usd=state.budget_usd,
+                           projected_total_usd=projected_total,
+                           cache_hits=hits,
+                           cache_misses=misses)
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/dossier",
              response_model=DossierResponse, tags=["projects"])
@@ -1777,18 +1857,26 @@ def _status_of(store: ProjectStore, project_id: str) -> str:
 
 
 def _summary(project, status: str, *,
-             budget_usd: Optional[float] = ...) -> ProjectSummary:
+             budget_usd: Optional[float] = ...,
+             duration_s: Optional[float] = ...) -> ProjectSummary:
     """Project row for list/create.
 
     Pass ``budget_usd`` for the derived latest-wins figure. Omit it to fall
     back to the creation-time seed on the frozen project record. Pass
     ``None`` explicitly to mean "no advisory budget".
+
+    ``duration_s`` works the same way: omit it to read the frozen record's
+    creation-time value. The list route passes the folded state's value,
+    which is the ffprobe duration recorded at ingest (``EVENT_INPUT_RECORDED``)
+    — the frozen record is written before the bytes exist, so it would
+    otherwise show ``null`` for every HTTP-created project.
     """
     resolved = project.budget_usd if budget_usd is ... else budget_usd
+    resolved_duration = project.duration_s if duration_s is ... else duration_s
     return ProjectSummary(
         id=project.id, title=project.title, status=status,
         created_at=project.created_at, source_filename=project.source_filename,
-        duration_s=project.duration_s, budget_usd=resolved,
+        duration_s=resolved_duration, budget_usd=resolved,
     )
 
 
@@ -1796,7 +1884,10 @@ def _project_summary(store: ProjectStore, project) -> ProjectSummary:
     """List-row summary with derived status and latest-wins budget."""
     try:
         state = store.get_state(project.id)
-        return _summary(state.project, state.status, budget_usd=state.budget_usd)
+        return _summary(state.project, state.status, budget_usd=state.budget_usd,
+                        # ffprobe's duration, folded from the ingest event;
+                        # the frozen record only knows the creation-time value.
+                        duration_s=state.duration_s or state.project.duration_s)
     except StorageError:
         return _summary(project, "unknown")
 

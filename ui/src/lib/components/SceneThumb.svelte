@@ -27,10 +27,10 @@
   {#if src}
     <img src={src} alt={alt} loading="lazy" />
   {:else}
-    <span class="ph" aria-hidden="true">{index + 1}</span>
+    <span class="ph" aria-hidden="true">{index}</span>
   {/if}
   <span class="m num">
-    <span>{index + 1}</span>
+    <span>{index}</span>
     <span>{formatSeconds(start)}–{formatSeconds(end)}</span>
   </span>
 </button>

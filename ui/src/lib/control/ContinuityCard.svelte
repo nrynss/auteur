@@ -61,7 +61,7 @@
     <div class="compare">
       <figure>
         {#if prev?.thumbnail_url}
-          <img src={prev.thumbnail_url} alt={`Scene ${prev.index + 1}`} loading="lazy" />
+          <img src={prev.thumbnail_url} alt={`Scene ${prev.index}`} loading="lazy" />
         {:else}
           <span class="ph" aria-hidden="true"></span>
         {/if}
@@ -72,7 +72,7 @@
       </figure>
       <figure>
         {#if curr?.thumbnail_url}
-          <img src={curr.thumbnail_url} alt={`Scene ${curr.index + 1}`} loading="lazy" />
+          <img src={curr.thumbnail_url} alt={`Scene ${curr.index}`} loading="lazy" />
         {:else}
           <span class="ph" aria-hidden="true"></span>
         {/if}

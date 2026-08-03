@@ -204,6 +204,11 @@
         Google exposes no remaining-balance field, so this is a guide and
         never authoritative.
       </p>
+      <p class="note">
+        Rate-limited models only: a model without a declared daily allowance
+        (ElevenLabs SFX is billed per call) has no quota to show and appears
+        under <span class="k">By model</span> above instead.
+      </p>
     {/if}
 
     {#if ledgerShown && ledger}

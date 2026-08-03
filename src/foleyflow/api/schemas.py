@@ -33,17 +33,19 @@ class RunAccepted(BaseModel):
     cache is not knowable until the worker runs, so a value here could only
     ever be a guess — the client learns it from the completed run's metadata.
 
-    Mix responses also carry a pre-flight *projection* (task 9c): estimated
+    Mix and repair responses also carry a pre-flight *projection*: estimated
     cost of cache misses only, plus the project's current spend and advisory
     budget so the client can say "projected $2.40, taking this project to
-    $6.10 against a $5.00 budget." Label it a projection — not a bill.
+    $6.10 against a $5.00 budget." Label it a projection — not a bill. For a
+    repair it is also the consent figure `confirm_cost_usd` is checked
+    against, so the client confirms exactly what the re-mix can bill.
     """
 
     run_id: str
     kind: str
     status: str = "running"
     estimated_cost_usd: Optional[float] = None
-    # Mix pre-flight projection (optional; absent on analyze/repair/export).
+    # Pre-flight projection (optional; absent on analyze/export).
     projected_cost_usd: Optional[float] = None
     spent_usd: Optional[float] = None
     budget_usd: Optional[float] = None

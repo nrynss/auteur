@@ -27,7 +27,7 @@
       <SceneThumb
         index={s.index}
         src={s.thumbnail_url}
-        alt={`Scene ${s.index + 1}`}
+        alt={`Scene ${s.index}`}
         start={s.start_s}
         end={s.end_s}
         current={selected === s.index}

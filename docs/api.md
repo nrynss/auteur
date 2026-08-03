@@ -192,6 +192,11 @@ its hash and duration, ingests it through Genblaze, and emits
 `postproduction.project.created`. Asynchronous because ingest hashes and
 re-uploads a video.
 
+The project's `duration_s` (in the list and the detail) is that recorded
+duration — ffprobe's measurement of the actual source — folded from the ingest
+event. A project whose ingest predates duration recording reports `null` rather
+than an invented figure.
+
 #### Read
 
 ```
@@ -502,11 +507,35 @@ POST /api/v1/projects/{id}/events/{event_index}/regenerate
 { "provider": "…", "confirm_cost_usd": 0.02 }
 ```
 
-`202` — `{"run_id": "run_01K…", "estimated_cost_usd": 0.02}`
+`202` — `{"run_id": "run_01K…", "estimated_cost_usd": 0.02}` plus the
+pre-flight projection block the mix response carries:
+
+```json
+{
+  "run_id": "run_01K…",
+  "kind": "repair",
+  "estimated_cost_usd": 0.90,
+  "projected_cost_usd": 0.90,
+  "spent_usd": 3.70,
+  "budget_usd": 5.00,
+  "projected_total_usd": 4.60,
+  "cache_hits": 2,
+  "cache_misses": 3
+}
+```
 
 Addressed by **event index**, not name. Event names are descriptions and repeat
 within a timeline — the same clip has "leather holster creaking" twice — so a
 name is not an identifier.
+
+The estimate the client confirms is the **re-mix's cache-miss projection**
+(`plan_requests` + a cache probe, the same rule as `POST /mixes`), not one
+request's price: a repair re-mixes the whole timeline, and the run bills every
+stem that is not cached at its own address — the target under its fresh variant
+nonce, plus whatever the previous mix never cached. So an empty cache quotes the
+full re-mix, and a fully cached re-mix quotes the target alone ($0.30 on the
+paid tier). The figure is a projection: a mid-flight fallback can change the
+bill, and the advisory budget never refuses work.
 
 `confirm_cost_usd` is required when the regeneration is billable and must match
 the estimate the client was shown. SPEC.md §9.4 requires the estimate be shown
@@ -525,9 +554,10 @@ so two events routing to the same request already share one clip, and
 regenerating either regenerates the shared stem. The lineage records the
 requested event index either way.
 
-The `provider` field names a declared SFX tier to regenerate through; the request
-is re-aimed at that tier and the estimate is its cost. `422 precondition_failed`
-when there is no plan yet or a billable regeneration is not confirmed
+The `provider` field names a declared SFX tier to regenerate through; the
+request is re-aimed at that tier for the lineage. The quote is still the
+re-mix projection (the render plans the timeline at the active tier), so
+`422 precondition_failed` fires when a billable regeneration is not confirmed
 (`confirm_cost_usd`); the project's advisory budget never refuses work.
 `400 invalid_request` for an out-of-range index or an unknown provider.
 

@@ -18,20 +18,27 @@ const PROJECT = {
   source_filename: "standoff_kling.mp4",
   duration_s: 15.041667,
   budget_usd: 5,
+  source_sha256: "5f1bb4e419c9a3f090dac13627dc568897ec1e33b27cfe5bce06ce083e447c29",
+  latest_run_id: "run_2",
+  timeline_version: 5,
   scene_count: 5,
-  event_count: 3,
+  event_count: 57,
   readiness_percent: 83,
   readiness: [
-    { key: "timeline", label: "Timeline has events", state: "ok" },
-    { key: "qa", label: "QA measured", state: "warn", detail: "true peak over target" },
-    { key: "export", label: "Export exists", state: "blocked" },
-    { key: "publish", label: "Published", state: "pending" },
+    { key: "source", label: "Source video stored in B2", state: "ok", detail: "standoff_kling.mp4" },
+    { key: "scenes", label: "Scene analysis complete", state: "ok", detail: "5 scenes detected" },
+    { key: "timeline", label: "Foley plan proposed", state: "ok", detail: "timeline v5" },
+    { key: "mix", label: "Foley mix rendered", state: "ok", detail: "full tier, 5 stems" },
+    { key: "qa", label: "QA checks", state: "warn", detail: "exposure_discontinuity" },
+    { key: "export", label: "Final export approved", state: "pending", detail: null },
   ],
   has_export: false,
   blocks_export: false,
   mix_run_id: "run_2",
   source_url: "https://cdn/src.mp4",
   mix_url: "https://cdn/mix.mp4",
+  export_url: null,
+  manifest_url: null,
 };
 
 const TIMELINE = {
@@ -73,10 +80,15 @@ const RUNS = [
     kind: "mix",
     status: "completed",
     created_at: "2026-08-02T10:00:00Z",
-    timeline_version: 1,
+    timeline_version: 5,
+    parent_run_id: null,
+    genblaze_run_id: null,
+    current_stage: "qa",
+    error: null,
+    error_code: null,
     stages: [
-      { name: "render", status: "succeeded", elapsed_s: 12, retries: 0, provider: "b2" },
-      { name: "mix", status: "succeeded", elapsed_s: 3, retries: 0, provider: null },
+      { name: "stems", status: "succeeded", elapsed_s: 12, retries: 0, provider: "genblaze", error: null, genblaze_run_id: null, started_at: "2026-08-02T10:00:01Z", detail: "5/5 stems (0 cached)" },
+      { name: "mix", status: "succeeded", elapsed_s: 3, retries: 0, provider: "foleyflow-ffmpeg", error: null, genblaze_run_id: null, started_at: "2026-08-02T10:00:13Z", detail: null },
     ],
   },
 ];
@@ -84,7 +96,9 @@ const RUNS = [
 const SCENES = {
   scenes: [0, 1, 2, 3, 4].map((i) => ({
     id: `scene_0${i + 1}`,
-    index: i,
+    // Scene index is 1-based on the wire (scene_01 → index 1); the rail
+    // renders it verbatim. A 0-based fixture hid the old `index + 1` bug.
+    index: i + 1,
     start_s: i * 3,
     end_s: i * 3 + 3,
     duration_s: 3,
@@ -142,29 +156,40 @@ const LEDGER = {
 };
 
 const EVENTS = [
-  { id: "ev_1", type: "analysis", actor: "system", created_at: "2026-08-02T10:00:00Z" },
-  { id: "ev_2", type: "repair", actor: "director", created_at: "2026-08-02T10:06:00Z" },
+  { id: "evt_1", type: "postproduction.project.created", actor: "system", created_at: "2026-08-02T10:00:00Z", run_id: null, payload: { title: "Western standoff (silent)" } },
+  { id: "evt_2", type: "postproduction.repair.approved", actor: "director", created_at: "2026-08-02T10:06:00Z", run_id: "run_2", payload: { event_index: 2 } },
 ];
 
 const QA = {
   run_id: "run_2",
-  overall_status: "ok",
+  overall_status: "needs_review",
   audio: {
-    integrated_lufs: -21.4,
-    true_peak_dbtp: -1.0,
+    integrated_lufs: -18.3,
+    true_peak_dbtp: -1.2,
     target_lufs: -14.0,
     target_true_peak_dbtp: -1.0,
-    measured_run_id: "run_2",
+    loudness_range_lu: 19.3,
     measured: true,
+    measured_run_id: "run_2",
+    issues: [
+      {
+        severity: "warning",
+        code: "loudness_out_of_range",
+        scene_id: null,
+        compared_with: null,
+        confidence: null,
+        detail: "integrated loudness -18.3 LUFS is 4.3 LU from target -14.0",
+      },
+    ],
   },
   visual: {
     luma_delta_threshold: 20.0,
     issues: [
       {
-        code: "luma_jump",
+        severity: "warning",
+        code: "exposure_discontinuity",
         scene_id: "scene_05",
         compared_with: "scene_04",
-        mean_luma_delta: 31.8,
         confidence: 0.79,
         detail: "mean luma jumps 31.8 between scene_04 (106.7) and scene_05 (138.4)",
       },
@@ -184,20 +209,38 @@ const PEAKS = {
 const QUOTA = {
   estimate: true,
   ledger_writable: true,
+  // Only models with declared daily/minutely limits appear on /quota
+  // (get_all_quotas). Billed-only endpoints like eleven_text_to_sound_v2 have
+  // no rate limit and show under budget.by_model instead — exactly what a real
+  // payload from auteur.nryn.dev returns.
   models: [
     {
       model_id: "gemini-2.5-flash",
       status: "warn",
       per_minute: { used: 1, limit: 5, remaining: 4, fraction: 0.2, exhausted: false },
       per_day: { used: 18, limit: 20, remaining: 2, fraction: 0.9, exhausted: false },
-      resets_at: "2026-08-04T00:00:00Z",
+      resets_at: "2026-08-04T00:00:00-07:00",
     },
     {
-      model_id: "eleven_text_to_sound_v2",
+      model_id: "gemini-3.5-flash",
       status: "ok",
       per_minute: { used: 0, limit: 5, remaining: 5, fraction: 0, exhausted: false },
-      per_day: { used: 3, limit: 20, remaining: 17, fraction: 0.15, exhausted: false },
-      resets_at: "2026-08-04T00:00:00Z",
+      per_day: { used: 0, limit: 20, remaining: 20, fraction: 0, exhausted: false },
+      resets_at: "2026-08-04T00:00:00-07:00",
+    },
+    {
+      model_id: "gemini-3.5-flash-lite",
+      status: "ok",
+      per_minute: { used: 0, limit: 15, remaining: 15, fraction: 0, exhausted: false },
+      per_day: { used: 1, limit: 500, remaining: 499, fraction: 0.002, exhausted: false },
+      resets_at: "2026-08-04T00:00:00-07:00",
+    },
+    {
+      model_id: "gpt-5.6-luna",
+      status: "ok",
+      per_minute: { used: 0, limit: 500, remaining: 500, fraction: 0, exhausted: false },
+      per_day: { used: 0, limit: 2000, remaining: 2000, fraction: 0, exhausted: false },
+      resets_at: "2026-08-04T00:00:00-07:00",
     },
   ],
 };
@@ -512,7 +555,7 @@ test("screenshots: control room checklist tab, desktop", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await openControlRoom(page);
   await expect(page.getByRole("tab", { name: "Checklist" })).toBeVisible();
-  await expect(page.getByText("Timeline has events")).toBeVisible();
+  await expect(page.getByText("Foley plan proposed")).toBeVisible();
   await expect(page.locator(".block").first()).toBeVisible();
   await expect(page).toHaveScreenshot("control-room-checklist-1280.png");
 });
@@ -560,7 +603,7 @@ test("dark screenshots: control room checklist tab, desktop", async ({ page }) =
   await page.setViewportSize({ width: 1280, height: 800 });
   await openControlRoom(page);
   await expect(page.getByRole("tab", { name: "Checklist" })).toBeVisible();
-  await expect(page.getByText("Timeline has events")).toBeVisible();
+  await expect(page.getByText("Foley plan proposed")).toBeVisible();
   await expect(page).toHaveScreenshot("control-room-checklist-1280-dark.png");
 });
 

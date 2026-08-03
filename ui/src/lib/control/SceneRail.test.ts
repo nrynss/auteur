@@ -8,8 +8,8 @@ import { render } from "svelte/server";
 import SceneRail from "./SceneRail.svelte";
 
 const SCENES = [
-  { id: "scene_01", index: 0, start_s: 0, end_s: 3, duration_s: 3, stats: { mean_luma: 100 }, thumbnail_url: null },
-  { id: "scene_02", index: 1, start_s: 3, end_s: 6, duration_s: 3, stats: null, thumbnail_url: "https://cdn/thumbs/s2.jpg" },
+  { id: "scene_01", index: 1, start_s: 0, end_s: 3, duration_s: 3, stats: { mean_luma: 100 }, thumbnail_url: null },
+  { id: "scene_02", index: 2, start_s: 3, end_s: 6, duration_s: 3, stats: null, thumbnail_url: "https://cdn/thumbs/s2.jpg" },
 ] as never[];
 
 it("renders one thumb per scene with index and honest span", () => {

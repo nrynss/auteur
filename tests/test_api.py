@@ -62,6 +62,19 @@ def _timeline():
     ])
 
 
+def _write_wav(path, seconds=1.0, amplitude=0.1):
+    """Synthesize a short stereo clip for the stubbed generation seams."""
+    import numpy as np
+    import soundfile as sf
+
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    n = int(48000 * seconds)
+    tone = amplitude * np.sin(2 * np.pi * 220 * np.arange(n) / 48000)
+    sf.write(path, np.column_stack([tone, tone]).astype(np.float32), 48000,
+             format="WAV", subtype="FLOAT")
+    return path
+
+
 # -- error contract ---------------------------------------------------------
 
 def test_every_error_uses_the_same_shape(client):
@@ -406,6 +419,25 @@ def test_get_project_has_no_source_or_mix_url_before_artifacts(client, project):
     body = r.json()
     assert body.get("source_url") is None
     assert body.get("mix_url") is None
+
+
+def test_project_duration_reports_the_ingested_probe_not_creation_null(
+        client, store):
+    """The Duration column reads the ffprobe value recorded at ingest
+    (EVENT_INPUT_RECORDED), not the frozen record's creation-time null —
+    HTTP-created projects are created before their bytes exist, so the frozen
+    record cannot know the duration."""
+    project = store.create_project(title="A", input_key="k", source_sha256="",
+                                   source_filename="a.mp4")
+    assert project.duration_s is None
+    store.record_input(project.id, sha256="a" * 64, duration_s=8.125)
+
+    row = next(p for p in client.get(f"{API_PREFIX}/projects").json()["projects"]
+               if p["id"] == project.id)
+    assert row["duration_s"] == pytest.approx(8.125)
+
+    detail = client.get(f"{API_PREFIX}/projects/{project.id}").json()
+    assert detail["duration_s"] == pytest.approx(8.125)
 
 
 def test_get_project_source_url_null_when_key_reserved_but_object_missing(
@@ -1718,7 +1750,12 @@ def test_regenerate_maps_index_to_request_and_records_the_lineage(
 def test_regenerate_requires_confirmation_when_billable(
         client, store, project, monkeypatch):
     """SPEC §9.4: a billable regeneration must be confirmed with the exact
-    estimate the client was shown."""
+    estimate the client was shown.
+
+    The estimate is the re-mix's cache-miss projection, not one request's
+    price: with an empty cache the whole timeline (ambience + the two deduped
+    event stems) bills, so the figure is 3 × $0.30, not the target's $0.30.
+    """
     store.save_timeline(project.id, _timeline())
     _stub_repair_work(store, project, monkeypatch, {})
     monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
@@ -1727,7 +1764,9 @@ def test_regenerate_requires_confirmation_when_billable(
                     json={})
     assert r.status_code == 422
     detail = r.json()["error"]["detail"]
-    assert detail["estimated_cost_usd"] == pytest.approx(0.30)
+    assert detail["estimated_cost_usd"] == pytest.approx(0.90)
+    assert detail["cache_misses"] == 3
+    assert detail["cache_hits"] == 0
     assert detail["require"] == "confirm_cost_usd"
 
     r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
@@ -1735,9 +1774,13 @@ def test_regenerate_requires_confirmation_when_billable(
     assert r.status_code == 422
 
     r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
-                    json={"confirm_cost_usd": 0.30})
+                    json={"confirm_cost_usd": 0.90})
     assert r.status_code == 202
-    assert r.json()["estimated_cost_usd"] == pytest.approx(0.30)
+    body = r.json()
+    assert body["estimated_cost_usd"] == pytest.approx(0.90)
+    assert body["projected_cost_usd"] == pytest.approx(0.90)
+    assert body["cache_hits"] == 0
+    assert body["cache_misses"] == 3
 
 
 def test_regenerate_rejects_an_unknown_provider(client, store, project):
@@ -1750,9 +1793,11 @@ def test_regenerate_rejects_an_unknown_provider(client, store, project):
 
 def test_regenerate_provider_reroutes_to_an_approved_tier(
         client, store, project, monkeypatch):
-    """`provider` names a declared SFX tier: the request is re-aimed at it and
-    the estimate is that tier's — the free tier needs no confirmation even
-    when the active tier is paid."""
+    """`provider` names a declared SFX tier: the request is re-aimed at it
+    (the lineage records that request). The re-mix itself is planned at the
+    active tier — the render routes the timeline, not the re-aimed target —
+    so the quote is the active tier's cache-miss projection and confirmation
+    is still required when it is billable."""
     store.save_timeline(project.id, _timeline())
     captured = {}
     _stub_repair_work(store, project, monkeypatch, captured)
@@ -1760,10 +1805,138 @@ def test_regenerate_provider_reroutes_to_an_approved_tier(
 
     r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
                     json={"provider": "test"})
-    assert r.status_code == 202
-    assert r.json()["estimated_cost_usd"] == 0.0
+    assert r.status_code == 422, r.text
+    assert r.json()["error"]["detail"]["estimated_cost_usd"] == pytest.approx(0.90)
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+                    json={"provider": "test", "confirm_cost_usd": 0.90})
+    assert r.status_code == 202, r.text
+    assert r.json()["estimated_cost_usd"] == pytest.approx(0.90)
     _await_run(client, project.id, r.json()["run_id"])
     assert captured["request"].endpoint == "openmoss/moss-soundeffect-v2"
+
+
+def test_regenerate_quote_matches_the_run_bill_when_only_some_stems_are_cached(
+        client, store, budget_ledger, monkeypatch, tmp_path):
+    """The consent figure is the re-mix's cache-miss projection, and the run
+    bills exactly the stems that projection counted as misses — so the number
+    refused at 422 equals the ledger delta the confirmed run records.
+
+    Regression for the $0.30 → $1.50 defect: the route quoted one stem while
+    the re-mix billed every uncached one. With the ambience bed cached and
+    both event stems cold, the 422 must quote $0.60 (2 misses — the target
+    under its variant plus the other cold stem) and the run that follows must
+    add exactly two $0.30 rows to the ledger.
+    """
+    import shutil
+
+    from foleyflow import render as render_mod
+    from foleyflow import sfx_cache, stems
+    from foleyflow import workflow as workflow_mod
+    from foleyflow.assemble import plan_requests
+    from foleyflow.ledger import project_spend
+    from foleyflow.qa import AudioMetrics
+
+    # A repair re-mix must generate for real (this is the billing regression), so
+    # only the two provider seams are stubbed; the cache, the mix, the ledger
+    # and the run records all run. The generation stub bills like the real
+    # provider seam (LedgerRecordingMixin), so the ledger rows the run writes
+    # are the rows the assertions read.
+    calls = []
+
+    def _generate(request, dest_path):
+        calls.append(request)
+        return _write_wav(dest_path, seconds=max(request.duration_s, 0.5))
+
+    def _generate_many(requests, **kwargs):
+        from foleyflow.ledger import (
+            estimate_cost, get_params_hash, log_transaction,
+        )
+        from foleyflow.sfx import build_arguments
+        from foleyflow.stems import StemAttempt, StemResult
+
+        results = []
+        for request in requests:
+            calls.append(request)
+            log_transaction(request.endpoint,
+                            get_params_hash(build_arguments(request)),
+                            estimate_cost(request.endpoint,
+                                          build_arguments(request)),
+                            success=True, cost_source="estimate")
+            raw = str(tmp_path / f"raw{len(calls)}.wav")
+            _write_wav(raw, seconds=max(request.duration_s, 0.5))
+            results.append(StemResult(
+                request=request, served=request, local_path=raw,
+                attempts=[StemAttempt(
+                    tier=request.tier, endpoint=request.endpoint,
+                    status="succeeded", genblaze_run_id="gb-test")]))
+        return results
+
+    monkeypatch.setattr(stems, "generate_many", _generate_many)
+    monkeypatch.setattr(sfx_cache, "generate_canonical_wav", _generate)
+    monkeypatch.setattr(render_mod, "extract_audio", lambda *a, **k: False)
+    monkeypatch.setattr(
+        render_mod, "mux_video",
+        lambda video_path, wav_path, out_path: shutil.copyfile(wav_path, out_path))
+    monkeypatch.setattr(
+        "foleyflow.qa.measure_loudness",
+        lambda path: AudioMetrics(integrated_lufs=-14.2, true_peak_dbtp=-1.6,
+                                  loudness_range_lu=5.0))
+    monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
+
+    # Isolate the projection's work-dir probe from the shared /tmp scratch so
+    # no other test's stale local file can flip a stem to a hit.
+    scratch = tmp_path / "work"
+    monkeypatch.setattr(workflow_mod, "work_dir", lambda: str(scratch))
+
+    project = store.create_project(title="A", input_key="in/source.mp4",
+                                   source_sha256="a" * 64,
+                                   source_filename="a.mp4", duration_s=15.04)
+    store.save_timeline(project.id, _timeline())
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"\0" * 64)
+    store.backend.put(project.input_key, str(source), content_type="video/mp4")
+
+    # Warm exactly one planned stem (the ambience bed) at its plain cache
+    # address. The two event stems stay cold, so the projection must quote 2
+    # misses — the target under its variant plus the other cold event stem —
+    # and the run must bill exactly those 2.
+    planned = plan_requests(_timeline(), 15.04, tier="full")
+    ambience = planned[0]
+    cached = tmp_path / "cached.wav"
+    _write_wav(str(cached), seconds=max(ambience.duration_s, 0.5))
+    store.backend.put(sfx_cache.cache_object_key(
+        ambience.endpoint, ambience.prompt, ambience.duration_s, ""),
+        str(cached), content_type="audio/wav")
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+                    json={})
+    assert r.status_code == 422, r.text
+    detail = r.json()["error"]["detail"]
+    estimate = detail["estimated_cost_usd"]
+    assert estimate == pytest.approx(0.60)
+    assert detail["cache_misses"] == 2
+    assert detail["cache_hits"] == 1
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+                    json={"confirm_cost_usd": estimate})
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["estimated_cost_usd"] == pytest.approx(estimate)
+    assert body["projected_cost_usd"] == pytest.approx(estimate)
+    assert body["cache_hits"] == 1
+    assert body["cache_misses"] == 2
+
+    run = _await_run(client, project.id, body["run_id"])
+    assert run["status"] == "completed", run
+    assert run["metadata"]["generated_count"] == 2
+    assert run["metadata"]["ledger_delta_usd"] == pytest.approx(0.60)
+
+    # The ledger is the bill: exactly two billed stems, both the paid tier.
+    spend = project_spend(project.id)
+    assert spend["total"] == pytest.approx(0.60)
+    assert spend["by_endpoint"] == {"eleven_text_to_sound_v2": pytest.approx(0.60)}
+    assert len(calls) == 2
 
 
 # -- budget -----------------------------------------------------------------
@@ -1842,7 +2015,7 @@ def test_budget_is_advisory_and_never_refuses_work(client, store, budget_ledger,
 
     r = client.post(
         f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
-        json={"confirm_cost_usd": 0.30})
+        json={"confirm_cost_usd": 0.90})
     assert r.status_code == 202, r.text
 
     body = client.get(f"{API_PREFIX}/projects/{project.id}/budget").json()
@@ -1861,7 +2034,7 @@ def test_budget_allows_work_with_no_advisory_figure(client, store, budget_ledger
 
     r = client.post(
         f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
-        json={"confirm_cost_usd": 0.30})
+        json={"confirm_cost_usd": 0.90})
     assert r.status_code == 202, r.text
 
 
@@ -2437,7 +2610,7 @@ def test_unwritable_ledger_does_not_block_work(client, store, budget_ledger,
 
     r = client.post(
         f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
-        json={"confirm_cost_usd": 0.30})
+        json={"confirm_cost_usd": 0.90})
     assert r.status_code == 202, r.text
 
     body = client.get(f"{API_PREFIX}/projects/{project.id}/budget").json()

@@ -99,16 +99,23 @@ def project_generation_cost(requests) -> float:
 
 
 def project_mix_cost(backend: Backend, work_dir: str, requests,
-                     variant: str = "") -> dict:
+                     variant: str = "",
+                     variant_fn: Optional[Callable[[SfxRequest], str]] = None) -> dict:
     """Pre-flight mix projection: hits vs misses and miss cost only.
 
-    Reused by ``foleyflow prewarm --dry-run`` and the mix route so both say
-    the same thing. Label the figure a projection: a fallback escalation
-    mid-flight can change the price.
+    Reused by ``foleyflow prewarm --dry-run``, the mix route, and the repair
+    route so all three say the same thing. Label the figure a projection: a
+    fallback escalation mid-flight can change the price.
+
+    ``variant`` salts every request's probe address (mix route); ``variant_fn``
+    salts per request (the repair route, where exactly one stem carries the
+    nonce and the rest probe at their plain addresses). When both are given,
+    ``variant_fn`` wins.
     """
     hits, misses = [], []
     for request in requests:
-        (hits if is_cached(backend, work_dir, request, variant)
+        v = (variant_fn(request) if variant_fn is not None else "") or variant
+        (hits if is_cached(backend, work_dir, request, v)
          else misses).append(request)
     projected = project_generation_cost(misses)
     return {
