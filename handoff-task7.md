@@ -905,3 +905,23 @@ blanket component tests.
   timeline itself. Listed in `docs/design/control-room.md` §9. These are design
   work, not improvisation from the mockup, and they belong to the units that
   need them (7.8, 7.10, 7.11, 7.12).
+
+**Review follow-up (2026-08-03): aggregates now re-seed on a TTL.** The
+process-local quota and project-spend aggregates were seeded once per process
+and never re-scanned, so rows written by *another* process were invisible for
+the process's lifetime. Probed: with 8 rows in storage the aggregate reported
+3 while the scan path reported 8. That matters because the CLI (`foleyflow
+analyze`, `foleyflow render`, `scripts/seed_*.sh`) appends to the same bucket
+in its own process — quota, the guard that stops a demo blowing the 20/day
+Gemini free tier, would read 20 remaining while the provider refused the next
+call, and `foleyflow doctor` inherits the same stale view through the API.
+Spend had the identical shape, making it a money figure that under-reports.
+
+Both now re-seed from a full scan once they age past `_AGG_TTL_S` (30 s),
+bounding staleness to TTL + the row cache's own TTL — the same contract the
+row cache already had, instead of "until restart". Write-through keeps them
+exact for this process's own rows in between, so warm reads stay
+sub-millisecond. A write landing mid-scan bumps the epoch and the scan retries;
+under continuous writes an already-seeded aggregate keeps its exact
+write-through value rather than spinning. Regression tests cover both, and
+were verified to fail without the fix.

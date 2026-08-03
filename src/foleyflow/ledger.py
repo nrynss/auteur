@@ -157,10 +157,26 @@ _BUDGET_CACHE_TTL_S = 2.0
 _alert_claims: set = set()
 _alert_claim_lock = threading.Lock()
 
+# Both process-local aggregates below are exact for rows THIS process wrote,
+# and blind to rows any other process wrote. That matters: the CLI
+# (`foleyflow analyze`, `foleyflow render`, scripts/seed_*.sh) appends to the
+# same bucket in its own process, so a long-lived API server seeded once would
+# report its own writes forever and never see theirs. Quota is precisely the
+# guard that stops a demo blowing the 20/day Gemini free tier, and spend is
+# money, so neither may drift without bound.
+#
+# So the aggregates are re-seeded from a full scan once they age past this TTL.
+# Warm reads stay sub-millisecond in between; one scan per TTL is nothing
+# against the multi-second per-request scans this replaced. Staleness is now
+# bounded by TTL + the row cache's own TTL, matching the row cache's contract
+# rather than lasting until process restart.
+_AGG_TTL_S = 30.0
+
 # Quota timestamp aggregates: endpoint -> list of call timestamps (all outcomes).
 _quota_agg_lock = threading.Lock()
 _quota_ts: Dict[str, List[float]] = {}
 _quota_agg_seeded: bool = False
+_quota_agg_at: float = 0.0
 _quota_agg_epoch: int = 0
 
 
@@ -232,24 +248,40 @@ def _quota_note_transaction(endpoint: str, timestamp: float) -> None:
     """
     global _quota_agg_epoch
     with _quota_agg_lock:
+        # Always bump: a concurrent seed OR re-seed that started before this
+        # write must discard its snapshot rather than install one missing it.
+        _quota_agg_epoch += 1
         if _quota_agg_seeded:
             _quota_ts.setdefault(endpoint, []).append(float(timestamp))
-        else:
-            # Force reseed: a concurrent seed started before this write must
-            # not install a snapshot that misses it.
-            _quota_agg_epoch += 1
 
 
 def _ensure_quota_agg_seeded() -> None:
-    """Seed per-endpoint timestamps from a full ledger scan (once per process)."""
-    global _quota_agg_seeded, _quota_ts
+    """Seed per-endpoint timestamps from a full ledger scan.
+
+    Re-seeds once the aggregate ages past ``_AGG_TTL_S`` so rows written by
+    another process (the CLI writes to the same bucket) become visible. A
+    write landing mid-scan bumps the epoch and the scan is retried; under
+    continuous writes an already-seeded aggregate keeps its exact
+    write-through value rather than spinning, and tries again next TTL.
+    """
+    global _quota_agg_seeded, _quota_ts, _quota_agg_at
 
     if _file_ledger_path() is not None:
         return
 
+    attempts = 0
     while True:
+        attempts += 1
         with _quota_agg_lock:
-            if _quota_agg_seeded:
+            fresh = (_quota_agg_seeded
+                     and (time.monotonic() - _quota_agg_at) < _AGG_TTL_S)
+            if fresh:
+                return
+            # Contended re-seed: keep the exact write-through aggregate we
+            # already have and defer. Only reachable when already seeded, so
+            # nothing is missing that this process wrote.
+            if _quota_agg_seeded and attempts > 3:
+                _quota_agg_at = time.monotonic()
                 return
             epoch_at_start = _quota_agg_epoch
 
@@ -265,9 +297,9 @@ def _ensure_quota_agg_seeded() -> None:
             if _quota_agg_epoch != epoch_at_start:
                 # Write landed mid-seed; retry so the map includes new rows.
                 continue
-            if not _quota_agg_seeded:
-                _quota_ts = built
-                _quota_agg_seeded = True
+            _quota_ts = built
+            _quota_agg_seeded = True
+            _quota_agg_at = time.monotonic()
             return
 
 
@@ -799,6 +831,10 @@ def _install_running_spend(project_id: str, spend: Dict[str, Any]) -> Dict[str, 
         "estimated": float(spend["estimated"]),
         "actual": float(spend["actual"]),
         "by_endpoint": dict(spend.get("by_endpoint") or {}),
+        # When this snapshot was taken. Write-through keeps it exact for rows
+        # THIS process wrote; the stamp bounds how long another process's rows
+        # can stay invisible (see _AGG_TTL_S).
+        "seeded_at": time.monotonic(),
     }
     _running_spend[project_id] = entry
     return _spend_entry_to_result(entry)
@@ -828,7 +864,7 @@ def project_spend(project_id: str) -> Dict[str, Any]:
     plock = _project_lock(project_id)
     with plock:
         entry = _running_spend.get(project_id)
-        if entry is not None and "by_endpoint" in entry:
+        if entry is not None and "by_endpoint" in entry and _spend_fresh(entry):
             return _spend_entry_to_result(entry)
 
     # Seed outside the short critical path of concurrent readers that already
@@ -837,10 +873,27 @@ def project_spend(project_id: str) -> Dict[str, Any]:
     # miss a concurrent write-through (writes also hold this lock).
     with plock:
         entry = _running_spend.get(project_id)
-        if entry is not None and "by_endpoint" in entry:
+        if entry is not None and "by_endpoint" in entry and _spend_fresh(entry):
             return _spend_entry_to_result(entry)
+        # Cold, or aged past the TTL: re-scan so rows another process wrote
+        # against the same bucket are counted. The scan happens under the
+        # project lock, which write-through also takes, so a concurrent write
+        # cannot be lost between the scan and the install.
         spend = _project_spend_scan(project_id)
         return _install_running_spend(project_id, spend)
+
+
+def _spend_fresh(entry: Dict[str, Any]) -> bool:
+    """Whether a running-spend entry is young enough to answer from.
+
+    An entry with no stamp predates the TTL and is treated as stale, so a
+    process that has been up a while re-scans once rather than trusting a
+    snapshot of unknown age.
+    """
+    seeded_at = entry.get("seeded_at")
+    if not isinstance(seeded_at, (int, float)):
+        return False
+    return (time.monotonic() - seeded_at) < _AGG_TTL_S
 
 
 def _project_lock(project_id: str) -> threading.Lock:

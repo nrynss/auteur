@@ -790,3 +790,89 @@ def test_spend_no_overcount_after_seed_failure_then_concurrent_spend(
     scanned = ledger._project_spend_scan("proj_A")
     assert scanned["total"] == pytest.approx(0.50)
     assert agg["total"] == pytest.approx(0.50)
+
+
+# -- cross-process aggregate freshness (unit 7.18 review) --------------------
+#
+# The process-local aggregates are exact for rows THIS process wrote and blind
+# to rows any other process wrote. Seeded once and never re-scanned, a
+# long-lived API server reported its own writes forever: the CLI
+# (`foleyflow analyze`, scripts/seed_*.sh) appends to the same bucket in its
+# own process, so quota — the guard that stops a demo blowing the 20/day free
+# tier — would read 20 remaining while the provider refused the next call.
+# Spend had the same shape, which makes it a money figure that under-reports.
+
+def _foreign_row(backend, name, *, endpoint, project_id=None, cost=0.01):
+    """A row written by another process: straight to storage, no write-through."""
+    import json as _json
+    import time as _time
+    backend.put_bytes(
+        f"ledger/01FOREIGN{name}.json",
+        _json.dumps({
+            "endpoint": endpoint, "params_hash": name, "cost_estimate": cost,
+            "cost_source": "estimate", "success": True, "error": None,
+            "timestamp": _time.time(), "project_id": project_id,
+        }).encode("utf-8"),
+    )
+
+
+def test_quota_aggregate_picks_up_another_process_after_ttl(
+        storage_ledger, monkeypatch):
+    model = "gemini-2.5-flash"
+    monkeypatch.setattr(ledger, "_AGG_TTL_S", 0.0)   # always re-seed
+    monkeypatch.setattr(ledger, "_ROW_CACHE_TTL_S", 0.0)
+
+    from foleyflow import quota
+
+    ledger.log_transaction(model, "own", 0.005, success=True)
+    assert quota.get_quota(model).to_dict()["per_day"]["used"] == 1
+
+    for i in range(4):
+        _foreign_row(storage_ledger, f"q{i}", endpoint=model)
+
+    ledger._invalidate_row_cache()
+    assert quota.get_quota(model).to_dict()["per_day"]["used"] == 5
+
+
+def test_project_spend_picks_up_another_process_after_ttl(
+        storage_ledger, monkeypatch):
+    monkeypatch.setattr(ledger, "_AGG_TTL_S", 0.0)
+    monkeypatch.setattr(ledger, "_ROW_CACHE_TTL_S", 0.0)
+
+    project = "proj_01CROSSPROC"
+    with ledger.set_project_context(project):
+        ledger.log_transaction("m", "own", 0.02, success=True)
+    assert ledger.project_spend(project)["total"] == pytest.approx(0.02)
+
+    for i in range(3):
+        _foreign_row(storage_ledger, f"s{i}", endpoint="m",
+                     project_id=project, cost=0.05)
+
+    ledger._invalidate_row_cache()
+    assert ledger.project_spend(project)["total"] == pytest.approx(0.17)
+
+
+def test_write_through_stays_exact_within_the_ttl(storage_ledger, monkeypatch):
+    """The TTL must not cost exactness: own writes still count immediately."""
+    monkeypatch.setattr(ledger, "_AGG_TTL_S", 300.0)   # never re-seed here
+
+    project = "proj_01EXACTNESS"
+    with ledger.set_project_context(project):
+        for i in range(5):
+            ledger.log_transaction("m", f"h{i}", 0.01, success=True,
+                                   cost_source="actual")
+    spend = ledger.project_spend(project)
+    assert spend["total"] == pytest.approx(0.05)
+    assert spend["actual"] == pytest.approx(0.05)
+
+    with ledger.set_project_context(project):
+        ledger.log_transaction("m", "h5", 0.01, success=True)
+    assert ledger.project_spend(project)["total"] == pytest.approx(0.06)
+
+
+def test_a_stale_entry_without_a_stamp_is_refused(storage_ledger):
+    """Entries predating the stamp are treated as stale, never trusted."""
+    assert ledger._spend_fresh({"total": 1.0}) is False
+    assert ledger._spend_fresh({"total": 1.0, "seeded_at": "nope"}) is False
+    assert ledger._spend_fresh(
+        {"total": 1.0, "seeded_at": time.monotonic()}) is True
