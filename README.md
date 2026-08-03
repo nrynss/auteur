@@ -1,11 +1,40 @@
 # Auteur
 
-> An AI post-production copilot that turns a rough video into an auditable, production-ready deliverable.
+> **Sound design for video, where being fussy is free.**
 
-Built for the **Backblaze Generative AI Media Hackathon**. See [auteur.md](auteur.md) for what the product is and where it goes, and [docs/api.md](docs/api.md) for the HTTP contract.
+Auteur turns a silent or under-designed video into a finished, mixed soundtrack
+you can interrogate: every sound traceable to the call that made it, every
+placement adjustable without paying to move it, every version kept beside the
+last.
 
-Auteur analyzes a video, generates and mixes synchronized Foley, runs technical
-post-production checks, and preserves the full production record in Backblaze B2.
+Built for the **Backblaze Generative AI Media Hackathon**.
+
+## Why it exists
+
+Generative tools erode craft not because the output is bad, but because
+iterating is slow or costly, so "fine" becomes "shipped". **Slop is not a
+quality problem. It is an economics problem.** People accept a first take when
+a second one costs too much.
+
+Auteur's answer is its cost geometry. Moving an event is free. Resizing is
+free. Renaming and deleting are free. Only *generating* costs money, and it
+states the price before it spends. So you can be as particular as you like
+about placement — the thing that actually decides whether foley reads as real —
+without paying for an opinion.
+
+Three consequences shape the whole codebase:
+
+- **The model proposes; a person decides.** Director mode returns a diff,
+  ghosting old positions against new. It cannot apply an edit. The AI has no
+  commit rights.
+- **An approved take stays approved.** Same timeline in, byte-identical mix
+  out. Nothing drifts between sign-off and delivery.
+- **Every second is accountable.** Each generated sound traces to the call that
+  made it and the money it cost. When the spend record cannot be written, the
+  figures are withheld rather than shown as fiction.
+
+[auteur.md](auteur.md) is the full argument, what ships today, and where it
+goes. [docs/api.md](docs/api.md) is the HTTP contract.
 
 ## Status
 
@@ -29,6 +58,31 @@ installed as `foleyflow` too).
 
 The build log and every decision behind it are itemised in
 [handoff.md](handoff.md).
+
+## What is in it
+
+**A control room, not a status page.** A Svelte SPA served by the same
+container as the API. Timeline editing with drag, edge-resize and arrow nudges
+at three granularities; A/B against the original; a browser preview that
+schedules stems over the video for free while you decide. Draft state is local
+until you commit, and committing writes a new immutable version with the old
+ones one click away.
+
+**Evidence, not verdicts.** Loudness and true peak are reported against their
+targets; adjacent shots are shown as paired frames, never as a "fault". A
+measured number cannot render without naming the artifact it was measured from
+— that rule is enforced by the type system, not by convention.
+
+**Money in the open.** Cost is stated before any billable action and requires
+explicit confirmation. Per-project budgets with alerts. One immutable
+transaction row per call, recording the endpoint that actually served the work
+alongside the one that was requested.
+
+**A production record.** Source video, scenes, timelines, stems, mixes,
+exports, quality measurements, the event log, runs and the transaction record
+all live in B2. Completed generations are immutable. Project status is derived
+by folding the event log rather than stored alongside it, so it cannot disagree
+with what actually happened.
 
 ## Prerequisites
 
@@ -153,12 +207,44 @@ is never attached to a vendor CDN URL. Leave it empty for a loopback worker
 running open, and note that it is deliberately **not** part of the SFX cache key:
 rotating a transport credential must not orphan cached stems.
 
+## Tests and quality gates
+
+The Python suite runs fully offline. Billed provider calls are stubbed at two
+seams (`stems.generate_many`, `sfx_cache.generate_canonical_wav`); ffmpeg, the
+mix, the shared cache, storage and the Genblaze pipelines all run for real. No
+provider credentials are needed.
+
+```bash
+uv run pytest -q           # backend
+cd ui && npm test          # unit + accessibility gates
+cd ui && npm run test:e2e  # browser gate (needs a built bundle)
+```
+
+CI runs all three on every push, plus a Docker build that starts the image and
+asserts the SPA is served with no Node in the runtime layer.
+
+The UI gates are worth naming, because they encode product rules rather than
+just catching crashes:
+
+| Gate | What it enforces |
+|---|---|
+| `contrast.test.ts` | WCAG AA on every foreground/background pair a component actually produces, in both themes |
+| `a11y.test.ts` | axe over every route; no positive `tabindex`; no native `title=` attribute survives |
+| `help.test.ts` | Every glossary term renders somewhere and every rendered term resolves, so the keyboard map cannot drift from the handlers |
+| `layout.spec.ts` | Real-browser layout: no horizontal overflow at three widths, screenshot baselines in both themes, spend figures visible at 480px |
+| Em-dash check | Zero em dashes in rendered UI strings |
+
+The browser gate exists because jsdom has no layout engine. It has already
+caught bugs the unit suite could not see, including a panel that crashed on a
+project with no QA measurement and a viewer that collapsed to a 32px sliver at
+narrow widths.
+
 ## Deployment
 
 The app runs on Cloud Run. The GPU worker cannot — it needs CUDA and an 11 GB
 model — so it stays on a machine you control and is reached over a Cloudflare
 tunnel. That split is the whole reason the worker is "one more provider with a
-base URL" (SPEC §9.1).
+base URL" (archived spec §9.1).
 
 ### Secrets vs public config
 
@@ -385,3 +471,21 @@ Restart `cloudflared` afterwards; it does not reload config on its own. Set
 `FOLEYFLOW_SFX_WORKER_URL` to the hostname and give both sides the same
 `FOLEYFLOW_SFX_WORKER_TOKEN` — a tunnel puts a free GPU endpoint on the public
 internet, and it will be found.
+
+## Repository map
+
+| Path | What it is |
+|---|---|
+| `src/foleyflow/` | The package: analysis, routing, SFX, mix/mux, QA, storage, ledger, API, CLI |
+| `ui/` | The control room (Svelte 5 + Vite), built into the image |
+| `providers.toml` | The only place a vendor is named |
+| `scripts/` | Deploy, secrets, smoke check, seeding and benchmarks |
+| `docs/api.md` | The HTTP contract, source of truth for routes |
+| `docs/roadmap.md` | Self-host versus SaaS, and the modality future |
+| `docs/design/development/archives/` | Superseded development documents, kept because the code cites them by section |
+
+The package path, the `FOLEYFLOW_*` environment variables and the Cloud Run
+service name still read `foleyflow`. That is history, not branding: they are
+code and ops addresses, and renaming the live service would mint a new URL.
+The product a user sees is **Auteur**, and every identifier for it is lowercase
+`auteur`.
