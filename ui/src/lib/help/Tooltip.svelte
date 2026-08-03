@@ -40,6 +40,20 @@
   let open = $state(false);
   let anchor = $state<HTMLSpanElement | null>(null);
   let box = $state<HTMLDivElement | null>(null);
+
+  // Escape dismisses a tip whether it was opened by hover or by focus — a
+  // hover-opened tip has no focused anchor to receive the key (the action's
+  // own keydown only fires when the anchor is focused), so the listener is
+  // document-wide while the tip is open.
+  $effect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") open = false;
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   // Position after the tip is in the DOM, and again on open. The geometry
   // is the pure clampTipPosition (unit-tested; jsdom cannot measure layout).
   $effect(() => {

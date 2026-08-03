@@ -152,6 +152,20 @@ it("Term renders a defined term as a labelled button", () => {
   unmount(app);
 });
 
+it("HelpOverlay moves focus inside on open (the Escape bug's pin)", async () => {
+  const { target, app } = mountTo(HelpOverlay, { open: true, onclose: () => {} });
+  // The dialog focuses itself via a setTimeout(0) after mount — two ticks.
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  const close = target.querySelector("button.close") as HTMLButtonElement;
+  expect(close).toBeTruthy();
+  // Focus must land inside the dialog, so Escape (a dialog key) actually
+  // reaches the dialog's handler — the browser gate caught this when the
+  // overlay opened but never autofocused.
+  expect(document.activeElement).toBe(close);
+  unmount(app);
+});
+
 it("an undefined Term renders plainly without crashing", () => {
   const { target, app } = mountTo(Term, { term: "nonexistent-term" });
   expect(target.textContent).toBe("nonexistent-term");

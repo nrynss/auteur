@@ -889,6 +889,23 @@ The gate immediately earned its keep — three real bugs jsdom missed:
 - The `?` overlay never moved focus inside itself, so Escape from the outside
   could not close it; the close button now autofocuses on open.
 
+**More tests (browser + unit):**
+- **Playwright grew to 13 tests** — a second spec (`keyboard.spec.ts`) walks
+  Tab through the control room in real chromium asserting every interactive
+  control is reachable and the `?` overlay traps Tab while open and restores
+  focus on Escape; the tooltip spec gained a disabled-control tip (the Send
+  button's cost help), the rename/delete cost-geometry tips, a 480px
+  viewport clamp, and dark-theme rendering.
+- **The hover-vs-Escape gap surfaced as a real bug and is fixed**: a tip
+  opened by hover had no focused anchor to receive Escape (the action's own
+  keydown only fires on the focused anchor), so hover-opened tips could not
+  be dismissed by keyboard. The Tooltip now listens for Escape at the window
+  while open.
+- **Unit pins for the bugs the browser gate caught**: EvidencePanel renders
+  its empty state when a project has no QA measurement (audio null, visual
+  null — no throw), and the `?` overlay autofocus is pinned so the Escape
+  path stays wired.
+
 ## 23. Repo and image identity — S
 
 **Depends on:** 20, and best done after 22. **Files:** `pyproject.toml` (`[project.scripts]`),

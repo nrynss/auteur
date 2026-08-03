@@ -73,6 +73,14 @@ async function stubApi(page: Page): Promise<void> {
     if (path === "/api/v1/projects/proj_PW/scenes") return json({ scenes: [] });
     if (path === "/api/v1/projects/proj_PW/events") return json({ events: [] });
     if (path === "/api/v1/projects/proj_PW/runs") return json({ runs: [] });
+    if (path === "/api/v1/projects/proj_PW/dossier")
+      return json({
+        project_id: "proj_PW",
+        artifact_count: 0,
+        total_bytes: 0,
+        artifacts: [],
+        budget: { configured_usd: 5, spent_usd: 0, estimate: true, ledger_writable: true },
+      });
     if (path === "/api/v1/projects/proj_PW/qa")
       return json({ run_id: "run_1", audio: null, visual: null });
     if (path === "/api/v1/projects/proj_PW/ledger")
@@ -239,6 +247,63 @@ test("? opens the keyboard map and glossary; Escape closes and restores focus", 
   await expect(overlay).toBeHidden();
 });
 
+// -- more tooltip surfaces ---------------------------------------------------
+
+test("a disabled control's help is still reachable on hover", async ({ page }) => {
+  await openControlRoom(page);
+  await page.getByRole("tab", { name: "Director" }).click();
+  // The composer is empty, so Send is disabled — its help explains the cost.
+  const send = page.locator(".composer button[type=submit]");
+  await send.hover();
+  const tip = page.locator('[role="tooltip"]');
+  await expect(tip).toBeVisible();
+  await expect(tip).toContainText("one billed director-model call");
+  await expectTipClearOf(page, send);
+});
+
+test("the cost-geometry help on rename and delete renders clear of its anchor", async ({ page }) => {
+  await openControlRoom(page);
+  await page.locator(".block").first().click();
+  const rename = page.getByRole("button", { name: "rename" });
+  await rename.hover();
+  const tip = page.locator('[role="tooltip"]');
+  await expect(tip).toBeVisible();
+  await expect(tip).toContainText("free to commit");
+  await expectTipClearOf(page, rename);
+  await page.keyboard.press("Escape");
+  await expect(tip).toBeHidden();
+
+  const del = page.getByRole("button", { name: "delete" });
+  await del.hover();
+  await expect(page.locator('[role="tooltip"]')).toBeVisible();
+  await expect(page.locator('[role="tooltip"]')).toContainText("already spent");
+  await expectTipClearOf(page, del);
+});
+
+test("a tip on a narrow viewport is clamped inside it", async ({ page }) => {
+  await page.setViewportSize({ width: 480, height: 700 });
+  await stubApi(page);
+  await page.goto("/projects/proj_PW");
+  // At 480px the chrome title truncates; wait on the brand instead.
+  await expect(page.locator(".brand").first()).toBeVisible();
+  const term = page.locator("button.term", { hasText: "readiness" });
+  await term.focus();
+  await expectTipClearOf(page, term);
+});
+
+test("tips render in the dark theme too", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await openControlRoom(page);
+  const term = page.locator("button.term", { hasText: "readiness" });
+  await term.focus();
+  await expectTipClearOf(page, term);
+  // The tip must actually use the dark surface, not a light default.
+  const bg = await page.locator('[role="tooltip"]').evaluate(
+    (el) => getComputedStyle(el).backgroundColor,
+  );
+  expect(bg).not.toBe("rgb(255, 255, 255)");
+});
+
 // -- console errors across the routes ----------------------------------------
 
 test("no console errors or unhandled rejections on any route", async ({ page }) => {
@@ -251,7 +316,17 @@ test("no console errors or unhandled rejections on any route", async ({ page }) 
 
   for (const path of ["/", "/projects/proj_PW", "/config", "/unclaimed"]) {
     await page.goto(path);
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(300);
+    if (path === "/projects/proj_PW") {
+      // Open every tab: the lazy fetches (ledger, dossier) and each panel's
+      // render must not error either.
+      const tabs = page.getByRole("tab");
+      const count = await tabs.count();
+      for (let i = 0; i < count; i += 1) {
+        await tabs.nth(i).click();
+        await page.waitForTimeout(150);
+      }
+    }
   }
   expect(errors, `console errors on the routes:\n${errors.join("\n")}`).toEqual([]);
 });
