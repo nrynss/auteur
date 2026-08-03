@@ -1,6 +1,6 @@
 # Handoff — task 7, the control room
 
-The one piece of FoleyFlow still unbuilt. Written 2026-08-02.
+The one piece of Auteur still unbuilt. Written 2026-08-02.
 
 `handoff.md` carries the summary; this file is the whole thing, chunked into
 units that can be picked up independently. **§A is background every unit
@@ -53,7 +53,7 @@ Settled; not open unless a unit proves one impossible.
 6. **Scope is the full app**, including project creation and upload.
 7. **The old dashboard is deleted outright** — `api/static/index.html` and the
    single-file router in `api/dashboard.py`. Not kept behind a second route.
-8. **Built assets are never committed.** FoleyFlow is a SaaS; the UI is built
+8. **Built assets are never committed.** Auteur is a SaaS; the UI is built
    in the Docker image. A developer running the API without Node gets a clear
    "UI not built" response from the router — not a 404, and not a stale bundle
    in git pretending to be current.
@@ -971,7 +971,7 @@ the screen must not present them as one list with one button.
    `projects/` and keeping keys ending `/project.json` (`projects.py`), so a
    prefix whose `project.json` is missing or unreadable is invisible to the
    entire product while its artifacts still exist and still cost storage.
-   Nothing in FoleyFlow deletes anything — there is no `DELETE` route and no
+   Nothing in Auteur deletes anything — there is no `DELETE` route and no
    backend delete method — so these accumulate and never leave.
 3. **Shared `cache/` stems.** These are **not orphans and must never be
    claimable.** A cache key is `sha256(endpoint, prompt, duration)`: it is an

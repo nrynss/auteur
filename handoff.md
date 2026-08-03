@@ -1,6 +1,6 @@
 # Handoff — development
 
-Code work remaining on FoleyFlow. Written 2026-08-02.
+Code work remaining on Auteur. Written 2026-08-02.
 
 Sizes: **XS** one edit · **S** one file or one route · **M** spans modules,
 needs tests · **L** a build in its own right.
@@ -30,7 +30,7 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   `stems.generate_many` and `sfx_cache.generate_canonical_wav`. Everything else
   — ffmpeg, the mix, the shared cache, storage, the Genblaze pipelines — runs
   for real.
-- Genblaze is the orchestration spine. `providers/genblaze.py` wraps a FoleyFlow
+- Genblaze is the orchestration spine. `providers/genblaze.py` wraps an Auteur
   `Adapter` in Genblaze's `SyncProvider` contract; `stems.py` is the fan-out;
   `stages.py` is the mix/mux/QA stage log; `tiers.py` resolves paid → fallback →
   test. Adding a provider means a connector plus a `providers.toml` entry, not a
@@ -816,7 +816,7 @@ built from the renamed image passes `scripts/smoke_deploy.py`; and the
 
 The GPU worker (`../moss-sfx-worker`) is **not part of this hackathon
 submission**. It is a separate repo with its own README and `AGENTS.md`, and
-FoleyFlow depends on it only as an HTTP endpoint behind
+Auteur depends on it only as an HTTP endpoint behind
 `FOLEYFLOW_SFX_WORKER_URL`. Do not vendor it, import from it, or add torch to
 this project's dependencies — keeping the deployed app free of CUDA is the whole
 point of the split (SPEC §9.1).

@@ -2,7 +2,7 @@
   "name": "foleyflow-control-room",
   "private": true,
   "version": "0.1.0",
-  "description": "FoleyFlow control room — Svelte 5 SPA built into the Python package's static dir",
+  "description": "Auteur control room — Svelte 5 SPA built into the Python package's static dir",
   "type": "module",
   "engines": {
     "node": ">=22.12.0"
