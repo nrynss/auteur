@@ -9,13 +9,21 @@
  */
 import type { Page, Request } from "@playwright/test";
 
-/** POST/PUT paths that spend money or start billable work. */
+/**
+ * POST/PUT/PATCH paths that spend money or start provider-backed work.
+ * Intentionally free writes (not matched): PUT …/timeline (draft commit
+ * storage), PUT …/budget (config only), unclaimed claim/adopt (ops).
+ */
 const BILLABLE_PATH =
-  /\/api\/v1\/projects\/[^/]+\/(director|mixes|exports)(?:\?|$)|\/events\/[^/]+\/regenerate(?:\?|$)/;
+  /\/api\/v1\/projects\/[^/]+\/(director|mixes|exports|analyze)(?:\?|$)|\/events\/[^/]+\/regenerate(?:\?|$)/;
 
-/** Button / dialog labels we must never activate. */
+/**
+ * Button / dialog labels we must never activate.
+ * Allowed playback labels (not forbidden): "Foley mix", "Original", "Preview",
+ * "Play", "Pause" — "Foley mix" is explicitly allowlisted before this pattern.
+ */
 const FORBIDDEN_CLICK =
-  /\b(mix|export|regenerate|confirm cost|confirm &|send)\b/i;
+  /\b(mix|export|regenerate|confirm cost|confirm &|send|start mix|start export)\b/i;
 
 export interface Safety {
   violations: string[];
@@ -69,6 +77,7 @@ export async function installSafety(page: Page): Promise<Safety> {
 
   await page.addInitScript((patternSource: string) => {
     const re = new RegExp(patternSource, "i");
+
     const labelOf = (el: EventTarget | null): string => {
       if (!(el instanceof Element)) return "";
       const btn = el.closest("button, [role='button'], a, input[type='submit']");
@@ -81,21 +90,67 @@ export async function installSafety(page: Page): Promise<Safety> {
         (btn.getAttribute("title") || "")
       );
     };
+
+    /** Director submit is a form button labelled "⏎", not "Send". */
+    const isDirectorComposerControl = (el: EventTarget | null): boolean => {
+      if (!(el instanceof Element)) return false;
+      const director = el.closest('[aria-label="Director mode"]');
+      if (!director) return false;
+      return Boolean(
+        el.closest("form.composer") ||
+          el.closest("form") ||
+          (el instanceof HTMLButtonElement && el.type === "submit") ||
+          el.closest('button[type="submit"]'),
+      );
+    };
+
     document.addEventListener(
       "click",
       (e) => {
+        if (isDirectorComposerControl(e.target)) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          // @ts-expect-error injected
+          window.__demoSafetyNote?.(
+            "Forbidden click blocked: director composer submit",
+          );
+          return;
+        }
         const label = labelOf(e.target).trim();
         if (!label) return;
         // Allow "Foley mix" (A/B source toggle) — not the spend Mix action.
-        if (/foley\s*mix/i.test(label) && !/\b(run|start|confirm)\b/i.test(label)) {
+        // Allowed playback labels: Foley mix, Original, Preview, Play, Pause.
+        if (
+          /foley\s*mix/i.test(label) &&
+          !/\b(run|start|confirm)\b/i.test(label)
+        ) {
           return;
         }
         if (re.test(label)) {
           e.preventDefault();
           e.stopImmediatePropagation();
           // @ts-expect-error injected
-          window.__demoSafetyNote?.(`Forbidden click blocked: ${label.slice(0, 80)}`);
+          window.__demoSafetyNote?.(
+            `Forbidden click blocked: ${label.slice(0, 80)}`,
+          );
         }
+      },
+      true,
+    );
+
+    // Catch Enter-to-submit on the director composer (label is ⏎, not "Send").
+    document.addEventListener(
+      "submit",
+      (e) => {
+        const form = e.target;
+        if (!(form instanceof HTMLFormElement)) return;
+        if (!form.closest('[aria-label="Director mode"]')) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        // @ts-expect-error injected
+        window.__demoSafetyNote?.(
+          "Forbidden submit blocked: director composer form",
+        );
       },
       true,
     );

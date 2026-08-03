@@ -4,6 +4,9 @@
  * Each test = one clip = one browser context with recordVideo → one WebM
  * in demo/product/{id}.webm. Video is flushed on context.close(); path is
  * read only after that. Never stubs the API with fixtures (real backend only).
+ *
+ * Failed takes never overwrite a previous good WebM: only a clean beat
+ * promotes the temp recording to the final path.
  */
 import { test, expect, type Browser, type Page } from "@playwright/test";
 import fs from "node:fs/promises";
@@ -19,9 +22,10 @@ import {
   VIEWPORT,
 } from "./config.ts";
 import { CLIPS, filterClips, type Clip } from "./clips.ts";
-import { installSafety } from "./safety.ts";
+import { installSafety, type Safety } from "./safety.ts";
 
 const ONLY = process.env.DEMO_CLIP; // comma-separated ids, optional
+const MIN_VIDEO_BYTES = 10_000;
 
 test.describe.configure({ mode: "serial" });
 
@@ -48,6 +52,7 @@ for (const clip of filterClips(ONLY)) {
 async function runClip(browser: Browser, clip: Clip): Promise<void> {
   const projectId = PROJECTS[clip.project];
   const dest = path.join(OUT_DIR, `${clip.id}.webm`);
+  const failedDest = path.join(OUT_DIR, ".tmp", `${clip.id}.failed.webm`);
 
   const context = await browser.newContext({
     baseURL: BASE_URL,
@@ -58,33 +63,78 @@ async function runClip(browser: Browser, clip: Clip): Promise<void> {
       dir: path.join(OUT_DIR, ".tmp"),
       size: { ...VIDEO_SIZE },
     },
-    // Prefer dark film grain without OS bleed-through.
     ignoreHTTPSErrors: false,
   });
 
-  const page = await context.newPage();
-  const safety = await installSafety(page);
+  let page: Page | null = null;
+  let safety: Safety | null = null;
+  let beatError: unknown = null;
+  let success = false;
 
   try {
+    page = await context.newPage();
+    safety = await installSafety(page);
     await openProject(page, projectId);
     await BEATS[clip.id](page, clip);
-    safety.assertClean();
+    success = true;
+  } catch (e) {
+    beatError = e;
   } finally {
-    // Video file is written when the context closes — not when the page does.
-    const video = page.video();
-    await context.close();
-    if (!video) {
-      throw new Error(`No video recorded for ${clip.id}`);
+    // Money-guard trips must surface even when the beat already failed.
+    let safetyError: Error | null = null;
+    try {
+      safety?.assertClean();
+    } catch (e) {
+      safetyError = e instanceof Error ? e : new Error(String(e));
     }
-    const tmpPath = await video.path();
-    await fs.rename(tmpPath, dest);
-    const st = await fs.stat(dest);
-    if (st.size < 10_000) {
+
+    // Video file is written when the context closes — not when the page does.
+    const video = page?.video() ?? null;
+    await context.close();
+
+    if (video) {
+      const tmpPath = await video.path();
+      if (success && !safetyError) {
+        await fs.rename(tmpPath, dest);
+        const st = await fs.stat(dest);
+        if (st.size < MIN_VIDEO_BYTES) {
+          // Undersized "success" is still a bad take — demote so we don't
+          // leave a soft film over a previous good file without notice.
+          await fs.rename(dest, failedDest).catch(() => undefined);
+          beatError = new Error(
+            `${clip.id}: output too small (${st.size} bytes) — capture may have failed`,
+          );
+          success = false;
+        } else {
+          console.log(
+            `[demo] wrote ${dest} (${(st.size / 1024 / 1024).toFixed(2)} MiB)`,
+          );
+        }
+      } else {
+        // Never overwrite a previous good dest with a partial/failed take.
+        await fs.rename(tmpPath, failedDest).catch(async () => {
+          await fs.unlink(tmpPath).catch(() => undefined);
+        });
+        console.error(
+          `[demo] discarded failed take for ${clip.id}` +
+            (success ? " (safety)" : " (beat)") +
+            ` → ${failedDest}`,
+        );
+      }
+    } else if (success && !safetyError) {
+      beatError = new Error(`No video recorded for ${clip.id}`);
+      success = false;
+    }
+
+    if (safetyError && beatError) {
       throw new Error(
-        `${clip.id}: output too small (${st.size} bytes) — capture may have failed`,
+        `${clip.id}: beat failed and safety violated.\n` +
+          `Beat: ${beatError instanceof Error ? beatError.message : String(beatError)}\n` +
+          `Safety: ${safetyError.message}`,
       );
     }
-    console.log(`[demo] wrote ${dest} (${(st.size / 1024 / 1024).toFixed(2)} MiB)`);
+    if (safetyError) throw safetyError;
+    if (beatError) throw beatError;
   }
 }
 
@@ -254,17 +304,13 @@ const BEATS: Record<string, Beat> = {
 
   async "10_dossier"(page, clip) {
     await page.getByRole("tab", { name: "Artifacts" }).click();
-    // Composing can take tens of seconds (one HEAD per object).
-    await expect(
-      page.locator("#tab-artifacts").getByText(/artifacts ·|No artifacts|could not be loaded/i),
-    ).toBeVisible({ timeout: 120_000 });
-    // Prefer the real inventory when present.
-    const summary = page.locator("#tab-artifacts .summary");
-    if (await summary.count()) {
-      await expect(summary).toBeVisible();
-    }
-    await page.waitForTimeout(2_000);
     const panel = page.locator("#tab-artifacts");
+    // Composing can take tens of seconds (one HEAD per object). Require the
+    // real inventory summary — outage/empty empty-states must fail the take.
+    await expect(panel.locator(".summary")).toBeVisible({ timeout: 120_000 });
+    await expect(panel.locator(".summary")).toContainText(/artifacts ·/i);
+    await expect(panel.getByText(/could not be loaded|No artifacts yet/i)).toHaveCount(0);
+    await page.waitForTimeout(2_000);
     await panel.evaluate((el) => {
       el.scrollTop = el.scrollHeight * 0.3;
     });

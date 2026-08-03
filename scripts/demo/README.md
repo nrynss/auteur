@@ -15,8 +15,10 @@ director-mode send bills real money.
 **This harness must not trigger a billable action.** It never clicks Mix,
 Export, Regenerate, or director Send, and never confirms a cost dialog. A
 fail-closed safety layer aborts accidental billable POSTs
-(`/director`, `/mixes`, `/exports`, `/regenerate`) and refuses clicks whose
-labels match spend language.
+(`/director`, `/mixes`, `/exports`, `/regenerate`, `/analyze`), blocks
+director form submit (including the `⏎` button and Enter), and refuses
+clicks whose labels match spend language. Allowed playback labels: Foley
+mix, Original, Preview, Play, Pause.
 
 Free by design: navigation, tabs, hover, select, drag, arrow-nudge, A/B
 preview, scrubbing, opening Evidence / Spend / Artifacts / Director.
@@ -58,8 +60,8 @@ Environment overrides:
 | `DEMO_HEADED` | unset | Set `1` to watch the browser |
 | `--skip-ledger` | off | Skip before/after ledger count check |
 
-Project ids are defined in **one place**: `config.ts` (mirrored in `run.mjs`
-for `--list` without a TS load).
+Project ids and the clip list live in **one place**: `inventory.json`
+(loaded by both `run.mjs` and the Playwright specs).
 
 ## Clip inventory (product only)
 
@@ -121,7 +123,12 @@ for f in demo/product/*.webm; do
 done
 
 # Ledger: run.mjs prints before/after total_count; both must match.
+# Unreadable ledger (HTTP/network) fails the session — fail closed, not null===null.
 ```
+
+Failed takes land under `demo/product/.tmp/{id}.failed.webm` and **do not**
+overwrite a previous good `demo/product/{id}.webm`.
+
 
 ## What it will not do
 

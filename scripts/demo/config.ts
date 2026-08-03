@@ -1,6 +1,6 @@
 /**
- * Demo capture pins. Project ids live here and only here — env can override,
- * but nothing else hardcodes a proj_* string.
+ * Demo capture pins. Project ids and defaults live in inventory.json —
+ * the single hardcode site. Env can override at runtime.
  *
  * Warmth (verified against the live service before capture):
  * - primary: Desert duel — timeline 200, mix+export, QA measured + visual
@@ -14,6 +14,8 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import inventory from "./inventory.json" with { type: "json" };
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 /** Repo root (scripts/demo → ../..). */
@@ -24,16 +26,15 @@ export const OUT_DIR = path.join(REPO_ROOT, "demo/product");
 
 /** Live service. Never the browser-gate stubs. */
 export const BASE_URL =
-  process.env.DEMO_BASE_URL?.replace(/\/$/, "") || "https://auteur.nryn.dev";
+  process.env.DEMO_BASE_URL?.replace(/\/$/, "") || inventory.defaultBaseUrl;
 
 /**
- * Seeded projects. Override with DEMO_PROJECT_ID / DEMO_SPEND_PROJECT_ID
- * when re-seeding; do not scatter ids through the specs.
+ * Seeded projects. Override with DEMO_PROJECT_ID when re-seeding.
+ * Default ids come only from inventory.json.
  */
 export const PROJECTS = {
   /** All product clips (including Spend) until a seed has both ledger + healthy timeline. */
-  primary:
-    process.env.DEMO_PROJECT_ID || "proj_01KZ1151RJ9GP7MSRGHB0X77ET",
+  primary: process.env.DEMO_PROJECT_ID || inventory.defaultProjects.primary,
 } as const;
 
 export type ProjectKey = keyof typeof PROJECTS;

@@ -7,73 +7,33 @@
  *   node run.mjs --clip 01_room      # re-shoot one clip
  *   node run.mjs --clip 01_room,05_listen
  *
- * Hits the live paid service (default https://auteur.nryn.dev). Free beats
+ * Hits the live paid service (default from inventory.json). Free beats
  * only — never Mix / Export / Regenerate / director send. Ledger counts are
  * printed before and after so a session can prove it spent nothing.
+ *
+ * Clip ids and default project ids: inventory.json (single source of truth).
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import inventory from "./inventory.json" with { type: "json" };
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "../..");
 const OUT_DIR = path.join(REPO_ROOT, "demo/product");
 
-// Keep in sync with config.ts / clips.ts — pure data so --list needs no TS.
-const BASE_URL = (process.env.DEMO_BASE_URL || "https://auteur.nryn.dev").replace(
-  /\/$/,
-  "",
-);
+const BASE_URL = (
+  process.env.DEMO_BASE_URL || inventory.defaultBaseUrl
+).replace(/\/$/, "");
+
 const PROJECTS = {
-  primary: process.env.DEMO_PROJECT_ID || "proj_01KZ1151RJ9GP7MSRGHB0X77ET",
+  primary: process.env.DEMO_PROJECT_ID || inventory.defaultProjects.primary,
 };
 
-/** Mirrors clips.ts (ids + project key + notes). */
-const CLIPS = [
-  {
-    id: "01_room",
-    project: "primary",
-    title: "Control room on a seeded project, real timeline",
-    free: true,
-  },
-  {
-    id: "04_director",
-    project: "primary",
-    title: "Director mode panel (free surface only — no send)",
-    free: true,
-  },
-  {
-    id: "05_listen",
-    project: "primary",
-    title: "A/B or mix playing",
-    free: true,
-  },
-  {
-    id: "07_nudge",
-    project: "primary",
-    title: "Free nudge: drag / arrow an event",
-    free: true,
-  },
-  {
-    id: "08_spend",
-    project: "primary",
-    title: "Spend tab: budget, thresholds, transactions",
-    free: true,
-  },
-  {
-    id: "09_evidence",
-    project: "primary",
-    title: "Evidence tab: loudness, true peak, shot-to-shot",
-    free: true,
-  },
-  {
-    id: "10_dossier",
-    project: "primary",
-    title: "Artifacts tab: full inventory with sizes",
-    free: true,
-  },
-];
+/** Clip list — loaded from inventory.json, same file as the Playwright specs. */
+const CLIPS = inventory.clips;
 
 const args = process.argv.slice(2);
 const listOnly = args.includes("--list") || args.includes("-l");
@@ -103,13 +63,24 @@ async function main(only) {
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
 
-  const projectIds = [...new Set(selected.map((c) => PROJECTS[c.project]))];
+  const projectIds = [
+    ...new Set(selected.map((c) => PROJECTS[c.project] || PROJECTS.primary)),
+  ];
+
   let before = null;
   if (!skipLedger) {
     before = await ledgerSnapshot(projectIds);
     console.log("Ledger BEFORE:");
     printLedger(before);
     console.log("");
+    const baselineErr = validateSnapshot(before, projectIds, "BEFORE");
+    if (baselineErr) {
+      console.error(baselineErr);
+      console.error(
+        "Cannot establish a ledger baseline — refusing to capture (fail closed).",
+      );
+      process.exit(2);
+    }
   }
 
   const env = {
@@ -119,36 +90,20 @@ async function main(only) {
   };
   if (only) env.DEMO_CLIP = only;
 
+  // Always take AFTER ledger even when Playwright fails — money check is not
+  // success-path only.
   const code = await runPlaywright(env);
   if (code !== 0) {
     console.error(`\nPlaywright exited ${code}`);
-    process.exit(code);
   }
 
+  let ledgerExit = 0;
   if (!skipLedger) {
     const after = await ledgerSnapshot(projectIds);
     console.log("\nLedger AFTER:");
     printLedger(after);
     console.log("");
-    let dirty = false;
-    for (const id of projectIds) {
-      const b = before[id]?.total_count ?? null;
-      const a = after[id]?.total_count ?? null;
-      if (b !== a) {
-        dirty = true;
-        console.error(
-          `FAIL: ledger total_count changed for ${id}: ${b} → ${a}`,
-        );
-      } else {
-        console.log(`OK: ${id} total_count unchanged (${a})`);
-      }
-    }
-    if (dirty) {
-      console.error(
-        "\nBillable rows appeared during capture. Inspect the ledger and re-shoot after fixing the harness.",
-      );
-      process.exit(2);
-    }
+    ledgerExit = compareLedgers(before, after, projectIds);
   }
 
   console.log("\nOutputs:");
@@ -161,7 +116,66 @@ async function main(only) {
       console.log(`  ${c.id}.webm  MISSING`);
     }
   }
-  console.log("\nffprobe tip: ffprobe -v error -select_streams v:0 -show_entries stream=width,height -show_entries format=duration -of default=nw=1 demo/product/01_room.webm");
+  console.log(
+    "\nffprobe tip: ffprobe -v error -select_streams v:0 -show_entries stream=width,height -show_entries format=duration -of default=nw=1 demo/product/01_room.webm",
+  );
+
+  if (code !== 0) process.exit(code);
+  if (ledgerExit !== 0) process.exit(ledgerExit);
+}
+
+/**
+ * Fail closed: every project must have a numeric total_count and no error.
+ * Returns an error message, or null if the snapshot is usable.
+ */
+function validateSnapshot(snap, projectIds, label) {
+  for (const id of projectIds) {
+    const row = snap[id];
+    if (!row) return `FAIL: ${label} ledger missing entry for ${id}`;
+    if (row.error) {
+      return `FAIL: ${label} ledger unreadable for ${id}: ${row.error}`;
+    }
+    if (typeof row.total_count !== "number" || !Number.isFinite(row.total_count)) {
+      return `FAIL: ${label} ledger total_count not numeric for ${id}: ${row.total_count}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Compare before/after. Returns 0 if clean, 2 if dirty or unreadable.
+ * null === null is NOT OK (that was the fail-open bug).
+ */
+function compareLedgers(before, after, projectIds) {
+  const afterErr = validateSnapshot(after, projectIds, "AFTER");
+  if (afterErr) {
+    console.error(afterErr);
+    console.error(
+      "Cannot verify spend — treating session as unclean (fail closed).",
+    );
+    return 2;
+  }
+
+  let dirty = false;
+  for (const id of projectIds) {
+    const b = before[id].total_count;
+    const a = after[id].total_count;
+    if (b !== a) {
+      dirty = true;
+      console.error(
+        `FAIL: ledger total_count changed for ${id}: ${b} → ${a}`,
+      );
+    } else {
+      console.log(`OK: ${id} total_count unchanged (${a})`);
+    }
+  }
+  if (dirty) {
+    console.error(
+      "\nBillable rows appeared during capture. Inspect the ledger and re-shoot after fixing the harness.",
+    );
+    return 2;
+  }
+  return 0;
 }
 
 function selectClips(only) {
@@ -184,17 +198,22 @@ function printList(only) {
   const selected = selectClips(only);
   console.log(`baseURL: ${BASE_URL}`);
   console.log(`primary project: ${PROJECTS.primary}`);
+  console.log(`inventory: ${path.join(HERE, "inventory.json")}`);
   console.log("");
   console.log("id\tproject\tfree\ttitle");
   for (const c of selected) {
-    const pid = PROJECTS[c.project];
+    const pid = PROJECTS[c.project] || PROJECTS.primary;
     console.log(
       `${c.id}\t${c.project} (${pid})\t${c.free ? "yes" : "NO"}\t${c.title}`,
     );
   }
   console.log("");
-  console.log("Not captured here (cards / VO elsewhere): 02_name, 03_chapter_director, 06_chapter_cost, 11_end");
-  console.log("04_director: free panel only — ghost/approve needs a billed director turn (not run by default).");
+  console.log(
+    "Not captured here (cards / VO elsewhere): 02_name, 03_chapter_director, 06_chapter_cost, 11_end",
+  );
+  console.log(
+    "04_director: free panel only — ghost/approve needs a billed director turn (not run by default).",
+  );
 }
 
 async function ledgerSnapshot(projectIds) {
@@ -207,9 +226,14 @@ async function ledgerSnapshot(projectIds) {
         continue;
       }
       const j = await r.json();
+      const n = j.total_count;
       out[id] = {
-        total_count: j.total_count ?? null,
+        total_count: typeof n === "number" && Number.isFinite(n) ? n : null,
         ledger_writable: j.ledger_writable,
+        error:
+          typeof n === "number" && Number.isFinite(n)
+            ? undefined
+            : "total_count missing or non-numeric",
       };
     } catch (e) {
       out[id] = { error: String(e), total_count: null };
@@ -221,7 +245,10 @@ async function ledgerSnapshot(projectIds) {
 function printLedger(snap) {
   for (const [id, v] of Object.entries(snap)) {
     if (v.error) console.log(`  ${id}: ERROR ${v.error}`);
-    else console.log(`  ${id}: total_count=${v.total_count} writable=${v.ledger_writable}`);
+    else
+      console.log(
+        `  ${id}: total_count=${v.total_count} writable=${v.ledger_writable}`,
+      );
   }
 }
 
