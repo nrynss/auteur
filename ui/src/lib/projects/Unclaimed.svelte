@@ -18,8 +18,10 @@
   import Icon from "../components/Icon.svelte";
   import Spinner from "../components/Spinner.svelte";
   import { ApiError } from "../api/client";
-  import Term from "../help/Term.svelte";
+
   import HelpHint from "../help/HelpHint.svelte";
+  import Term from "../help/Term.svelte";
+
   import { formatCost } from "../format";
   import {
     adoptOrphanProject,
@@ -234,7 +236,7 @@
 <div class="page">
   <header class="chrome">
     <div class="proj">
-      <h1>Unclaimed</h1>
+      <h1><Term term="unclaimed" /></h1>
       <span class="sub">material this system owns that no project claims — money spent, storage held, addresses shared</span>
     </div>
     <span class="spacer"></span>

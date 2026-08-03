@@ -144,6 +144,10 @@
                 t.isContentEditable)) {
         return;
       }
+      // A dialog owns its keys (task 22): Space here would fight a focused
+      // dialog button, which preventDefaults and never activates.
+      if (t?.closest('[role="dialog"]')) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "k" || e.key === "K" || e.key === " ") {
         e.preventDefault();
         togglePlay();

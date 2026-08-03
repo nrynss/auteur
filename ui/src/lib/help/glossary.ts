@@ -85,7 +85,7 @@ export const GLOSSARY: Record<string, TermDef> = {
   },
   transactions: {
     label: "transactions",
-    def: "the recorded record of each provider call and what it cost — the audit trail behind every spend figure",
+    def: "the record of each provider call and what it cost — the audit trail behind every spend figure",
   },
   usage: {
     label: "usage",

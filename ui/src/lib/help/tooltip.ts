@@ -30,7 +30,14 @@ export function tooltipTip(
   let target: HTMLElement | null = node.matches(FOCUSABLE)
     ? node
     : node.querySelector<HTMLElement>(FOCUSABLE);
-  if (!target && node.parentElement?.matches(FOCUSABLE)) {
+  // The common pattern wraps a button's CONTENT
+  // (`<button><Tooltip><span>label</span></Tooltip></button>`): the anchor's
+  // parent is the interactive element. A disabled button is still the
+  // target — focus cannot land on it, but its explanation stays hover-
+  // reachable and the visible copy + `?` overlay serve keyboard users;
+  // creating a focusable span inside a disabled button would be a
+  // focusable-inside-disabled-control smell.
+  if (!target && node.parentElement?.tagName === "BUTTON") {
     target = node.parentElement;
   }
   const wrapperFocusable = !target;

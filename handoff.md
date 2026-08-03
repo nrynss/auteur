@@ -826,6 +826,23 @@ transition is disabled too.
 every control keyboard-reachable), the contrast pin, and the glossary/bindings
 invariants (help.test.ts). CI's UI-test step names the gate.
 
+**Review round 2 (after landing):**
+- **No focusable-inside-disabled-control.** The tooltip action now resolves a
+  wrapping button — enabled OR disabled — as the target, so a disabled
+  button's help never creates a focusable span inside it (a smell browsers
+  handle inconsistently); informational anchors (budget chip, key cells)
+  keep the focusable wrapper, and keyboard users still reach every disabled
+  control's reason via the visible copy + the `?` overlay.
+- **The Player stopped fighting dialogs.** Its window-level Space/arrows
+  handler preventDefaulted over a focused dialog button (Space would never
+  activate it); it now yields inside `[role="dialog"]` and under modifiers —
+  a real a11y bug the keyboard map surfaced.
+- **Axe now audits every tab.** The control room's panels are `display:none`
+  until opened, and axe skips hidden content — the gate only checked the
+  readiness tab. It now clicks through every tab and axes each.
+- **Empty-state copy:** the unclaimed header links its own term; the dossier
+  empty says what fills it.
+
 ## 23. Repo and image identity — S
 
 **Depends on:** 20, and best done after 22. **Files:** `pyproject.toml` (`[project.scripts]`),

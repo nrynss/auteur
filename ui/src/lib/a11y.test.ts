@@ -187,26 +187,43 @@ const screens: [string, unknown, Record<string, unknown>][] = [
   ["config", ConfigScreen, { onNavigate: () => {} }],
 ];
 
+async function runAxe(target: HTMLElement, label: string) {
+  const results = await axe.run(target, {
+    rules: {
+      // Colour contrast needs a layout engine; the token pairs are pinned
+      // separately in contrast.test.ts.
+      "color-contrast": { enabled: false },
+      // jsdom has no viewport; region/landmark checks are not meaningful.
+      region: { enabled: false },
+    },
+  });
+  const serious = results.violations.filter((v) =>
+    ["serious", "critical"].includes(v.impact ?? ""),
+  );
+  expect(serious, `${label}: ${JSON.stringify(
+    serious.map((v) => v.id),
+  )}`).toEqual([]);
+}
+
 it("axe finds no serious violations on any route", async () => {
   stubFetch();
   for (const [name, component, props] of screens) {
     const { target, app } = await mountScreen(component, props);
-    const results = await axe.run(target, {
-      rules: {
-        // Colour contrast needs a layout engine; the token pairs are pinned
-        // separately in contrast.test.ts.
-        "color-contrast": { enabled: false },
-        // jsdom has no viewport; region/landmark checks are not meaningful.
-        region: { enabled: false },
-      },
-    });
+    await runAxe(target, name);
+    // The control room's panels are display:none until their tab opens, and
+    // axe skips hidden content — click through every tab so each panel is
+    // audited in turn.
+    if (name === "control room") {
+      const tabs = [...target.querySelectorAll<HTMLElement>('[role="tab"]')];
+      for (const tab of tabs) {
+        tab.click();
+        for (let i = 0; i < 4; i += 1) {
+          await new Promise((r) => setTimeout(r, 0));
+        }
+        await runAxe(target, `${name} / ${tab.textContent?.trim()}`);
+      }
+    }
     unmount(app);
-    const serious = results.violations.filter((v) =>
-      ["serious", "critical"].includes(v.impact ?? ""),
-    );
-    expect(serious, `${name}: ${JSON.stringify(
-      serious.map((v) => v.id),
-    )}`).toEqual([]);
   }
 });
 

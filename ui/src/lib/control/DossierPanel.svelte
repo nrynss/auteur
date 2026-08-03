@@ -30,7 +30,7 @@
   {#if loading}
     <p class="empty">Composing the dossier — one lookup per artifact…</p>
   {:else if !dossier}
-    <p class="empty">No dossier yet.</p>
+    <p class="empty">No artifacts yet — mix, repair or export creates them.</p>
   {:else}
     <p class="summary num">
       {dossier.artifact_count} artifacts · {fmtBytes(dossier.total_bytes)}
