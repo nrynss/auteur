@@ -338,6 +338,56 @@ def test_assemble_timeline_is_byte_identical_across_runs(tmp_path):
 
 # -- event seed freeze (unit 7.1) --
 
+
+def test_event_seed_golden_vectors_match_the_client_table():
+    """The JS parity table, asserted on the Python side.
+
+    seed.test.ts pins ~30 (start_time, seed) pairs computed from THIS function
+    so the browser's reimplementation of `_event_seed` (sha256 + Python's
+    round-half-even %.3f) can be verified without a live Python process. That
+    pin is one-directional: if `_event_seed` itself ever changes, the TS test
+    keeps matching the old formula and the suite stays green while the editor
+    silently re-rolls every rhythmic texture. This table is the other half of
+    the contract — the same values, asserted against the real function — so
+    any formula drift fails on the Python side first. Keep the two tables in
+    lockstep (they are deliberately the same list).
+    """
+    name = "rhythmic church bell tolling"
+    vectors = [
+        (0.0, 20572028),
+        (0.001, 2581224592),
+        (0.01, 652308645),
+        (0.0625, 973944757),
+        (0.09, 934470500),
+        (0.1, 1072272495),
+        (0.3125, 2207675164),
+        (0.4375, 3748344299),
+        (0.5625, 3306808941),
+        (0.6875, 3535797791),
+        (0.8125, 2726333232),
+        (0.9375, 3185171665),
+        (1.0625, 2051925909),
+        (1.1875, 3328328388),
+        (1.2345, 1299852736),
+        (1.3125, 1256224255),
+        (2.0, 1698605846),
+        (3.5, 49932119),
+        (5.6005, 2865604667),
+        (6.65, 1261277983),
+        (7.35, 3785715423),
+        (9.88, 3325261930),
+        (10.95, 3363908823),
+        (11.0, 3285744699),
+        (15.041667, 3112232308),
+    ]
+    for start, expected in vectors:
+        assert assemble._event_seed(name, start) == expected, (
+            f"seed drift for {name} @ {start}: got "
+            f"{assemble._event_seed(name, start)}, expected {expected} — "
+            f"the client table in ui/src/lib/control/seed.test.ts pins this "
+            f"value; a formula change re-rolls every rhythmic texture")
+
+
 def _rhythmic_only_timeline(start_time: float, seed=None, duration: float = 2.0):
     """Minimal timeline: no ambience/discrete so the mix is pure rhythmic tiles."""
     return Timeline(

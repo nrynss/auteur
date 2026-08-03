@@ -37,7 +37,7 @@ product, and a reader needs to know which parts of it exist. Updated
 | Targeted repair | **Built** | `POST /projects/{id}/events/{index}/regenerate` re-mixes with a variant salt on one stem; version lineage on the run and in the log |
 | Deployment | **Built** | Cloud Run `us-east4`, single instance, CPU always allocated; SFX worker reached over a Cloudflare tunnel at `sfx.nryn.dev` |
 
-Test suite: 733 passing, 1 skipped. Offline: the only stubs in the render path
+Test suite: 734 passing, 1 skipped. Offline: the only stubs in the render path
 are the billed provider calls, so ffmpeg, the mix, the shared cache, storage,
 and the Genblaze pipelines themselves all run for real.
 

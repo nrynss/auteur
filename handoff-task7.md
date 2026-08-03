@@ -672,7 +672,11 @@ would be noise). Two parity traps closed: `sha256.ts` ships a self-contained
 SHA-256 pinned against FIPS vectors, and `pyToFixed3` reproduces Python's
 round-half-even float formatting on the exact dyadic ties (q/16, odd q) where
 JS `toFixed` diverges — the whole legacy-seed function is pinned against ~30
-hashlib vectors including the tie values. **render.py stamps the seed the mix
+hashlib vectors including the tie values — and the same table is now pinned
+on the Python side (`test_assemble.py::test_event_seed_golden_vectors…`), so
+if `assemble._event_seed` itself ever changes, the drift fails the suite on
+both halves instead of silently re-rolling textures against a stale client
+formula. **render.py stamps the seed the mix
 actually used** for rhythmic events at mix_freeze (same provenance pattern as
 `source_duration_s`/`stem_key`; non-rhythmic events get none — fabricated
 provenance is §A.3's rule), so a never-mixed event's first render records its
