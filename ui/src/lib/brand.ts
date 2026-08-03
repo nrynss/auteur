@@ -30,14 +30,16 @@ export const BRAND_TITLE_TEMPLATE: string =
 
 /** "Control room" → "FoleyFlow — Control room". Pure so the template
  * mechanics are unit-testable; a rebranded template moves the name and page
- * anywhere ("{name} · {page}"), and a template without placeholders is a
- * legal — if odd — config used verbatim. */
+ * anywhere ("{name} · {page}"). replaceAll, not replace: a template that
+ * repeats a placeholder ("{name} — {page} — {name}") must render every
+ * occurrence, and a template without placeholders is a legal — if odd —
+ * config used verbatim. */
 export function formatPageTitle(
   template: string,
   name: string,
   page: string,
 ): string {
-  return template.replace("{name}", name).replace("{page}", page);
+  return template.replaceAll("{name}", name).replaceAll("{page}", page);
 }
 
 export function brandPageTitle(page: string): string {

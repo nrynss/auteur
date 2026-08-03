@@ -16,13 +16,14 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   `docs/api.md` is written ahead of the code and treated as source of truth;
   every endpoint in it is live and covered by tests.
 - Task numbers are the current queue; DONE items keep their titles. Remaining:
-  **7 (control-room UI)**, then **19–20** (roadmap enablers). Tasks **9–18**
-  are **DONE**. `docs/roadmap.md` is the product document describing the two
-  futures 18–20 enable; it is not an engineering plan and carries no task
-  numbers.
+  **20** (rename to Auteur), **21** (configuration view), **7.14** (the
+  control room's polish pass), then **22** (repo and image identity) once
+  nothing else is in flight. Tasks **9–19** are **DONE**. `docs/roadmap.md` is
+  the product document describing the two futures 18–21 enable; it is not an
+  engineering plan and carries no task numbers.
 - CI (10), build identity (11), post-deploy smoke (12), doctor (13), live paid
   + fallback SFX (14), demo evidence (15), and Secret Manager (16) are in place.
-- `uv run pytest -q` → **780 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **783 passed, 1 skipped**. No provider credentials
   required for tests: the billed calls are stubbed at two seams,
   `stems.generate_many` and `sfx_cache.generate_canonical_wav`. Everything else
   — ffmpeg, the mix, the shared cache, storage, the Genblaze pipelines — runs
@@ -400,6 +401,20 @@ UI stage declares optional `VITE_BRAND_*` ARGs, so `docker build
 --build-arg VITE_BRAND_NAME=…` rebrands the shipped image without patching it
 (unset → defaults). Colours untouched.
 
+**Review round (after landing):** two *server*-rendered surfaces still shipped
+the name outside the task's file list, and the acceptance said "anywhere in
+the served UI": the FastAPI title (`app.py`, served at `/api/v1/openapi.json`
+and rendered by `/docs`) and the "UI not built" fallback page
+(`dashboard.py` — the page a self-hosting partner sees when their build
+failed). Both now read `FOLEYFLOW_BRAND_NAME` (default `FoleyFlow`) from
+`src/foleyflow/api/brand.py`, a module constant with the same contract as
+`GIT_SHA`/`BUILD_TIME`; the fallback page substitutes the name per request (the
+CSS braces rule out `str.format`). A rebrand sets the runtime var here and the
+build-time `VITE_BRAND_NAME` for the UI. Also: the title template now uses
+`replaceAll` — `String.replace` with a string pattern substitutes only the
+first occurrence, so a template that repeated a placeholder rendered the later
+owne literally; every occurrence is replaced now, pinned by a unit test.
+
 **Verification is build-level, not unit-level:** CI builds once with defaults
 and once with `VITE_BRAND_NAME="KinoPost"` plus a custom template and favicon,
 and greps the *bundles* — the default build must still name the brand, and the
@@ -408,7 +423,67 @@ served output (task 19's acceptance, checked on every PR). `brand.ts` has unit
 tests pinning the defaults; the override path cannot be exercised in vitest
 (env is loaded at startup), which is exactly why the CI check exists.
 
-## 20. Read-only configuration view — M
+## 20. Rename the product to Auteur — S
+
+**Depends on:** 19 (the brand mechanism). **Files:** `ui/src/lib/brand.ts`,
+`ui/vite.config.ts`, `src/foleyflow/api/app.py`,
+`src/foleyflow/api/dashboard.py`, `pyproject.toml` (description),
+`README.md`, `SPEC.md`, `docs/*.md`, `.github/workflows/ci.yml`.
+
+**Why the name changes.** "FoleyFlow" describes the first application, not the
+system. The domain model contains no foley-specific concept — projects,
+timelines, events, scenes, stems, mixes, runs and manifests are all generic
+post-production vocabulary — so the name is the only thing binding the product
+to one modality, and it fights `docs/roadmap.md`'s position that the design
+reaches dialogue, ADR, voiceover, music beds, localisation and audio
+description. **Auteur** is a film term rather than a coined one, it is
+modality-neutral, and it matches how the product has described itself since
+`docs/design/control-room.md`: a director's tool.
+
+**This is a defaults change, not new machinery — hence S.** Task 19 already
+made the name, the title template and the favicon build-time configuration,
+and CI already builds twice to prove a rebranded bundle carries no trace of
+the default. This unit changes what the default is.
+
+- Brand defaults in `brand.ts` and `vite.config.ts`.
+- **Invert the CI rebrand fixture.** The job currently proves "a build
+  parameterised as KinoPost contains zero `FoleyFlow`". After this it must
+  prove the reverse — the old name becomes the fixture — or the guarantee
+  quietly stops pointing at anything.
+- `FastAPI(title=...)` in `api/app.py`: served at `/openapi.json` and rendered
+  on `/docs`, so it is user-visible and the task-19 grep does not cover it.
+- The "UI not built" fallback in `api/dashboard.py` (`<title>` and `<h1>`) —
+  the page a self-hosting operator sees exactly when a build has failed.
+- `README.md`, `SPEC.md`, `docs/*.md`, and the `pyproject.toml` description.
+
+**Why this goes before 21 and 7.14.** Both create new rendered surfaces: 21's
+configuration view has headers and copy naming the product, and 7.14's polish
+pass tunes the wordmark, the favicon and every piece of user-facing copy.
+Polishing copy under one name and then changing it means reading that copy
+twice. Task 19 hit this exact failure mode — DirectorPanel's two sender labels
+landed after 19's file list was written and nearly failed its acceptance.
+
+**Not in this unit:** repo and image identity (task 22); the Python package,
+which is an import path and never rendered; `FOLEYFLOW_*` env vars, which are
+deployment configuration and would break `env.public.yaml`, the Secret Manager
+wiring from task 16 and `scripts/deploy.sh` in exchange for nothing anyone
+sees; `mix_video_key`'s `foley.mp4` (see task 22); and `TIMELINE_PROMPT`.
+
+**`TIMELINE_PROMPT` is not branding.** "You are a professional Foley artist" is
+an instruction that shapes model output. Changing it moves the output
+distribution, invalidates the timeline cache (the cache key includes a prompt
+fingerprint) and needs re-validation against the sample timelines — real work,
+unrelated to a rename, that burns Gemini quota to verify. When the product
+genuinely addresses a second modality the prompt becomes per-modality
+configuration; that is a feature, not a rename.
+
+**Acceptance:** a default build serves the new name in the SPA title, the
+chrome wordmark, `/docs` and the UI-not-built page; CI's rebrand job proves a
+build parameterised with any other name contains zero occurrences of "Auteur"
+in `api/static/`; and `grep -rni foley` returns only the residue this unit
+names as out of scope.
+
+## 21. Read-only configuration view — M
 
 **Depends on:** nothing. **Files:** `docs/api.md` first, `api/schemas.py`,
 `api/app.py`, a UI route. Builds on the existing component layer and design
@@ -434,9 +509,52 @@ out of scope and stays out: the service deploys `--allow-unauthenticated`
 mutation route would be an open credential endpoint. Rotation stays a Secret
 Manager operation (task 16), and stays that way until authentication exists.
 
+**Any rendered product name comes from `ui/src/lib/brand.ts`** (`BRAND_NAME` /
+`brandPageTitle`), never a literal — task 19 made the brand build-time config
+and CI proves a rebranded build carries no trace of the default. A hardcoded
+name here would fail that job, and this screen is one a white-label operator
+looks at first.
+
 **Acceptance:** every check `foleyflow doctor` performs is visible in the UI
-with the same verdict, and no credential value appears in any response or in
-the rendered page.
+with the same verdict, no credential value appears in any response or in the
+rendered page, and CI's rebrand job still finds zero occurrences of the
+default brand in the built output.
+
+## 22. Repo and image identity — S
+
+**Depends on:** 20. **Files:** `pyproject.toml` (`[project.scripts]`),
+`Dockerfile`, `scripts/deploy.sh`, `scripts/smoke_deploy.py`, `README.md`.
+
+The operator-facing half of the rename, deliberately separated because it is
+disruptive in a way the rendered surfaces are not: renaming the GitHub
+repository rewrites every clone's remote, and the image name touches the
+deploy and smoke scripts. **Do it when nothing else is in flight** — it
+unblocks no other work, so there is no cost to waiting and a real cost to
+doing it while several agents are committing.
+
+- The GitHub repository name and the Docker image name, with `deploy.sh` and
+  the post-deploy smoke check following.
+- **The CLI gains `auteur` and keeps `foleyflow` as an alias.** Both entries in
+  `[project.scripts]` resolve to `foleyflow.cli:main`. Every script in
+  `scripts/`, every README example and every runbook says `foleyflow` today;
+  breaking them to save one line is a bad trade, and an operator mid-incident
+  should not learn about a rename from `command not found`.
+
+**`mix_video_key` — decide here, and it is the only irreversible thing.**
+`ProjectStore.mix_video_key` writes the muxed video to
+`runs/{run_id}/foley.mp4`. Every such object already in B2 is immutable (SPEC
+§10 forbids overwriting a completed generation), so changing the constant
+cannot rename what exists — it only makes new artifacts disagree with old
+ones. A bucket holding both is *correct* under this repo's own "cache keys are
+addresses, not provenance" rule, merely untidy. The trade is a permanent seam
+in the archive against a filename nobody reads, and the seam grows with every
+mix, so it is cheapest now and never cheaper again. **Recommendation: leave
+it.** Addresses are not names, and a demo bucket carrying a filename from an
+earlier product name costs nothing a viewer will ever see.
+
+**Acceptance:** `auteur --help` and `foleyflow --help` both work; a deploy
+built from the renamed image passes `scripts/smoke_deploy.py`; and the
+`mix_video_key` decision is recorded here either way.
 
 ## Out of scope
 

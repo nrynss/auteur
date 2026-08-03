@@ -23,11 +23,11 @@ export default defineConfig(({ mode }) => {
   const faviconHref = env.VITE_BRAND_FAVICON?.trim() || DEFAULT_FAVICON_HREF;
   // Same title template the SPA uses (ui/src/lib/brand.ts), so the static
   // pre-hydration <title> and the runtime titles can never drift apart under
-  // a rebrand.
+  // a rebrand. replaceAll matches the SPA formatter's semantics.
   const titleTemplate = env.VITE_BRAND_TITLE_TEMPLATE || "{name} — {page}";
   const staticTitle = titleTemplate
-    .replace("{name}", brandName)
-    .replace("{page}", "Control room");
+    .replaceAll("{name}", brandName)
+    .replaceAll("{page}", "Control room");
 
   return {
     plugins: [

@@ -63,6 +63,42 @@ def test_unbuilt_ui_explains_itself(client, tmp_path, monkeypatch):
     assert "not built" in r.text
 
 
+def test_default_brand_on_the_server_surfaces(client, tmp_path, monkeypatch):
+    """Defaults are today's values: the fallback page's <title> and <h1> and
+    the OpenAPI title all carry FoleyFlow (task 19's acceptance — the brand
+    is configurable, and a default deployment looks exactly as before)."""
+    monkeypatch.setenv("FOLEYFLOW_STATIC_DIR", str(tmp_path / "static"))
+    r = client.get("/")
+    assert "<title>FoleyFlow — UI not built</title>" in r.text
+    assert "<header><h1>FoleyFlow</h1></header>" in r.text
+    assert client.get(f"{API_PREFIX}/openapi.json").json()["info"]["title"] \
+        == "FoleyFlow"
+
+
+def test_configured_brand_reaches_the_unbuilt_page(client, tmp_path, monkeypatch):
+    """The fallback page a partner sees when their build failed is the moment
+    they least want someone else's name — it reads FOLEYFLOW_BRAND_NAME like
+    every other server surface."""
+    monkeypatch.setenv("FOLEYFLOW_STATIC_DIR", str(tmp_path / "static"))
+    monkeypatch.setattr(dash, "BRAND_NAME", "KinoPost")
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "<title>KinoPost — UI not built</title>" in r.text
+    assert "<header><h1>KinoPost</h1></header>" in r.text
+    assert "FoleyFlow" not in r.text
+
+
+def test_configured_brand_reaches_the_openapi_title(tmp_path, monkeypatch):
+    """/docs and /api/v1/openapi.json render the FastAPI title — a
+    white-label partner's API documentation must not carry the default
+    brand. Patches the module attribute, the same contract as GIT_SHA."""
+    import foleyflow.api.app as app_mod
+
+    assert create_app().openapi()["info"]["title"] == "FoleyFlow"
+    monkeypatch.setattr(app_mod, "BRAND_NAME", "KinoPost")
+    assert create_app().openapi()["info"]["title"] == "KinoPost"
+
+
 def test_unbuilt_ui_explains_itself_on_deep_link(client, tmp_path, monkeypatch):
     monkeypatch.setenv("FOLEYFLOW_STATIC_DIR", str(tmp_path / "static"))
     r = client.get(f"/projects/{VALID_ID}")

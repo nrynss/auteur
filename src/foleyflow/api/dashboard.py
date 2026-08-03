@@ -33,6 +33,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
+from foleyflow.api.brand import BRAND_NAME
+
 STATIC_DIR = Path(__file__).parent / "static"
 
 router = APIRouter()
@@ -58,7 +60,7 @@ _UNBUILT_PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FoleyFlow — UI not built</title>
+<title>{brand} — UI not built</title>
 <style>
   body { margin:0; font:14px/1.5 ui-sans-serif,system-ui,sans-serif;
          background:#0E1113; color:#E8EDEE; }
@@ -74,7 +76,7 @@ _UNBUILT_PAGE = """<!doctype html>
 </style>
 </head>
 <body>
-<header><h1>FoleyFlow</h1></header>
+<header><h1>{brand}</h1></header>
 <main>
 <h2>The control-room UI is not built</h2>
 <p>This API is running without its frontend bundle. That is expected when
@@ -124,7 +126,11 @@ def _serve_index() -> Response:
 
 
 def _unbuilt_page() -> Response:
-    return HTMLResponse(_UNBUILT_PAGE, status_code=200,
+    # The brand is substituted per request (the CSS block's literal braces
+    # rule out str.format); the module constant is the deploy-time value from
+    # FOLEYFLOW_BRAND_NAME, monkeypatched by tests.
+    return HTMLResponse(_UNBUILT_PAGE.replace("{brand}", BRAND_NAME),
+                        status_code=200,
                         headers=_revalidate_headers())
 
 

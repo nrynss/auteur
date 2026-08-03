@@ -33,3 +33,15 @@ it("a rebranded template moves the name and page anywhere", () => {
   expect(formatPageTitle("{name} · {page}", "KinoPost", "Control room"))
     .toBe("KinoPost · Control room");
 });
+
+it("replaces every placeholder occurrence, not just the first", () => {
+  // String.replace with a string pattern substitutes only the first match;
+  // a template that repeats a placeholder must render each occurrence.
+  expect(
+    formatPageTitle(
+      "{name} — {page} — {name}",
+      "KinoPost",
+      "Control room",
+    ),
+  ).toBe("KinoPost — Control room — KinoPost");
+});

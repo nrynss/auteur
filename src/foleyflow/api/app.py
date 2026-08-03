@@ -21,6 +21,7 @@ from typing import List, Optional
 from fastapi import Body, FastAPI, Query, Response
 
 from foleyflow.api import errors as err
+from foleyflow.api.brand import BRAND_NAME
 from foleyflow.api.jobs import JobRunner
 from foleyflow.api.schemas import (
     AnalyzeRequest,
@@ -167,7 +168,7 @@ def create_app(store: Optional[ProjectStore] = None,
         runner.shutdown(wait=True)
 
     app = FastAPI(
-        title="FoleyFlow",
+        title=BRAND_NAME,
         version=VERSION,
         description="AI post-production copilot. See docs/api.md for the contract.",
         docs_url="/docs",
