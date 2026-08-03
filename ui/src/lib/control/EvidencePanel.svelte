@@ -29,7 +29,7 @@
 </script>
 
 <div class="panel-body">
-  {#if !qa || !qa.audio.measured}
+  {#if !qa || !qa.audio?.measured}
     <p class="empty">No measurements yet — the mix has not been QA-measured.</p>
   {:else}
     <p class="eyebrow">Loudness</p>
@@ -69,7 +69,7 @@
   {/if}
   {/if}
 
-  {#if qa && (qa.visual.issues ?? []).length > 0}
+  {#if qa && (qa.visual?.issues ?? []).length > 0}
     <p class="eyebrow">Visual <Term term="continuity" /></p>
     <div class="cards">
       {#each qa.visual.issues ?? [] as issue (issue.code + (issue.scene_id ?? "") + (issue.compared_with ?? ""))}

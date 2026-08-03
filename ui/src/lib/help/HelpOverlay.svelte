@@ -89,7 +89,7 @@
     >
       <header class="head">
         <h2 id={titleId}>Help — keys and terms</h2>
-        <button type="button" class="close" onclick={onclose} aria-label="Close help">
+        <button type="button" class="close" data-autofocus onclick={onclose} aria-label="Close help">
           ✕
         </button>
       </header>

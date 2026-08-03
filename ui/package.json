@@ -2,7 +2,7 @@
   "name": "foleyflow-control-room",
   "private": true,
   "version": "0.1.0",
-  "description": "Auteur control room — Svelte 5 SPA built into the Python package's static dir",
+  "description": "Auteur control room \u2014 Svelte 5 SPA built into the Python package's static dir",
   "type": "module",
   "engines": {
     "node": ">=22.12.0"
@@ -14,9 +14,12 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "typegen": "openapi-typescript openapi.json -o src/lib/api/schema.d.ts",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install chromium"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@sveltejs/vite-plugin-svelte": "^7.2.0",
     "@types/node": "^26.1.2",
     "axe-core": "^4.12.1",

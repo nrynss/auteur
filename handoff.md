@@ -868,6 +868,27 @@ invariants (help.test.ts). CI's UI-test step names the gate.
 - **The error banner's pair is pinned too** — the stop word and the detail
   on the stop-tinted banner fill, in both themes.
 
+**Browser gate (after the clipping review):** jsdom has no layout engine, so
+tooltip clipping could not be tested there. Added a focused Playwright job —
+not a full e2e suite: one spec (`ui/playwright/tooltips.spec.ts`) against
+the built bundle (served with an SPA fallback, API stubbed at the network
+layer with the same fixtures the vitest suite uses) asserting the guarantees
+jsdom cannot: every tip renders inside the viewport and clear of its anchor,
+a tip near the bottom edge flips above instead of clipping, tips inside the
+scrolling rail are never clipped (the tip is portaled to `<body>` so no
+ancestor can clip it), hover and focus both open, Escape dismisses, `?`
+opens the map+glossary overlay and Escape closes it with focus restored, and
+zero console errors across all four routes. CI: `ui-build` uploads the
+default bundle as an artifact; `ui-playwright` downloads it, installs
+chromium, and runs the gate.
+
+The gate immediately earned its keep — three real bugs jsdom missed:
+- EvidencePanel crashed when a project has no QA measurement (`!qa.audio.measured`
+  evaluated `.measured` on null) — the real no-QA case, fixed with optional
+  chaining (and the same fix one line down for `qa.visual.issues`).
+- The `?` overlay never moved focus inside itself, so Escape from the outside
+  could not close it; the close button now autofocuses on open.
+
 ## 23. Repo and image identity — S
 
 **Depends on:** 20, and best done after 22. **Files:** `pyproject.toml` (`[project.scripts]`),

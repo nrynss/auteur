@@ -42,3 +42,5 @@ ui/node_modules/
 .claude/
 .idea
 .vscode
+ui/test-results/
+ui/playwright-report/

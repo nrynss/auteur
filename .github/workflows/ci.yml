@@ -114,6 +114,15 @@ jobs:
             ../src/foleyflow/api/static/index.html
           grep -rnq "Auteur" ../src/foleyflow/api/static/
 
+      # The browser gate (ui-playwright) tests the DEFAULT bundle — upload it
+      # before the rebrand build below overwrites the static dir.
+      - name: Upload the default build for the browser gate
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-static
+          path: src/foleyflow/api/static/
+          if-no-files-found: error
+
       # Task 20 inverted the fixture: the guarantee must point at the current
       # default. The old name "FoleyFlow" is now the parameterised fixture —
       # a build carrying it must contain zero occurrences of the new default.
@@ -139,6 +148,45 @@ jobs:
             echo "error: built SPA assets are tracked in git: $tracked" >&2
             exit 1
           fi
+
+  ui-playwright:
+    # The real-browser gate (task 22 + the clipping review): rendered tooltip
+    # geometry — within the viewport, clear of the anchor, the bottom-edge
+    # flip, inside scrolling rails — plus hover/focus/Escape behaviour, the `?`
+    # help overlay, and zero console errors across the routes. These are the
+    # guarantees jsdom cannot give (it has no layout engine). Not a full e2e
+    # suite: one focused spec against the built bundle with the API stubbed
+    # at the network layer.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: ui-build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Download the built bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-static
+          path: src/foleyflow/api/static
+
+      - name: Install the browser
+        working-directory: ui
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the browser gate
+        working-directory: ui
+        run: npm run test:e2e
 
   docker-build:
     # Unit 7.6's acceptance criterion — the image serves the SPA with no Node
