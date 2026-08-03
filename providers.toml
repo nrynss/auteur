@@ -96,6 +96,11 @@ duration_type = "float"
 # UTC midnight. Set to 0 to disable. Measured demo days: $1.76 and $5.27
 # (2026-08-02/03), so 15 leaves a full day of headroom while capping blowout.
 hard_cap_usd = 15.0
+# Quota row: the paid tier's `used` count comes from the workspace analytics
+# (the ledger cannot see other processes on the same key), and the day window
+# carries today's real dollar spend for the Spend tab.
+usage_source = "elevenlabs"
+requests_per_day = 20
 
 [models."fal-ai/mmaudio-v2/text-to-audio"]
 adapter = "fal"

@@ -75,10 +75,16 @@ RESET_TZ = _resolve_reset_tz()
 
 @dataclass
 class QuotaWindow:
-    """Usage against one limit. `limit` is None when none is declared."""
+    """Usage against one limit. `limit` is None when none is declared.
+
+    ``cost_usd`` is the window's real dollar spend when the model's usage
+    comes from a provider that reports cost (the ElevenLabs workspace
+    analytics); None for ledger-counted models, which carry estimates only.
+    """
 
     used: int
     limit: Optional[int]
+    cost_usd: Optional[float] = None
 
     @property
     def remaining(self) -> Optional[int]:
@@ -152,11 +158,28 @@ def get_quota(model_id: str, *, now: Optional[datetime] = None,
         model_id, minute_ago=minute_ago, day_start=day_start,
         rows=rows, ledger_path=ledger_path)
 
+    cost_usd: Optional[float] = None
+    resets_at = _next_daily_reset(now).isoformat()
+    if raw.get("usage_source") == "elevenlabs":
+        # The paid tier's real usage comes from the workspace analytics: the
+        # ledger cannot see other processes on the same key and the SFX
+        # response carries no cost. Falls back to the ledger count when the
+        # analytics endpoint is unreachable; the day window then carries no
+        # dollar figure rather than a guessed one.
+        from foleyflow import elevenlabs as eleven
+
+        usage = eleven.today_usage(now=now)
+        if usage["available"]:
+            per_day = usage["requests"]
+            cost_usd = usage["cost_usd"]
+            resets_at = eleven.next_reset_utc(now).isoformat()
+
     return ModelQuota(
         model_id=model_id,
         per_minute=QuotaWindow(per_minute, raw.get("requests_per_minute")),
-        per_day=QuotaWindow(per_day, raw.get("requests_per_day")),
-        resets_at=_next_daily_reset(now).isoformat(),
+        per_day=QuotaWindow(per_day, raw.get("requests_per_day"),
+                            cost_usd=cost_usd),
+        resets_at=resets_at,
     )
 
 

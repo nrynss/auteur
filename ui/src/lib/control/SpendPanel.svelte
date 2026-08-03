@@ -191,7 +191,12 @@
               </td>
               <!-- requests_per_day is the binding constraint, not RPM:
                    gemini-2.5-flash allows 20/day (providers.toml). -->
-              <td class="r num">{m.per_day.used}</td>
+              <td class="r num">
+                {m.per_day.used}
+                {#if m.per_day.cost_usd != null}
+                  <span class="sub">{formatCost(m.per_day.cost_usd)} today</span>
+                {/if}
+              </td>
               <td class="r num">{m.per_day.remaining ?? "n/a"}</td>
               <td class="s"><Chip state={quotaState(m.status)} label={m.status} /></td>
             </tr>
@@ -205,9 +210,11 @@
         never authoritative.
       </p>
       <p class="note">
-        Rate-limited models only: a model without a declared daily allowance
-        (ElevenLabs SFX is billed per call) has no quota to show and appears
-        under <span class="k">By model</span> above instead.
+        Models with a declared daily allowance. Paid ElevenLabs SFX is counted
+        from the workspace usage report, so its row shows real requests and
+        real dollars spent today; models without an allowance (the fal SFX
+        fallback) have no quota to show and appear under
+        <span class="k">By model</span> instead.
       </p>
     {/if}
 

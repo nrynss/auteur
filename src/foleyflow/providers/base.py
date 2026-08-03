@@ -56,6 +56,11 @@ class ModelSpec:
     prompt_field: Optional[str] = None
     duration_field: Optional[str] = None
     duration_type: Optional[str] = None     # "int" | "float"
+    # Where this model's quota `used` counts come from. Absent = the cost
+    # ledger; "elevenlabs" = the workspace analytics endpoint (the ledger
+    # cannot see other processes on the same key, and the paid tier's
+    # responses carry no cost).
+    usage_source: Optional[str] = None
     # Daily hard cap in USD for the workspace, driven by the ElevenLabs
     # usage analytics (foleyflow.elevenlabs.cap_status). None or <= 0 = off;
     # when set, billable work against the paid tier is refused past the cap.

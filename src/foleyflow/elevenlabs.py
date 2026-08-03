@@ -148,13 +148,23 @@ def usage_rows(start_time_ms: int, end_time_ms: int, *,
 def _day_bounds(now: Optional[datetime] = None) -> tuple:
     """(start_ms, end_ms) of the UTC calendar day containing ``now``.
 
-    End is the day's own end, not ``now``: the day is a stable cache key and
-    the analytics endpoint reports the elapsed part of a future-ended window.
+    ``now`` may be aware in any timezone (quota callers pass a
+    Pacific-aware timestamp); the day is always the UTC day. End is the
+    day's own end, not ``now``: the day is a stable cache key and the
+    analytics endpoint reports the elapsed part of a future-ended window.
     """
     now = now or _now_utc()
-    start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    utc = now.astimezone(timezone.utc)
+    start = datetime(utc.year, utc.month, utc.day, tzinfo=timezone.utc)
     end = start + timedelta(days=1)
     return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+
+
+def next_reset_utc(now: Optional[datetime] = None) -> datetime:
+    """Next UTC midnight — when the daily cap and the quota row roll over."""
+    now = now or _now_utc()
+    _, end_ms = _day_bounds(now)
+    return datetime.fromtimestamp(end_ms / 1000.0, tz=timezone.utc)
 
 
 def today_usage(now: Optional[datetime] = None, *,
@@ -268,9 +278,7 @@ def cap_status(now: Optional[datetime] = None, *,
         spend = _ledger_estimate_today(now=now, use_cache=use_cache)
         source = "ledger"
     now = now or _now_utc()
-    tomorrow = (now + timedelta(days=1)).date()
-    resets_at = datetime.combine(tomorrow, datetime.min.time(),
-                                 tzinfo=timezone.utc).isoformat()
     return {"capped": spend >= cap, "cap_usd": cap,
-            "spend_usd": round(spend, 4), "resets_at": resets_at,
+            "spend_usd": round(spend, 4),
+            "resets_at": next_reset_utc(now).isoformat(),
             "source": source}

@@ -209,10 +209,10 @@ const PEAKS = {
 const QUOTA = {
   estimate: true,
   ledger_writable: true,
-  // Only models with declared daily/minutely limits appear on /quota
-  // (get_all_quotas). Billed-only endpoints like eleven_text_to_sound_v2 have
-  // no rate limit and show under budget.by_model instead — exactly what a real
-  // payload from auteur.nryn.dev returns.
+  // Models with a declared daily allowance. The paid SFX tier is counted
+  // from the ElevenLabs workspace usage report (real requests + dollars);
+  // billed-only endpoints with no allowance (e.g. the fal SFX fallback) do
+  // not appear here at all.
   models: [
     {
       model_id: "gemini-2.5-flash",
@@ -220,6 +220,13 @@ const QUOTA = {
       per_minute: { used: 1, limit: 5, remaining: 4, fraction: 0.2, exhausted: false },
       per_day: { used: 18, limit: 20, remaining: 2, fraction: 0.9, exhausted: false },
       resets_at: "2026-08-04T00:00:00-07:00",
+    },
+    {
+      model_id: "eleven_text_to_sound_v2",
+      status: "ok",
+      per_minute: { used: 0, limit: null, remaining: null, fraction: null, exhausted: false },
+      per_day: { used: 7, limit: 20, remaining: 13, fraction: 0.35, exhausted: false, cost_usd: 5.27 },
+      resets_at: "2026-08-04T00:00:00Z",
     },
     {
       model_id: "gemini-3.5-flash",

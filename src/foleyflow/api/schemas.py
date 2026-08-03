@@ -580,6 +580,10 @@ class QuotaWindowOut(BaseModel):
     remaining: Optional[int] = None
     fraction: Optional[float] = None
     exhausted: bool = False
+    # Real dollar spend for the window, when the model's usage comes from a
+    # provider that reports cost (ElevenLabs workspace analytics); None for
+    # ledger-counted models (estimates only).
+    cost_usd: Optional[float] = None
 
 
 class ModelQuotaOut(BaseModel):

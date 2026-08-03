@@ -41,6 +41,13 @@ const QUOTA = {
       per_day: { used: 18, limit: 20, remaining: 2, exhausted: false },
       resets_at: "2026-08-04T00:00:00Z",
     },
+    {
+      model_id: "eleven_text_to_sound_v2",
+      status: "ok",
+      per_minute: { used: 0, exhausted: false },
+      per_day: { used: 7, limit: 20, remaining: 13, exhausted: false, cost_usd: 5.27 },
+      resets_at: "2026-08-04T00:00:00Z",
+    },
   ],
 };
 
@@ -58,6 +65,16 @@ it("shows the server's own figures — split, thresholds, per-model", () => {
   expect(body).toContain("2");
   // Spend is evidence: it names where it was summed from.
   expect(body).toContain("proj_TEST");
+});
+
+it("shows the paid tier's real dollar spend from the workspace usage report", () => {
+  const { body } = render(SpendPanel, {
+    props: { budget: BUDGET, quota: QUOTA } as never,
+  });
+  // The eleven row carries today's real cost (analytics), not an estimate.
+  expect(body).toContain("$5.27 today");
+  expect(body).toContain("7");
+  expect(body).toContain("13");
 });
 
 it("withholds every figure when the ledger is unwritable", () => {

@@ -38,6 +38,62 @@ def test_empty_ledger_reports_full_budget(tmp_path, noon):
     assert q.per_day.used == 0
     assert q.per_day.limit == 20
     assert q.per_day.remaining == 20
+
+
+def test_elevenlabs_quota_counts_from_the_workspace_analytics(monkeypatch,
+                                                              tmp_path, noon):
+    """The paid tier's `used` and `cost_usd` come from the workspace analytics
+    endpoint, not the ledger: the ledger cannot see other processes on the same
+    key, and the SFX response carries no cost."""
+    from foleyflow import elevenlabs
+
+    monkeypatch.setattr(
+        elevenlabs, "today_usage",
+        lambda now=None, use_cache=True: {
+            "available": True, "requests": 7, "credits": 299,
+            "cost_usd": 5.27, "error": None})
+
+    q = get_quota("eleven_text_to_sound_v2", now=noon,
+                  ledger_path=str(tmp_path / "absent.jsonl"))
+    assert q.per_day.used == 7
+    assert q.per_day.limit == 20
+    assert q.per_day.cost_usd == pytest.approx(5.27)
+    # The cap and the quota row share the same UTC-day reset.
+    assert q.resets_at.startswith("2026-07-28T00:00:00")
+
+
+def test_elevenlabs_quota_falls_back_to_the_ledger_when_analytics_is_down(
+        monkeypatch, tmp_path, noon):
+    """An analytics outage must not zero the row: the ledger count stands in
+    and the dollar figure is withheld rather than guessed."""
+    from foleyflow import elevenlabs
+
+    monkeypatch.setattr(
+        elevenlabs, "today_usage",
+        lambda now=None, use_cache=True: {
+            "available": False, "requests": 0, "credits": 0,
+            "cost_usd": 0.0, "error": "offline"})
+    path = write_ledger(tmp_path / "l.jsonl",
+                        [(MODEL, noon.timestamp() - 60)])
+    q = get_quota("eleven_text_to_sound_v2", now=noon, ledger_path=str(path))
+    assert q.per_day.used == 0        # no eleven rows in the ledger
+    assert q.per_day.cost_usd is None  # never a guessed dollar figure
+
+
+def test_elevenlabs_quota_row_serializes_with_cost(monkeypatch, tmp_path, noon):
+    """The wire shape carries cost_usd so the Spend tab can render it."""
+    from foleyflow import elevenlabs
+
+    monkeypatch.setattr(
+        elevenlabs, "today_usage",
+        lambda now=None, use_cache=True: {
+            "available": True, "requests": 3, "credits": 0,
+            "cost_usd": 1.76, "error": None})
+    q = get_quota("eleven_text_to_sound_v2", now=noon,
+                  ledger_path=str(tmp_path / "absent.jsonl"))
+    payload = q.to_dict()
+    assert payload["per_day"]["cost_usd"] == pytest.approx(1.76)
+    assert payload["per_day"]["limit"] == 20
     assert q.status == "ok"
 
 
