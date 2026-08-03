@@ -63,7 +63,7 @@
 </svelte:head>
 
 {#if route.name === "project"}
-  <ControlRoom id={route.id} />
+  <ControlRoom id={route.id} onNavigate={go} />
 {:else if route.name === "create"}
   <CreateProject onNavigate={go} />
 {:else if route.name === "unclaimed"}

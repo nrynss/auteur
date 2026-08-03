@@ -6,11 +6,11 @@
   import { openHelp } from "./helpStore.svelte";
 
   interface Props {
-    /** Extra text after the key — defaults to "keys & terms". */
+    /** Extra text after the key — defaults to "Keys & terms". */
     label?: string;
   }
 
-  let { label = "keys & terms" }: Props = $props();
+  let { label = "Keys & terms" }: Props = $props();
 </script>
 
 <button type="button" class="hint" onclick={openHelp}>

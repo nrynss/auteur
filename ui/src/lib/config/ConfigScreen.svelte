@@ -16,6 +16,7 @@
   import Spinner from "../components/Spinner.svelte";
   import ThemeToggle from "../components/ThemeToggle.svelte";
   import ChecklistRow from "../control/ChecklistRow.svelte";
+  import Brand from "../components/Brand.svelte";
   import { BRAND_NAME } from "../brand";
   import { ApiError } from "../api/client";
   import HelpHint from "../help/HelpHint.svelte";
@@ -155,24 +156,28 @@
               ? "all models within their daily limits"
               : deDash(item.detail) || "a model is over its daily limit",
         };
+      case "api":
+        // The API check is self-referential by construction (the page was
+        // served by this API), so the sub-line says what was actually
+        // checked and echoes the version, not raw status= key=value.
+        return {
+          ...item,
+          label: "API reachable",
+          detail: (() => {
+            const v = item.detail?.match(/version=(\S+)/)?.[1];
+            return v ? `served this page · version ${v}` : "served this page";
+          })(),
+        };
       default:
-        // api / brand / build already read as sentence-case checks.
+        // brand / build already read as sentence-case checks with evidence.
         return { ...item, detail: deDash(item.detail) || item.detail };
     }
   }
 </script>
 
 <header class="chrome">
-  <a
-    class="brand"
-    href="/"
-    onclick={(e) => {
-      e.preventDefault();
-      onNavigate("/");
-    }}
-    >{BRAND_NAME}</a
-  >
-  <span class="dim">configuration</span>
+  <Brand {onNavigate} />
+  <span class="dim">Configuration</span>
   <span class="spacer"></span>
   <Button variant="ghost" size="sm" onclick={() => onNavigate("/")}>
     Projects
@@ -267,13 +272,6 @@
     padding: 0 1rem;
     background: var(--surface);
     border-bottom: 1px solid var(--line);
-  }
-
-  .brand {
-    font-weight: var(--w-590);
-    font-size: var(--text-14);
-    color: var(--text);
-    text-decoration: none;
   }
 
   .dim {

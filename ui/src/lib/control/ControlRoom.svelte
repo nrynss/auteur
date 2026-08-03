@@ -5,7 +5,7 @@
    * is 7.10, the player is 7.9, director mode is 7.12. */
   import { onMount } from "svelte";
 
-  import { BRAND_NAME } from "../brand";
+  import Brand from "../components/Brand.svelte";
   import BudgetChip from "./BudgetChip.svelte";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import DirectorPanel, {
@@ -83,9 +83,11 @@
 
   interface Props {
     id: string;
+    /** SPA navigation for the brand link home (App passes go). */
+    onNavigate?: (path: string) => void;
   }
 
-  let { id }: Props = $props();
+  let { id, onNavigate }: Props = $props();
 
   type Tab = "checklist" | "evidence" | "director" | "spend" | "history" | "artifacts";
 
@@ -824,7 +826,7 @@
 {:else if project}
   <div class="app">
     <header class="chrome">
-      <span class="brand">{BRAND_NAME}</span>
+      <Brand {onNavigate} />
       <div class="proj">
         <h1>{project.title}</h1>
         <span class="ver num">
@@ -1044,11 +1046,6 @@
     flex: 0 0 auto;
   }
 
-  .brand {
-    font-weight: var(--w-590);
-    font-size: var(--text-14);
-  }
-
   .proj {
     display: flex;
     align-items: baseline;
@@ -1217,7 +1214,12 @@
   @media (max-width: 1000px) {
     .stage {
       grid-template-columns: 1fr;
-      grid-template-rows: auto 1fr;
+      /* The viewer row gets a real share with a floor. Its content is an
+       * absolutely-positioned video with no intrinsic height, so an auto
+       * row collapsed it to ~32px — a broken-looking lozenge. 45vh with a
+       * 200px floor keeps the picture watchable while the rail takes the
+       * rest. */
+      grid-template-rows: minmax(200px, 45vh) 1fr;
     }
     /* The chrome's fixed items (meter, budget chip, actions, help, theme)
      * add up past ~820px, and a flex row would rather crush the project
@@ -1232,16 +1234,15 @@
     }
   }
 
-  /* Narrow chrome: the readiness meter and the budget chip are the first
-   * to go — their numbers live in the Spend tab and the Readiness panel,
-   * and at 480px they would push the theme toggle past the viewport edge.
-   * The core controls (Mix, Export, help, theme) stay. */
+  /* Narrow chrome: the readiness meter and the budget chip STAY visible —
+   * money is stated before it is spent, and hiding it at a narrow width
+   * would drop the product's central claim as a media-query side effect.
+   * The row wraps to three lines (brand + project / meter + budget /
+   * actions + help + theme); only the decorative separators are dropped. */
   @media (max-width: 640px) {
     .chrome {
-      gap: 8px;
+      gap: 6px 10px;
     }
-    .chrome :global(.meter),
-    .chrome :global(.budget),
     .sep {
       display: none;
     }

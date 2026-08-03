@@ -377,6 +377,49 @@ test("480px narrow: chrome, player and timeline all fit with zero horizontal ove
   expect(transport.width).toBeLessThanOrEqual(transport.clientWidth + 1);
 });
 
+// §6: money is stated before it is spent — at 480 the chrome wraps instead
+// of hiding the meter and the budget chip.
+
+test("480px: the readiness meter and the budget figure stay visible (money is never hidden)", async ({ page }) => {
+  await page.setViewportSize({ width: 480, height: 800 });
+  await openControlRoom(page);
+
+  const meter = page.locator(".chrome .meter");
+  const budget = page.locator(".chrome .budget");
+  await expect(meter).toBeVisible();
+  await expect(budget).toBeVisible();
+  await expect(meter).toContainText("83%");
+  await expect(budget).toContainText("$3.70");
+  await expect(budget).toContainText("$5.00");
+  // They sit inside the viewport, on the second chrome row.
+  const box = await budget.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.x + box!.width).toBeLessThanOrEqual(480);
+});
+
+// §7: the stacked viewer must not collapse to a broken lozenge.
+
+test("480px: the viewer frame is a real height, not a 32px strip", async ({ page }) => {
+  await page.setViewportSize({ width: 480, height: 800 });
+  await openControlRoom(page);
+
+  const frame = await page.locator(".frame").evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    return { h: r.height, w: r.width };
+  });
+  expect(
+    frame.h,
+    `frame height ${frame.h}px — the collapsed 32px lozenge must not return`,
+  ).toBeGreaterThanOrEqual(150);
+  // And the video fills it (16:9 within the frame).
+  // Two <video> elements exist (original + mix, the latter classed off).
+  const video = await page.locator(".frame video:not(.off)").evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    return { h: r.height, w: r.width };
+  });
+  expect(video.h, `video height ${video.h}px`).toBeGreaterThanOrEqual(120);
+});
+
 // -- the measured waveform actually paints ----------------------------------
 
 test("the mix's measured peaks paint real pixels on the History tab", async ({ page }) => {
@@ -479,4 +522,51 @@ test("screenshots: projects index and config", async ({ page }) => {
   await page.goto("/config");
   await expect(page.locator("p.summary")).toContainText("Deployment checks pass");
   await expect(page).toHaveScreenshot("config-1280.png");
+});
+
+// -- screenshots: dark mode --------------------------------------------------
+// The same states under prefers-color-scheme: dark, so a token regression
+// that only shows in one theme fails the gate (contrast.test.ts checks the
+// token pairs numerically; this checks the rendered result).
+
+test("dark screenshots: control room checklist tab, desktop", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await openControlRoom(page);
+  await expect(page.getByRole("tab", { name: "Checklist" })).toBeVisible();
+  await expect(page.getByText("Timeline has events")).toBeVisible();
+  await expect(page).toHaveScreenshot("control-room-checklist-1280-dark.png");
+});
+
+test("dark screenshots: control room spend tab, desktop", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await openControlRoom(page);
+  await page.getByRole("tab", { name: "Spend" }).click();
+  await expect(page.getByText("This project", { exact: true })).toBeVisible();
+  await expect(page.getByText("Transactions", { exact: true })).toBeVisible();
+  await expect(page).toHaveScreenshot("control-room-spend-1280-dark.png");
+});
+
+test("dark screenshots: control room narrow 480 and projects index", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.setViewportSize({ width: 480, height: 800 });
+  await openControlRoom(page);
+  await expect(page.getByRole("tab", { name: "Checklist" })).toBeVisible();
+  await expect(page).toHaveScreenshot("control-room-480-dark.png");
+
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await stubApi(page);
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
+  await expect(page).toHaveScreenshot("projects-index-1280-dark.png");
+});
+
+test("dark screenshots: config", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await stubApi(page);
+  await page.goto("/config");
+  await expect(page.locator("p.summary")).toContainText("Deployment checks pass");
+  await expect(page).toHaveScreenshot("config-1280-dark.png");
 });

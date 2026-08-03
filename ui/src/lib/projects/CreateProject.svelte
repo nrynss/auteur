@@ -6,7 +6,7 @@
   import Panel from "../components/Panel.svelte";
   import Spinner from "../components/Spinner.svelte";
   import ThemeToggle from "../components/ThemeToggle.svelte";
-  import { BRAND_NAME } from "../brand";
+  import Brand from "../components/Brand.svelte";
   import HelpHint from "../help/HelpHint.svelte";
   import { ApiError } from "../api/client";
   import {
@@ -425,15 +425,8 @@
 </script>
 
 <header class="chrome">
-  <a
-    class="brand"
-    href="/"
-    onclick={(e) => {
-      e.preventDefault();
-      go("/");
-    }}>{BRAND_NAME}</a
-  >
-  <span class="dim">new project</span>
+  <Brand onNavigate={go} />
+  <span class="dim">New project</span>
   <span class="spacer"></span>
   <HelpHint />
   <ThemeToggle />
@@ -615,18 +608,6 @@
     padding: 0 1rem;
     background: var(--surface);
     border-bottom: 1px solid var(--line);
-  }
-
-  .brand {
-    font-weight: var(--w-590);
-    font-size: var(--text-14);
-    letter-spacing: 0.01em;
-    color: var(--text);
-    text-decoration: none;
-  }
-
-  .brand:hover {
-    color: var(--accent);
   }
 
   .spacer {

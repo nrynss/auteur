@@ -19,6 +19,7 @@
   import Spinner from "../components/Spinner.svelte";
   import { ApiError } from "../api/client";
 
+  import Brand from "../components/Brand.svelte";
   import HelpHint from "../help/HelpHint.svelte";
 
   import { formatCost } from "../format";
@@ -234,6 +235,7 @@
 
 <div class="page">
   <header class="chrome">
+    <Brand onNavigate={onNavigate} />
     <div class="proj">
       <h1>Orphans</h1>
       <span class="sub">spend and storage no project claims: money spent, storage held, addresses shared</span>

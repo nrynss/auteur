@@ -8,7 +8,6 @@
    * 7.11: locked prop + selected index + regenerate slot. */
   import EnvelopeCanvas from "./EnvelopeCanvas.svelte";
   import Tooltip from "../help/Tooltip.svelte";
-  import Term from "../help/Term.svelte";
   import { envelopeSeed, groupLanes, placeEvent } from "./helpers";
   import { resizeHandle } from "./resize-handle";
   import { timelineGrip } from "./timeline-grip";
@@ -410,9 +409,7 @@
       </button>
     {:else if canEdit}
       <span class="note snap">snap 10 ms · ⌥ drag to override</span>
-      <span class="note legend">
-        <Term term="transient" /> = start + 50 ms bias
-      </span>
+      <span class="note legend">transient = start + 50 ms bias</span>
       <span class="note free">move · resize · rename · delete free</span>
     {:else if locked}
       <span class="note lock">run in flight: locked</span>
@@ -521,7 +518,9 @@
           <div class="lane-row" style={`width:${Math.max(widthPx, 480)}px`}>
             <div class="tname">
               <span class="n">{lane.label}</span>
-              <span class="k">{lane.kind}</span>
+              {#if lane.label.toLowerCase() !== lane.kind}
+                <span class="k">{lane.kind}</span>
+              {/if}
             </div>
             <div class="lane">
               {#each lane.events as ev}

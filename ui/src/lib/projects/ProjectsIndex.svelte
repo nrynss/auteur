@@ -3,7 +3,7 @@
    * Only fields the list API exposes: no invented readiness. */
   import { onMount } from "svelte";
 
-  import { BRAND_NAME } from "../brand";
+  import Brand from "../components/Brand.svelte";
   import Tooltip from "../help/Tooltip.svelte";
   import Button from "../components/Button.svelte";
   import Chip from "../components/Chip.svelte";
@@ -81,11 +81,11 @@
 </script>
 
 <header class="chrome">
-  <span class="brand">{BRAND_NAME}</span>
-  <span class="dim">projects</span>
+  <Brand onNavigate={onNavigate} />
+  <span class="dim">Projects</span>
   <span class="spacer"></span>
   {#if storageHint}
-    <span class="stop faint"><Tooltip text={storageHint ?? ""}><span>storage issue</span></Tooltip></span>
+    <span class="stop faint"><Tooltip text={storageHint ?? ""}><span>Storage issue</span></Tooltip></span>
   {/if}
   <HelpHint />
   <ThemeToggle />
@@ -193,12 +193,6 @@
     padding: 0 1rem;
     background: var(--surface);
     border-bottom: 1px solid var(--line);
-  }
-
-  .brand {
-    font-weight: var(--w-590);
-    font-size: var(--text-14);
-    letter-spacing: 0.01em;
   }
 
   .spacer {

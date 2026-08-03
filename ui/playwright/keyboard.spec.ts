@@ -104,7 +104,9 @@ test("tab reaches every interactive control on the control room, in DOM order", 
   expect(count).toBeGreaterThan(10);
 
   // Walk Tab from a known start; every passable control must receive focus.
-  await page.locator(".brand").first().click(); // set a deterministic start
+  // (The brand is a link home now — clicking it would navigate away, so
+  // start from the first tab instead.)
+  await page.getByRole("tab").first().click();
   const seen = new Set<string>();
   for (let i = 0; i < count * 2; i += 1) {
     await page.keyboard.press("Tab");
@@ -137,7 +139,7 @@ test("the ? overlay traps Tab while open and Escape returns focus", async ({ pag
 
   // The control room's chrome brand is a span — focus a real control: the
   // HelpHint button.
-  const hint = page.getByRole("button", { name: "keys & terms" });
+  const hint = page.getByRole("button", { name: "Keys & terms" });
   await hint.focus();
   await page.keyboard.type("?");
   const overlay = page.getByRole("dialog", { name: "Help: keys and terms" });
