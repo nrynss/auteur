@@ -1,6 +1,6 @@
-# Roadmap — where FoleyFlow goes from here
+# Roadmap — where Auteur goes from here
 
-FoleyFlow generates and places sound effects against silent video: it analyses
+Auteur generates and places sound effects against silent video: it analyses
 the footage, proposes a timeline of foley events, generates each sound through
 a commercial provider, and mixes them into a deliverable — with every
 generated second traceable to the call that produced it and the money it cost.
@@ -13,7 +13,7 @@ products it could become, and they are not stages of the same thing.
 ## The model: bring your own keys
 
 Users arrive with their own Backblaze B2 credentials and their own AI provider
-keys. FoleyFlow stores nothing on their behalf, resells no provider, and takes
+keys. Auteur stores nothing on their behalf, resells no provider, and takes
 no cut of anyone's inference spend.
 
 This is a deliberate choice, not a limitation:
@@ -51,18 +51,18 @@ foundational systems that do not exist yet.**
 
 ## Option A — self-hosted and white-label
 
-A customer or partner deploys FoleyFlow inside their own environment, under
+A customer or partner deploys Auteur inside their own environment, under
 their own brand, pointed at their own storage and their own provider accounts.
 
 **Why this is close.** The application already ships as a single container with
 the interface built in. Every credential is supplied by configuration. All
-customer data lives in the customer's bucket. And FoleyFlow contains no
+customer data lives in the customer's bucket. And Auteur contains no
 analytics, no usage reporting and no callback of any kind — a deployment
 depends on nothing we operate, and keeps running whether or not we do.
 
 It also sidesteps the largest gap in the product: a customer deploying behind
 their own single sign-on, VPN or gateway supplies the access control that
-FoleyFlow does not yet provide itself.
+Auteur does not yet provide itself.
 
 **What it takes:**
 
@@ -85,12 +85,12 @@ domain is not this option — that is Option B with additional routing.
 
 ## Option B — multi-tenant SaaS
 
-We host FoleyFlow; customers sign in and connect their own storage and provider
+We host Auteur; customers sign in and connect their own storage and provider
 keys.
 
 Two foundational systems gate everything else.
 
-**User accounts and access control.** FoleyFlow today has no concept of a user.
+**User accounts and access control.** Auteur today has no concept of a user.
 It was built as a single-operator tool, and the demonstration deployment is
 open by design. Multi-tenancy needs identity, sessions, organisations and
 membership, plus enforcement that a request can only ever reach the data its
@@ -178,7 +178,7 @@ honest money, all at once.
 
 ## Built on Backblaze B2
 
-FoleyFlow is not merely stored on B2 — B2 is its system of record. Every
+Auteur is not merely stored on B2 — B2 is its system of record. Every
 artifact, every timeline version, every provenance manifest and every cost
 entry is an immutable object in the bucket. The audit trail *is* the object
 store.
@@ -191,12 +191,12 @@ That makes the platform fit unusually well:
   review — which is precisely the pattern a per-gigabyte egress charge
   penalises.
 - **S3 compatibility is why bring-your-own-storage is cheap to offer.** Pointing
-  FoleyFlow at a customer's own bucket is a credential change, not an
+  Auteur at a customer's own bucket is a credential change, not an
   engineering project.
 - **It fits between existing tools rather than competing with them.** B2's
   media-workflow ecosystem — LucidLink, MASV, EditShare, Telestream, Quantum
   and others — moves, stores and manages footage. None of them generate sound.
-  Footage arrives through those tools, FoleyFlow scores it, and the finished
+  Footage arrives through those tools, Auteur scores it, and the finished
   mix returns to the same bucket as an immutable, signed record.
 
 The positioning is deliberately narrow: **the sound layer of a B2-based
@@ -207,7 +207,7 @@ stack provides.**
 
 ## What is honest about the current state
 
-FoleyFlow is a working single-operator application with an unusually complete
+Auteur is a working single-operator application with an unusually complete
 accounting layer: an immutable record of every billed call, per-project
 budgets, provider quota tracking, and a rule that when cost recording fails the
 interface withholds the numbers rather than showing figures it cannot stand

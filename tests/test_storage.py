@@ -253,7 +253,7 @@ def test_factory_defaults_to_local(monkeypatch):
 
 
 def test_b2_without_config_fails_loud_rather_than_degrading(monkeypatch):
-    """A deployed FoleyFlow that quietly fell back to local would write
+    """A deployed Auteur that quietly fell back to local would write
     manifests pointing at objects that were never uploaded."""
     for var in ("B2_ENDPOINT_URL", "B2_REGION", "B2_BUCKET", "B2_KEY_ID",
                 "B2_APPLICATION_KEY"):

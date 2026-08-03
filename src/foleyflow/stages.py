@@ -9,7 +9,7 @@ timed, retried and recorded like anything else, rather than subprocess calls
 that happen invisibly beside the orchestrator.
 
 The provider is `providers.genblaze.FFmpegStageProvider`, a sibling of
-genblaze-core's own `FFmpegTransform`: same contract, FoleyFlow's operations.
+genblaze-core's own `FFmpegTransform`: same contract, Auteur's operations.
 
 ## What a StageRecord is for
 

@@ -2,7 +2,7 @@
 
 `FOLEYFLOW_CACHE_BACKEND=local|b2` picks the implementation. Missing B2
 configuration fails loud rather than silently degrading to local — a deployed
-FoleyFlow that quietly stopped writing to B2 would produce projects whose
+Auteur that quietly stopped writing to B2 would produce projects whose
 provenance manifests point at objects that were never uploaded.
 """
 

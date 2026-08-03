@@ -28,7 +28,7 @@ import ConfigScreen from "./ConfigScreen.svelte";
 const CONFIG = {
   ok: true,
   version: "0.1.0",
-  brand: "FoleyFlow",
+  brand: "Auteur",
   git_sha: "deadbeefcafebabe0123456789abcdef01234567",
   build_time: "2026-08-02T12:00:00Z",
   checks: [
@@ -191,17 +191,17 @@ it("a blocked check flips the summary and names the stop", async () => {
 it("agreement between the UI and API brand renders as ok", async () => {
   const { target, app } = await mountScreen();
   expect(target.textContent).toContain("Brand agreement");
-  expect(target.textContent).toContain("UI and API both serve FoleyFlow");
+  expect(target.textContent).toContain("UI and API both serve Auteur");
   unmount(app);
 });
 
 it("a build-time/runtime brand disagreement is blocked and names both", async () => {
-  // The UI bundle in this test is built as FoleyFlow; the API reports it
+  // The UI bundle in this test is built as Auteur; the API reports it
   // serves a different runtime name — one deployment renders two products.
   fetchBody = { ...CONFIG, brand: "KinoPost" };
   const { target, app } = await mountScreen();
   expect(target.textContent).toContain("Brand agreement");
-  expect(target.textContent).toContain("UI built as FoleyFlow");
+  expect(target.textContent).toContain("UI built as Auteur");
   expect(target.textContent).toContain("API serves KinoPost");
   expect(target.textContent).toContain("1 check blocked");
   unmount(app);

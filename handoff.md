@@ -449,7 +449,7 @@ served output (task 19's acceptance, checked on every PR). `brand.ts` has unit
 tests pinning the defaults; the override path cannot be exercised in vitest
 (env is loaded at startup), which is exactly why the CI check exists.
 
-## 20. Rename the product to Auteur — S
+## 20. Rename the product to Auteur — S — **DONE**
 
 **Depends on:** 19 (the brand mechanism). **Files:** `ui/src/lib/brand.ts`,
 `ui/vite.config.ts`, `src/foleyflow/api/app.py`,
@@ -508,6 +508,37 @@ chrome wordmark, `/docs` and the UI-not-built page; CI's rebrand job proves a
 build parameterised with any other name contains zero occurrences of "Auteur"
 in `api/static/`; and `grep -rni foley` returns only the residue this unit
 names as out of scope.
+
+**Landed (20):** defaults changed `FoleyFlow` → `Auteur` across the brand
+surface — `ui/src/lib/brand.ts`, `ui/vite.config.ts` (UI), and
+`src/foleyflow/api/brand.py` (`FOLEYFLOW_BRAND_NAME` default — the `/docs`
+title and the UI-not-built page follow automatically). The CI rebrand job is
+**inverted**: the old name is now the parameterised fixture (a build with
+`VITE_BRAND_NAME=FoleyFlow` must contain zero `Auteur`, and the default build
+must carry `Auteur` in the title and the bundle), so the guarantee points at
+the current default. Product references swept in `README.md`, `SPEC.md`,
+`docs/*.md` (incl. the §3.17 example), `foleyflow.md`, the mockup,
+`ui/README.md`, `providers.toml`, the Dockerfile comment, the deploy/seed
+scripts, and every code docstring/comment that named the product — plus the
+two user-visible code surfaces: the CLI's argparse description and the
+director-mode prompt's persona line (no cache, so the prompt tweak is
+inert — unlike `TIMELINE_PROMPT`, which stays untouched for the reasons
+above). `pyproject.toml` needed nothing: the description never named the
+product and `name = "foleyflow"` is the package (out of scope). The
+task-21 config screen needed nothing either — it consumes `BRAND_NAME`, and
+the brand-agreement row now compares a default UI "Auteur" against a
+default API "Auteur".
+
+`grep -rni foley` now returns only the named residue: the package/CLI
+(`foleyflow`, module paths), `FOLEYFLOW_*` env vars (including
+`FOLEYFLOW_BRAND_NAME`, which keeps its name — it is deployment
+configuration), `mix_video_key`'s `foley.mp4` (task 22), the domain term
+"foley" the art form (incl. `TIMELINE_PROMPT`'s "professional Foley
+artist"), and the work logs (`handoff*.md`, whose task-20 spec text names the
+old name by design). Tests updated to the new default (brand module,
+ConfigScreen fixture + assertions, dashboard default-brand assertions, the
+OpenAPI title, smoke fixture); the KinoPost override tests now also assert
+`Auteur` does not leak into a rebranded page.
 
 ## 21. Read-only configuration view — M
 

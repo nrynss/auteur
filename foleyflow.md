@@ -1,11 +1,11 @@
-# FoleyFlow
+# Auteur
 
 > **An AI post-production copilot that turns a rough video into an auditable, production-ready deliverable.**
 
 Built for the **Backblaze Generative AI Media Hackathon**. Deployed at
 <https://foleyflow-142385844755.us-east4.run.app>.
 
-FoleyFlow analyzes a video, generates and mixes synchronized Foley, runs technical
+Auteur analyzes a video, generates and mixes synchronized Foley, runs technical
 post-production checks, and preserves the full production record in Backblaze B2 —
 all through a control-room UI that is a director's tool, not a status page.
 
@@ -13,7 +13,7 @@ all through a control-room UI that is a director's tool, not a status page.
 
 ## 1. Product summary
 
-FoleyFlow is a post-production control room: a creator sees what is ready, what
+Auteur is a post-production control room: a creator sees what is ready, what
 needs attention, why it was flagged, and can apply a targeted repair without
 re-running the entire job. A silent clip goes in and a B2-backed Foley export
 comes out, over the API or through the browser.
@@ -23,7 +23,7 @@ into the same Docker image.
 
 ### One-line pitch
 
-> FoleyFlow is an AI post-production copilot that analyzes, enhances, quality-checks, and preserves every decision behind a finished video.
+> Auteur is an AI post-production copilot that analyzes, enhances, quality-checks, and preserves every decision behind a finished video.
 
 ---
 
@@ -144,7 +144,7 @@ provider call.
 
 ### 5.4 Backblaze B2 responsibilities
 
-B2 is FoleyFlow's canonical project archive:
+B2 is Auteur's canonical project archive:
 
 - direct video upload destination through presigned URLs;
 - original input and immutable content checksum;
@@ -158,7 +158,7 @@ B2 is FoleyFlow's canonical project archive:
 ### 5.5 The GPU worker
 
 The SFX worker is a separate CUDA process (`../moss-sfx-worker`) running
-MOSS-SoundEffect v2 behind HTTP + bearer auth. From FoleyFlow's side it is "one
+MOSS-SoundEffect v2 behind HTTP + bearer auth. From Auteur's side it is "one
 more provider with a base URL." Nothing here imports torch — the split keeps the
 deployed app free of CUDA. The worker is reached over a Cloudflare tunnel at
 `sfx.nryn.dev` and declared in `providers.toml`.
@@ -167,7 +167,7 @@ deployed app free of CUDA. The worker is reached over a Cloudflare tunnel at
 
 ## 6. Cost-aware SFX routing
 
-FoleyFlow selects sound-generation providers according to the role of the sound,
+Auteur selects sound-generation providers according to the role of the sound,
 the available budget, and the need for precise repair.
 
 | Sound role | Provider | Why | Unit cost |
@@ -688,7 +688,7 @@ generation is billed.
 
 ## 16. Success criteria
 
-FoleyFlow is ready to submit when a judge can verify:
+Auteur is ready to submit when a judge can verify:
 
 | # | Criterion |
 |---|---|
@@ -703,7 +703,7 @@ FoleyFlow is ready to submit when a judge can verify:
 
 ## 17. Future roadmap
 
-After the hackathon, FoleyFlow can expand into:
+After the hackathon, Auteur can expand into:
 
 - dialogue cleanup and transcription confidence checks;
 - assisted color matching with user-approved grade suggestions;

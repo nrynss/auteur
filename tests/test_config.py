@@ -49,7 +49,7 @@ def test_config_shape_and_check_keys(client):
     assert body["version"]
     # The runtime brand travels so the screen can compare it with the UI's
     # build-time name and report a disagreement as a blocked row.
-    assert body["brand"] == "FoleyFlow"
+    assert body["brand"] == "Auteur"
     for c in body["checks"]:
         assert c["state"] in ("ok", "warn", "blocked")
         assert c["label"]

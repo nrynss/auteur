@@ -70,7 +70,7 @@ def build_prompt(instruction: str, timeline_json: str,
         f"The clip is {clip_duration:.3f}s long." if clip_duration is not None
         else "The clip duration is the timeline's top-level duration."
     )
-    return f"""You are FoleyFlow's director assistant, proposing timeline edits for a film
+    return f"""You are Auteur's director assistant, proposing timeline edits for a film
 sound designer. You NEVER apply anything — you return a proposed document for
 the designer to review.
 

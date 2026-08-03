@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy FoleyFlow to Cloud Run with secrets from Secret Manager.
+# Deploy Auteur to Cloud Run with secrets from Secret Manager.
 #
 # Non-secret config: env.public.yaml (or --env-file).
 # Secrets: Secret Manager via --set-secrets (never plain text in env files).

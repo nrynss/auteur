@@ -8,7 +8,7 @@ uses, so the two providers are interchangeable at the product layer.
 ## Why this is not genblaze-openai
 
 ``genblaze-openai`` ships Sora / DALL·E / TTS providers (media generation). Chat
-is a standalone helper outside the Pipeline machinery. FoleyFlow's analysis
+is a standalone helper outside the Pipeline machinery. Auteur's analysis
 path needs the same Adapter protocol as Google/fal so Genblaze can lift it the
 same way — cost ledger, config, cache key — rather than a second code path.
 """

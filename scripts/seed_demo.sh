@@ -58,7 +58,7 @@ if [[ -z "${DUEL_VIDEO:-}" || -z "${INHALER_VIDEO:-}" ]]; then
   exit 2
 fi
 
-echo "== FoleyFlow demo evidence seed =="
+echo "== Auteur demo evidence seed =="
 echo "API:  $FOLEYFLOW_API"
 echo "tier: $FOLEYFLOW_SFX_TIER"
 echo "duel: $DUEL_VIDEO"

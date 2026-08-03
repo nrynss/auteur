@@ -46,7 +46,7 @@ def _make_bundle(root) -> None:
     static = root / "static"
     static.mkdir(parents=True)
     (static / "index.html").write_text(
-        "<!doctype html><html><body>FoleyFlow control room</body></html>"
+        "<!doctype html><html><body>Auteur control room</body></html>"
     )
     assets = static / "assets"
     assets.mkdir()
@@ -65,14 +65,14 @@ def test_unbuilt_ui_explains_itself(client, tmp_path, monkeypatch):
 
 def test_default_brand_on_the_server_surfaces(client, tmp_path, monkeypatch):
     """Defaults are today's values: the fallback page's <title> and <h1> and
-    the OpenAPI title all carry FoleyFlow (task 19's acceptance — the brand
+    the OpenAPI title all carry Auteur (task 19's acceptance — the brand
     is configurable, and a default deployment looks exactly as before)."""
     monkeypatch.setenv("FOLEYFLOW_STATIC_DIR", str(tmp_path / "static"))
     r = client.get("/")
-    assert "<title>FoleyFlow — UI not built</title>" in r.text
-    assert "<header><h1>FoleyFlow</h1></header>" in r.text
+    assert "<title>Auteur — UI not built</title>" in r.text
+    assert "<header><h1>Auteur</h1></header>" in r.text
     assert client.get(f"{API_PREFIX}/openapi.json").json()["info"]["title"] \
-        == "FoleyFlow"
+        == "Auteur"
 
 
 def test_configured_brand_reaches_the_unbuilt_page(client, tmp_path, monkeypatch):
@@ -85,7 +85,9 @@ def test_configured_brand_reaches_the_unbuilt_page(client, tmp_path, monkeypatch
     assert r.status_code == 200
     assert "<title>KinoPost — UI not built</title>" in r.text
     assert "<header><h1>KinoPost</h1></header>" in r.text
+    # Neither the old default nor the new default leaks into a rebranded page.
     assert "FoleyFlow" not in r.text
+    assert "Auteur" not in r.text
 
 
 def test_configured_brand_reaches_the_openapi_title(tmp_path, monkeypatch):
@@ -94,7 +96,7 @@ def test_configured_brand_reaches_the_openapi_title(tmp_path, monkeypatch):
     brand. Patches the module attribute, the same contract as GIT_SHA."""
     import foleyflow.api.app as app_mod
 
-    assert create_app().openapi()["info"]["title"] == "FoleyFlow"
+    assert create_app().openapi()["info"]["title"] == "Auteur"
     monkeypatch.setattr(app_mod, "BRAND_NAME", "KinoPost")
     assert create_app().openapi()["info"]["title"] == "KinoPost"
 
@@ -121,7 +123,7 @@ def test_spa_served_at_root(client, tmp_path, monkeypatch):
     r = client.get("/")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
-    assert "FoleyFlow control room" in r.text
+    assert "Auteur control room" in r.text
 
 
 def test_deep_link_returns_spa(client, tmp_path, monkeypatch):
@@ -130,7 +132,7 @@ def test_deep_link_returns_spa(client, tmp_path, monkeypatch):
     monkeypatch.setenv("FOLEYFLOW_STATIC_DIR", str(tmp_path / "static"))
     r = client.get(f"/projects/{VALID_ID}/timeline")
     assert r.status_code == 200
-    assert "FoleyFlow control room" in r.text
+    assert "Auteur control room" in r.text
 
 
 def test_hashed_assets_served_as_files(client, tmp_path, monkeypatch):

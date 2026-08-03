@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live HTTP latency probe for FoleyFlow control-room hot paths.
+"""Live HTTP latency probe for Auteur control-room hot paths.
 
 Hits a real API base URL (deployed Cloud Run or local uvicorn) and times the
 same endpoints measured in handoff-task7.md §7.18.

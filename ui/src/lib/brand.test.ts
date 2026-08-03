@@ -13,7 +13,7 @@ import {
 } from "./brand";
 
 it("defaults to today's product name", () => {
-  expect(BRAND_NAME).toBe("FoleyFlow");
+  expect(BRAND_NAME).toBe("Auteur");
 });
 
 it("default title template is the current one", () => {
@@ -21,10 +21,10 @@ it("default title template is the current one", () => {
 });
 
 it("formats page titles with the configured name and template", () => {
-  expect(brandPageTitle("Control room")).toBe("FoleyFlow — Control room");
-  expect(brandPageTitle("New project")).toBe("FoleyFlow — New project");
-  expect(brandPageTitle("Unclaimed")).toBe("FoleyFlow — Unclaimed");
-  expect(brandPageTitle("Projects")).toBe("FoleyFlow — Projects");
+  expect(brandPageTitle("Control room")).toBe("Auteur — Control room");
+  expect(brandPageTitle("New project")).toBe("Auteur — New project");
+  expect(brandPageTitle("Unclaimed")).toBe("Auteur — Unclaimed");
+  expect(brandPageTitle("Projects")).toBe("Auteur — Projects");
 });
 
 it("a rebranded template moves the name and page anywhere", () => {

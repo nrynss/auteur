@@ -45,7 +45,7 @@ class Tier:
 
     @property
     def adapter(self) -> str:
-        """Which FoleyFlow adapter serves this tier's endpoint.
+        """Which Auteur adapter serves this tier's endpoint.
 
         Derived from the endpoint's own ``[models.…] adapter`` rather than
         restated on the tier, so the two cannot disagree.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic offline latency harness for FoleyFlow hot read paths.
+"""Deterministic offline latency harness for Auteur hot read paths.
 
 Wraps LocalBackend with a fixed per-op delay so serial vs concurrent vs
 aggregate paths show clear, reproducible differences without live B2.
@@ -434,7 +434,7 @@ def run_bench(
 def _print_table(table: Dict[str, Any]) -> None:
     seed = table["seed"]
     print()
-    print("FoleyFlow latency bench (simulated RTT)")
+    print("Auteur latency bench (simulated RTT)")
     print(f"  delay_ms={table['delay_ms']}  "
           f"events={seed['events']}  ledger_rows={seed['ledger_rows']}  "
           f"projects={seed['projects']}")

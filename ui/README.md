@@ -1,4 +1,4 @@
-# FoleyFlow control room — `ui/`
+# Auteur control room — `ui/`
 
 Svelte 5 + Vite + TypeScript SPA. Builds into the Python package's static
 directory (`src/foleyflow/api/static/`), which `api/dashboard.py` serves with
@@ -45,10 +45,10 @@ can rebrand without a patch:
 
 | Variable | Default | What it sets |
 |---|---|---|
-| `VITE_BRAND_NAME` | `FoleyFlow` | product name in the UI build: chrome wordmarks, page titles, the mount-error message |
+| `VITE_BRAND_NAME` | `Auteur` | product name in the UI build: chrome wordmarks, page titles, the mount-error message |
 | `VITE_BRAND_TITLE_TEMPLATE` | `{name} — {page}` | page-title shape; `{name}` and `{page}` are the placeholders (replaced everywhere they occur) |
 | `VITE_BRAND_FAVICON` | inline SVG waveform mark | any href — a data URI or a path under `/public` (copied into the build verbatim) |
-| `FOLEYFLOW_BRAND_NAME` (runtime) | `FoleyFlow` | the two server-rendered surfaces: the OpenAPI/`/docs` title and the "UI not built" fallback page |
+| `FOLEYFLOW_BRAND_NAME` (runtime) | `Auteur` | the two server-rendered surfaces: the OpenAPI/`/docs` title and the "UI not built" fallback page |
 
 ```sh
 VITE_BRAND_NAME="KinoPost" \
@@ -60,7 +60,7 @@ npm run build
 Two server surfaces render the name too and are not part of the UI build:
 the OpenAPI title (served at `/api/v1/openapi.json`, rendered by `/docs`) and
 the "UI not built" fallback page. Set `FOLEYFLOW_BRAND_NAME` in the runtime
-environment for those (default `FoleyFlow`); a fully rebranded deployment sets
+environment for those (default `Auteur`); a fully rebranded deployment sets
 both the build-time `VITE_BRAND_*` and the runtime var.
 
 Only what a user sees is externalised. The CLI, the package, `FOLEYFLOW_*` env

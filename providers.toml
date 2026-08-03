@@ -38,7 +38,7 @@ base_url = "http://127.0.0.1:8600"
 # The paid tier. Genblaze ships an ElevenLabs connector, so there is nothing to
 # lift — `genblaze_provider` points straight at it and there is no
 # `module` entry, because no plain-HTTP path to ElevenLabs exists or should.
-# The connector reads ELEVENLABS_API_KEY itself; FoleyFlow never holds the key.
+# The connector reads ELEVENLABS_API_KEY itself; Auteur never holds the key.
 [adapters.elevenlabs]
 genblaze_provider = "genblaze_elevenlabs:ElevenLabsSFXProvider"
 api_key_env = "ELEVENLABS_API_KEY"
@@ -172,7 +172,7 @@ default_vlm = "gemini-2.5-flash"
 director_model = "gemini-3.5-flash-lite"
 
 # Free-tier rate limits, as shown in Google AI Studio. `requests_per_day` is
-# the binding constraint for FoleyFlow, not RPM: 20/day is a handful of
+# the binding constraint for Auteur, not RPM: 20/day is a handful of
 # debugging runs. Flash Lite trades some capability for 25x the daily budget,
 # which is why it is the development default. These figures are quota
 # accounting, not pricing — see foleyflow.quota.
@@ -231,7 +231,7 @@ role = "analysis"
 cost_per_call_usd = 0.01
 
 # Video-generation models — used by the retired hero-clip scripts, not by
-# FoleyFlow itself. Priced per second, so each declares the duration to assume
+# Auteur itself. Priced per second, so each declares the duration to assume
 # when a call omits one; without that, estimate_cost would report $0.
 # (These are NOT needed to read historical ledger rows: summarize_ledger sums
 # the cost recorded on each row and never consults this file.)

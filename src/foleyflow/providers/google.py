@@ -1,6 +1,6 @@
 """Google Gemini adapter — video and image understanding for scene analysis.
 
-Replaces the fal route for analysis. FoleyFlow was already calling
+Replaces the fal route for analysis. Auteur was already calling
 `google/gemini-2.5-flash`; fal's OpenRouter gateway was only a proxy in front
 of it. Talking to Google directly removes a dependency, a middleman's pricing,
 and a credit balance we no longer have — with no change to the model, so the

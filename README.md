@@ -1,10 +1,10 @@
-# FoleyFlow
+# Auteur
 
 > An AI post-production copilot that turns a rough video into an auditable, production-ready deliverable.
 
 Built for the **Backblaze Generative AI Media Hackathon**. See [SPEC.md](SPEC.md) for the full build specification and [docs/api.md](docs/api.md) for the HTTP contract.
 
-FoleyFlow analyzes a video, generates and mixes synchronized Foley, runs technical
+Auteur analyzes a video, generates and mixes synchronized Foley, runs technical
 post-production checks, and preserves the full production record in Backblaze B2.
 
 ## Status
@@ -132,7 +132,7 @@ here imports torch, and the deployed app stays free of CUDA. It needs a GPU with
 uvicorn server:app --host 127.0.0.1 --port 8600
 ```
 
-Point FoleyFlow at it with `FOLEYFLOW_SFX_WORKER_URL`, or leave it unset for
+Point Auteur at it with `FOLEYFLOW_SFX_WORKER_URL`, or leave it unset for
 `http://127.0.0.1:8600`. Generation is ~20 s per stem regardless of clip length
 (the model always denoises a 30-second latent and crops), and the worker
 serialises requests — one GPU. Independent stems still fan out: Genblaze issues

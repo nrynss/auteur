@@ -1,4 +1,4 @@
-"""The storage interface every FoleyFlow backend implements.
+"""The storage interface every Auteur backend implements.
 
 Keys are POSIX-style, slash-separated, and never absolute — e.g.
 `cache/03f8c512074fd16b.wav` or
@@ -106,7 +106,7 @@ def validate_key(key: str) -> List[str]:
 
 @runtime_checkable
 class Backend(Protocol):
-    """Object storage, reduced to what FoleyFlow actually needs.
+    """Object storage, reduced to what Auteur actually needs.
 
     Deliberately has no delete: SPEC.md §10 requires that a completed
     generation or manifest is never overwritten or removed. `exports/latest.json`

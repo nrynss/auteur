@@ -1,4 +1,4 @@
-# FoleyFlow
+# Auteur
 
 > **An AI post-production copilot that turns a rough video into an auditable, production-ready deliverable.**
 
@@ -48,15 +48,15 @@ of that suite — it needs a GPU and an 11 GB model. Nothing here imports torch.
 
 ## 1. Product summary
 
-FoleyFlow analyzes a video, generates and mixes synchronized Foley, runs technical post-production checks, and preserves the full production record.
+Auteur analyzes a video, generates and mixes synchronized Foley, runs technical post-production checks, and preserves the full production record.
 
 It is not another one-shot sound-effect generator. It is a **post-production control room**: a creator sees what is ready, what needs attention, why it was flagged, and can apply a targeted repair without re-running the entire job.
 
-Foley is the headline feature. The complementary checks—scene detection, audio clipping/loudness, and visual continuity warnings—prove that FoleyFlow is a production workflow rather than a single media-generation demo.
+Foley is the headline feature. The complementary checks—scene detection, audio clipping/loudness, and visual continuity warnings—prove that Auteur is a production workflow rather than a single media-generation demo.
 
 ### One-line pitch
 
-> FoleyFlow is an AI post-production copilot that analyzes, enhances, quality-checks, and preserves every decision behind a finished video.
+> Auteur is an AI post-production copilot that analyzes, enhances, quality-checks, and preserves every decision behind a finished video.
 
 ---
 
@@ -150,7 +150,7 @@ POST-PRODUCTION READINESS                                  82% ready
 ### 6.2 Primary flow
 
 1. The creator creates a project and uploads a video.
-2. FoleyFlow creates a B2-backed project workspace and runs the analysis workflow.
+2. Auteur creates a B2-backed project workspace and runs the analysis workflow.
 3. The UI displays a scene-aware checklist and Foley event timeline.
 4. The creator previews **original** versus **Foley mix**.
 5. The creator opens a warning or weak Foley event, then selects **Regenerate this event**.
@@ -309,7 +309,7 @@ so the round-per-tier loop is the honest implementation.
 
 **Local deterministic work is first-class.** `providers/genblaze.py`'s
 `FFmpegStageProvider` is a sibling of core's `FFmpegTransform`: the same
-`SyncProvider.generate(step) -> Step` contract, FoleyFlow's own operations. Mix,
+`SyncProvider.generate(step) -> Step` contract, Auteur's own operations. Mix,
 mux and QA run as Genblaze steps, so they are timed, retried and recorded like
 any provider call instead of happening invisibly beside the orchestrator.
 
@@ -339,7 +339,7 @@ Three constraints worth writing down, all discovered by running it:
 
 ### 8.3 Backblaze B2 responsibilities
 
-B2 is FoleyFlow's canonical project archive:
+B2 is Auteur's canonical project archive:
 
 - direct video upload destination through presigned URLs;
 - original input and immutable content checksum;
@@ -351,13 +351,13 @@ B2 is FoleyFlow's canonical project archive:
 
 ### 8.4 Mosaic relationship and future integration
 
-FoleyFlow adopts Mosaic's core product principles: immutable history, schema-validated AI outputs, deterministic state transitions, explicit human approval for consequential actions, and an evidence-first UI. It is **not** coupled to Mosaic's current incident-operations reference application for the hackathon MVP.
+Auteur adopts Mosaic's core product principles: immutable history, schema-validated AI outputs, deterministic state transitions, explicit human approval for consequential actions, and an evidence-first UI. It is **not** coupled to Mosaic's current incident-operations reference application for the hackathon MVP.
 
-Mosaic's current API, projector, ontology, and reference UI are purpose-built for its emergency-operations domain. Its documented generic `DomainProfile` seam is a future integration route, rather than an implementation dependency that FoleyFlow should rush into during the hackathon.
+Mosaic's current API, projector, ontology, and reference UI are purpose-built for its emergency-operations domain. Its documented generic `DomainProfile` seam is a future integration route, rather than an implementation dependency that Auteur should rush into during the hackathon.
 
 #### MVP decision
 
-FoleyFlow ships as a standalone post-production application:
+Auteur ships as a standalone post-production application:
 
 - its Python worker owns Genblaze workflows, provider adapters, media processing, and B2 artifact publication;
 - its focused UI owns the readiness checklist, A/B player, timeline, repair approval, and production dossier;
@@ -368,16 +368,16 @@ This preserves a clear judge-facing story and avoids turning a media-workflow su
 
 #### Post-hackathon integration path
 
-When Mosaic's generic profile contract is implemented, FoleyFlow can become a first external domain profile. Mosaic would provide the control-plane responsibilities—project/run state, human approvals, audit history, and streamed lifecycle notifications—while FoleyFlow remains the media execution worker and B2 remains the canonical artifact archive.
+When Mosaic's generic profile contract is implemented, Auteur can become a first external domain profile. Mosaic would provide the control-plane responsibilities—project/run state, human approvals, audit history, and streamed lifecycle notifications—while Auteur remains the media execution worker and B2 remains the canonical artifact archive.
 
 ```text
 Mosaic control plane
   └─ immutable project/run/approval/audit records and SSE lifecycle updates
 
-FoleyFlow Python worker
+Auteur Python worker
   └─ Genblaze, GMI, SFX providers, ffmpeg, QA, and B2 artifact publication
 
-FoleyFlow workspace
+Auteur workspace
   └─ post-production checklist, A/B preview, timeline, and production dossier
 ```
 
@@ -399,7 +399,7 @@ Every approval event identifies the actor, selected asset/run version, estimated
 
 ## 9. Cost-aware SFX routing
 
-FoleyFlow selects sound-generation providers according to the role of the sound, the available budget, and the need for precise repair. This is a visible, user-controllable production decision—not hidden routing logic.
+Auteur selects sound-generation providers according to the role of the sound, the available budget, and the need for precise repair. This is a visible, user-controllable production decision—not hidden routing logic.
 
 ### 9.1 Routing policy
 
@@ -475,7 +475,7 @@ provenance and the UI, and it is the seam a per-event hero override selects on.
 Not yet done: the tunnel itself, and the explicit per-event escalation to the
 paid hero tier — §9.3's approval flow needs the repair route to hang off.
 
-Prices are planning estimates, not guarantees. FoleyFlow records the estimate
+Prices are planning estimates, not guarantees. Auteur records the estimate
 actually presented to the user at approval time.
 
 #### The routing story is now better, not worse
@@ -541,7 +541,7 @@ so adoption is a record, never a rewrite.
 
 Use a project UUID and immutable run/version IDs. Never overwrite a completed generation or manifest.
 
-As built. Two key spaces coexist: FoleyFlow owns project records, and Genblaze's
+As built. Two key spaces coexist: Auteur owns project records, and Genblaze's
 sink owns run artifacts under its own scheme. Adopting the SDK's native layout
 for what it produces was cheaper than fighting the sink, and is an easier story
 to tell than a bespoke one.
@@ -765,7 +765,7 @@ Use the fewest providers needed for an impressive and repeatable demo. All names
 | Visual continuity | Per-scene statistics first; optional multimodal explanation | **Built** | Adjacent mean-luma comparison; warning only — never automatic colour correction |
 | Audio QA | ffmpeg `ebur128` + true-peak | **Built** | Deterministic; written when a mix is measured |
 | Mix/mux | The ported local renderer | **Built (unwired)** | `-c:v copy`, so the source video stream is bit-identical |
-| Video generation | — | **Out of scope** | Not a FoleyFlow feature. Three silent source clips already exist and are archived in B2 |
+| Video generation | — | **Out of scope** | Not a Auteur feature. Three silent source clips already exist and are archived in B2 |
 
 Provider failures result in a recorded terminal run state, never a silently
 incomplete "complete" project.
@@ -860,7 +860,7 @@ Video bytes never pass through the API: the client PUTs straight to B2.
 
 ### 14.1 Command-line client
 
-**Decision (2026-07-28): FoleyFlow ships exactly one command, `foleyflow`.**
+**Decision (2026-07-28): Auteur ships exactly one command, `foleyflow`.**
 
 The distinction worth keeping is not local versus remote — it is *project-scoped*
 versus *file-scoped*:
@@ -894,7 +894,7 @@ pipeline modules in the same package.
 **Clip:** `standoff_kling.mp4` — 15.04s, genuinely silent (ffprobe confirms no
 audio stream), five detected scenes. Already generated, already archived in B2
 alongside two alternates and their validated timelines. Video generation is not
-a FoleyFlow feature and none is needed.
+a Auteur feature and none is needed.
 
 1. **0:00–0:20 — Problem:** Play the silent source. Introduce it as a picture-locked clip that is visually finished but not post-production ready.
 2. **0:20–0:55 — Analyze:** Upload/enter the project. Show Genblaze workflow stages and B2 project creation. Scene analysis finds the rain, walking, and environmental context.
@@ -1003,7 +1003,7 @@ In order. Nothing left in the plan has an external dependency.
 
 ## 18. Success criteria
 
-FoleyFlow is ready to submit when a judge can verify all of the following:
+Auteur is ready to submit when a judge can verify all of the following:
 
 | # | Criterion | State |
 |---|---|---|
@@ -1022,7 +1022,7 @@ tested since the previous milestone. See `handoff.md`.
 
 ## 19. Future roadmap
 
-After the hackathon, FoleyFlow can expand into dedicated modules:
+After the hackathon, Auteur can expand into dedicated modules:
 
 - dialogue cleanup and transcription confidence checks;
 - assisted color matching with user-approved grade suggestions;

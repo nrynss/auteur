@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create / rotate FoleyFlow Secret Manager secrets and grant the Cloud Run
+# Create / rotate Auteur Secret Manager secrets and grant the Cloud Run
 # runtime service account secretAccessor.
 #
 # Values are read from the environment or from a local .env file — never
@@ -24,7 +24,7 @@ usage() {
   cat <<'EOF'
 Usage: setup_secrets.sh [--project PROJECT] [--env-file PATH] [--region REGION] [--service SERVICE]
 
-Creates (if missing) and adds a new version for each FoleyFlow deploy secret,
+Creates (if missing) and adds a new version for each Auteur deploy secret,
 then grants roles/secretmanager.secretAccessor on each secret to the Cloud Run
 runtime service account.
 

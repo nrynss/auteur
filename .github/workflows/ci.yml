@@ -104,24 +104,27 @@ jobs:
       - name: Default build keeps the brand
         working-directory: ui
         run: |
-          grep -q '<title>FoleyFlow — Control room</title>' \
+          grep -q '<title>Auteur — Control room</title>' \
             ../src/foleyflow/api/static/index.html
-          grep -rnq "FoleyFlow" ../src/foleyflow/api/static/
+          grep -rnq "Auteur" ../src/foleyflow/api/static/
 
+      # Task 20 inverted the fixture: the guarantee must point at the current
+      # default. The old name "FoleyFlow" is now the parameterised fixture —
+      # a build carrying it must contain zero occurrences of the new default.
       - name: Rebranded build renders no default name
         working-directory: ui
         run: |
-          VITE_BRAND_NAME="KinoPost" \
+          VITE_BRAND_NAME="FoleyFlow" \
           VITE_BRAND_TITLE_TEMPLATE="{name} · {page}" \
           VITE_BRAND_FAVICON="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%231721A3'/%3E%3C/svg%3E" \
           npm run build
-          if grep -rn "FoleyFlow" ../src/foleyflow/api/static/; then
+          if grep -rn "Auteur" ../src/foleyflow/api/static/; then
             echo "error: default brand name leaked into the rebranded build" >&2
             exit 1
           fi
-          grep -q '<title>KinoPost · Control room</title>' \
+          grep -q '<title>FoleyFlow · Control room</title>' \
             ../src/foleyflow/api/static/index.html
-          grep -rnq "KinoPost" ../src/foleyflow/api/static/
+          grep -rnq "FoleyFlow" ../src/foleyflow/api/static/
 
       - name: Confirm no built assets are tracked
         run: |

@@ -1,4 +1,4 @@
-"""FoleyFlow's adapters, lifted into Genblaze ``SyncProvider``s.
+"""Auteur's adapters, lifted into Genblaze ``SyncProvider``s.
 
 ``providers/base.py`` says the ``Adapter`` protocol is "deliberately shaped like
 Genblaze's ``SyncProvider.generate(step) -> Step`` so the adapter can be lifted
@@ -11,7 +11,7 @@ Three SFX tiers reach Genblaze three different ways:
 
 * **paid** — ElevenLabs sound-effects v2 through the shipped
   ``genblaze-elevenlabs`` connector. No lift needed; the connector *is* a
-  ``SyncProvider``. Resolved lazily so importing FoleyFlow never imports the
+  ``SyncProvider``. Resolved lazily so importing Auteur never imports the
   ``elevenlabs`` SDK and never looks for ``ELEVENLABS_API_KEY``.
 * **fallback** — ``fal-ai/elevenlabs/sound-effects/v2`` through
   :class:`FalSfxProvider`, the lift of ``providers/fal.py``. Genblaze ships no
@@ -28,7 +28,7 @@ adapters: :class:`AnalysisProvider` runs the call through
 :func:`foleyflow.ledger.execute_with_ledger` and parks the text response on
 ``step.provider_payload``. ``genblaze-google`` / ``genblaze-openai`` on PyPI are
 media-generation connectors (Veo, Sora, …); chat/vision analysis stays behind
-FoleyFlow's own adapters so the TIMELINE_PROMPT path and cost ledger do not
+Auteur's own adapters so the TIMELINE_PROMPT path and cost ledger do not
 fork.
 
 ## Why every SFX provider materializes bytes locally
@@ -135,7 +135,7 @@ def _materialize(url: str, dest_path: str,
 
 
 class FoleyAdapterProvider(SyncProvider):
-    """Base lift: one FoleyFlow ``Adapter`` behind Genblaze's provider contract.
+    """Base lift: one Auteur ``Adapter`` behind Genblaze's provider contract.
 
     ``generate`` goes through :func:`foleyflow.ledger.execute_with_ledger`
     rather than calling the adapter directly, so moving generation under
@@ -354,7 +354,7 @@ def run_analysis_step(endpoint: str, arguments: dict, *,
     travel on the Genblaze run; the cost ledger still gets a row because the
     provider goes through ``execute_with_ledger``.
 
-    Always builds an :class:`AnalysisProvider` for the endpoint's FoleyFlow
+    Always builds an :class:`AnalysisProvider` for the endpoint's Auteur
     adapter — never the SFX ``genblaze_provider`` (fal/local materialize audio
     and would mis-handle a text response). Google and OpenAI declare their
     analysis lifts in providers.toml for discovery; this function is the call
@@ -411,11 +411,11 @@ def run_analysis_step(endpoint: str, arguments: dict, *,
 
 
 class FFmpegStageProvider(SyncProvider):
-    """FoleyFlow's deterministic local stages, as one Genblaze provider.
+    """Auteur's deterministic local stages, as one Genblaze provider.
 
     A sibling of ``genblaze_core.FFmpegTransform``: same ``SyncProvider``
     contract, same "shell out to local ffmpeg" posture, but the operations are
-    FoleyFlow's own (assemble the mix, mux the video, measure QA) rather than
+    Auteur's own (assemble the mix, mux the video, measure QA) rather than
     the generic resize/crop set. Registering them here is what makes mix, mux
     and QA stages Genblaze times, retries and records — instead of subprocess
     calls that happen invisibly beside it.
@@ -483,7 +483,7 @@ _PROVIDER_CACHE: Dict[str, Any] = {}
 
 
 def get_provider(adapter_name: str, *, refresh: bool = False) -> Any:
-    """The Genblaze provider for a FoleyFlow adapter name, from providers.toml.
+    """The Genblaze provider for a Auteur adapter name, from providers.toml.
 
     Declared as ``[adapters.<name>] genblaze_provider = "module:Class"`` so the
     tier table stays data. Instances are cached per adapter name: Genblaze
@@ -527,7 +527,7 @@ def get_provider(adapter_name: str, *, refresh: bool = False) -> Any:
 
     # Connectors differ in what they accept; pass only what they declare. The
     # API key is deliberately NOT passed — every connector we use reads its own
-    # environment variable, so no key is ever held in FoleyFlow's memory.
+    # environment variable, so no key is ever held in Auteur's memory.
     kwargs: Dict[str, Any] = {}
     params = inspect.signature(cls).parameters
     if "output_dir" in params:

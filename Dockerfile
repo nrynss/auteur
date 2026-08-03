@@ -1,4 +1,4 @@
-# FoleyFlow on Cloud Run.
+# Auteur on Cloud Run.
 #
 # Three stages: a Node stage builds the Svelte control-room SPA, the uv stage
 # installs the Python app, and the runtime image copies both — so the ~200 MB

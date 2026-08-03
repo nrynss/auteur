@@ -233,7 +233,7 @@ def assign_scene_ids(timeline: Timeline, scenes: Sequence[Scene]) -> List[Option
 
     Not mutated onto the events themselves: foleyflow.models.Event belongs to the
     ported media core and has no scene field, and widening it would push a
-    FoleyFlow concern into the pipeline.
+    Auteur concern into the pipeline.
     """
     return [
         (scene.id if (scene := scene_for_time(scenes, event.start_time)) else None)

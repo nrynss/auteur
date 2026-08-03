@@ -2271,7 +2271,7 @@ def test_quota_is_flagged_as_an_estimate(client):
 def test_openapi_is_served(client):
     """API-first: the schema is a deliverable, not a debugging aid."""
     spec = client.get(f"{API_PREFIX}/openapi.json").json()
-    assert spec["info"]["title"] == "FoleyFlow"
+    assert spec["info"]["title"] == "Auteur"
     assert f"{API_PREFIX}/projects" in spec["paths"]
 
 

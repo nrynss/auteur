@@ -1,4 +1,4 @@
-# FoleyFlow HTTP API v1
+# Auteur HTTP API v1
 
 The contract. Written before the implementation and treated as the source of
 truth: the Python packages under `src/foleyflow/` are an implementation detail
@@ -975,7 +975,7 @@ it is claimed.
 **Project prefixes.** `list_projects` discovers projects by listing `projects/`
 and keeping keys ending `/project.json`, so a prefix whose `project.json` is
 missing is invisible to the entire product while its artifacts still exist and
-still cost storage. Nothing in FoleyFlow deletes anything, so these accumulate.
+still cost storage. Nothing in Auteur deletes anything, so these accumulate.
 `GET /unclaimed/projects` lists every `projects/{id}/` prefix with no readable
 record — the id, the object count and total bytes (from the LIST, unit 7.19),
 and whether a record object exists but does not parse (`unreadable`).
@@ -1152,7 +1152,7 @@ identity, and which integrations are configured.
 {
   "ok": false,
   "version": "0.1.0",
-  "brand": "FoleyFlow",
+  "brand": "Auteur",
   "git_sha": "deadbeefcafebabe0123456789abcdef01234567",
   "build_time": "2026-08-02T12:00:00Z",
   "checks": [

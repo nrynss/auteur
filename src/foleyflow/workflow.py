@@ -2,7 +2,7 @@
 
 Genblaze owns stage sequencing, provider invocation, retry, and the hash-verified
 provenance manifest; B2 is where every artifact and manifest lands. This module
-is the seam between FoleyFlow's own config and Genblaze's `Pipeline` / sink.
+is the seam between Auteur's own config and Genblaze's `Pipeline` / sink.
 
 ## Why ingest comes first
 
@@ -35,12 +35,12 @@ from genblaze_s3 import S3StorageBackend
 
 load_dotenv()
 
-# SPEC.md §10 puts every FoleyFlow object under one root prefix.
+# SPEC.md §10 puts every Auteur object under one root prefix.
 DEFAULT_PREFIX = os.environ.get("B2_PREFIX", "foleyflow")
 
 
 def work_dir() -> str:
-    """FoleyFlow's local scratch directory.
+    """Auteur's local scratch directory.
 
     Genblaze only reads `file://` inputs from below the system temp directory —
     a deliberate guard against arbitrary file reads, and `ObjectStorageSink`
@@ -69,7 +69,7 @@ def stage_for_ingest(src_path: str, *, subdir: str = "") -> str:
 
 
 def get_storage_backend(*, preflight: bool = True) -> S3StorageBackend:
-    """Build the B2 backend from FoleyFlow's own environment names.
+    """Build the B2 backend from Auteur's own environment names.
 
     `region` is passed rather than left to auto-detection on purpose. Genblaze
     auto-corrects the region when B2 answers a cross-region request with a 301,
@@ -92,7 +92,7 @@ def get_storage_backend(*, preflight: bool = True) -> S3StorageBackend:
 
 
 def get_sink(prefix: str = DEFAULT_PREFIX, *, preflight: bool = True) -> ObjectStorageSink:
-    """Artifact sink for every FoleyFlow run.
+    """Artifact sink for every Auteur run.
 
     CONTENT_ADDRESSABLE keys assets by SHA-256, so re-ingesting the same source
     video costs one object rather than one per project — the same property that
@@ -122,7 +122,7 @@ def ingest_source_video(
     `sink` is required rather than defaulted to `get_sink()`. Genblaze supports
     `sink=None` as an offline mode — the run and the hash-verified manifest are
     still produced, only the asset upload is skipped — and that is exactly what
-    a FoleyFlow instance running against local storage should do. Building a B2
+    a Auteur instance running against local storage should do. Building a B2
     sink implicitly would mean an offline deployment (and every test) reaching
     for credentials it was deliberately not given. The API decides: see
     `api.app._ingest_work`, which supplies a sink only when the project store is

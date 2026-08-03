@@ -2599,7 +2599,7 @@ def _ingest_work(store: ProjectStore, project_id: str):
     Runs the source through Genblaze's ingest stage (SPEC §7, §8.2) rather than
     beside it, so the project's first stage produces the same artefact every
     later stage does: a canonical-hashed provenance manifest a judge can check
-    with `genblaze verify`. The Genblaze run id lands on the FoleyFlow `Run`,
+    with `genblaze verify`. The Genblaze run id lands on the Auteur `Run`,
     which is what makes §8.2's "show the workflow run ID" answerable.
 
     The ffprobe/sha256 facts are recorded either way. A manifest is provenance;

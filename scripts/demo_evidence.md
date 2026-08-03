@@ -15,7 +15,7 @@ burning Gemini's 20/day analysis quota.
 
 ## Source videos (not in this repo)
 
-`demo-assets/` is **not** checked into FoleyFlow. Validated timelines live under
+`demo-assets/` is **not** checked into Auteur. Validated timelines live under
 `samples/timelines/`; silent source clips were found outside the repo:
 
 | Clip | Timeline | Source video (local) |

@@ -150,7 +150,7 @@ def _build_pipeline(requests: List[SfxRequest], *, name: str,
 def _execute(pipeline, *, timeout: Optional[float] = None):
     """Run a pipeline, fanning out when we can and falling back when we cannot.
 
-    `arun()` is the concurrent path, but it needs a loop of its own. FoleyFlow's
+    `arun()` is the concurrent path, but it needs a loop of its own. Auteur's
     API handlers are sync (they run in Starlette's threadpool) and the CLI is
     sync, so `asyncio.run` is normally available; a caller that already has a
     running loop gets the sequential `run()` instead of a

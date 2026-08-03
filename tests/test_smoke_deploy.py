@@ -107,7 +107,7 @@ def _router(overrides: dict | None = None):
         "/api/v1/quota": (200, _quota()),
         "/api/v1/projects": (200, _projects()),
         "/api/v1/openapi.json": (200, _openapi()),
-        "/": (200, '<!doctype html><div id="app"></div>FoleyFlow control room'),
+        "/": (200, '<!doctype html><div id="app"></div>Auteur control room'),
     }
     pid = "proj_01KTEST000000000000000000"
     table[f"/api/v1/projects/{pid}/dossier"] = (200, _dossier(pid))

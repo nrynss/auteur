@@ -1,4 +1,4 @@
-"""`foleyflow` — the single FoleyFlow command.
+"""`foleyflow` — the single Auteur command.
 
 Project verbs talk to the HTTP API (the contract test against `docs/api.md`).
 File verbs (`render`, `direct`) call the media core directly — no server, no
@@ -1270,7 +1270,7 @@ def _build_direct_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="foleyflow",
-        description="FoleyFlow CLI: project verbs talk to the API; "
+        description="Auteur CLI: project verbs talk to the API; "
                     "render and direct run locally with no server.")
     parser.add_argument("--api", default=DEFAULT_BASE_URL,
                         help=f"API base URL (default {DEFAULT_BASE_URL}, "

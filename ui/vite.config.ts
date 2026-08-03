@@ -19,7 +19,7 @@ export default defineConfig(({ mode }) => {
   // bundle via import.meta.env (see ui/src/lib/brand.ts). Defaults are
   // today's values — a default build is byte-identical in appearance.
   const env = loadEnv(mode, process.cwd(), "");
-  const brandName = env.VITE_BRAND_NAME?.trim() || "FoleyFlow";
+  const brandName = env.VITE_BRAND_NAME?.trim() || "Auteur";
   const faviconHref = env.VITE_BRAND_FAVICON?.trim() || DEFAULT_FAVICON_HREF;
   // Same title template the SPA uses (ui/src/lib/brand.ts), so the static
   // pre-hydration <title> and the runtime titles can never drift apart under
