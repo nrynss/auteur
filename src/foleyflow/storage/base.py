@@ -133,6 +133,16 @@ class Backend(Protocol):
         """
         ...
 
+    def head_supplies_sha256(self) -> bool:
+        """Whether `head`'s result carries a full-content sha256 of the stored
+        object (unit 7.19 review). LocalBackend hashes the local file; B2's
+        S3 API does not expose one. Callers use this instead of concrete
+        backend types when deciding whether a per-object `head` can buy them
+        a hash — a listing must never pay a round trip for a hash that does
+        not exist.
+        """
+        ...
+
     def get(self, key: str, dest_path: str) -> str:
         """Download `key` to `dest_path`, creating parent directories.
         Returns dest_path. Raises ObjectNotFound if the object is absent."""

@@ -125,6 +125,12 @@ class B2Backend:
             raise StorageError(f"could not determine whether {key!r} exists "
                                f"(status {_status_of(e)})") from e
 
+    def head_supplies_sha256(self) -> bool:
+        """The S3 API exposes no content hash, so head never has one (unit
+        7.19 review) — callers must not pay a round trip for a hash that
+        cannot exist."""
+        return False
+
     def head(self, key: str) -> ObjectHead:
         """Size of a stored object via one HeadObject call.
 

@@ -59,6 +59,10 @@ class LocalBackend:
     def exists(self, key: str) -> bool:
         return os.path.exists(self._path(key))
 
+    def head_supplies_sha256(self) -> bool:
+        """head hashes the local file, so yes (unit 7.19 review)."""
+        return True
+
     def head(self, key: str) -> ObjectHead:
         """Size and sha256 of a stored object.
 

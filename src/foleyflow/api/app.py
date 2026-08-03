@@ -1345,10 +1345,15 @@ def create_app(store: Optional[ProjectStore] = None,
                 "attribution rescues are storage-mode only; the local-JSONL "
                 "ledger keeps no attributions")
         try:
+            # Hoist the attribution list: iter_attributions returns a copy of
+            # the cache (the mutation guard), so calling it per row is N list
+            # copies — the sibling get_unclaimed_ledger reads it once (7.19
+            # review).
+            attributions = iter_attributions()
             orphan_count = sum(
                 1 for r in iter_transactions()
                 if r.get("project_id") is None
-                and _attribution_owner(r, iter_attributions()) is None)
+                and _attribution_owner(r, attributions) is None)
         except StorageError as e:
             raise err.StorageUnavailable(
                 "Cost ledger is unreachable") from e
@@ -1690,7 +1695,6 @@ def _dossier_artifacts(store: ProjectStore, project_id: str, state) -> List[Arti
     The miss-fallback restores per-object authority for just those keys —
     absent stays skipped, present is listed.
     """
-    from foleyflow.storage import LocalBackend
     from foleyflow.storage.base import ObjectMeta
 
     # (kind, key, optional recorded sha256) in listing order.
@@ -1772,45 +1776,51 @@ def _dossier_artifacts(store: ProjectStore, project_id: str, state) -> List[Arti
         for meta in fut.result():
             by_key[meta.key] = meta
 
-    artifacts: List[ArtifactOut] = []
+    # Position-indexed so the emitted order IS the candidate order no matter
+    # which path resolved an item. On a local backend the hash-HEAD path
+    # covers every un-hashed candidate; appending it last would cluster
+    # timelines/mixes/QA after the source and stems, rendering local testing
+    # quietly unrepresentative of the deployed screen (7.19 review).
+    by_position: List[Optional[ArtifactOut]] = [None] * len(candidates)
     # Candidates that need a HEAD after the listing: missing from it (LIST
     # eventual consistency — verify rather than silently drop) or, on a
-    # backend whose head supplies a content hash cheaply (LocalBackend), a
-    # candidate with no recorded sha256. On B2 the second class never heads:
-    # head has no hash to give, and a round trip for nothing is the 56 s
-    # problem wearing a new name.
-    local_hash = isinstance(store.backend, LocalBackend)
-    pending: List[tuple] = []   # (item, meta_or_None)
-    for item in candidates:
+    # backend whose head supplies a content hash cheaply, a candidate with no
+    # recorded sha256. On B2 the second class never heads: head has no hash to
+    # give, and a round trip for nothing is the 56 s problem wearing a new
+    # name. The capability lives on the backend (`head_supplies_sha256`), not
+    # in a concrete-type check here.
+    local_hash = store.backend.head_supplies_sha256()
+    pending: List[tuple] = []   # (position, item, meta_or_None)
+    for i, item in enumerate(candidates):
         kind, key, sha256 = item
         meta = by_key.get(key)
         if meta is None:
-            pending.append((item, None))
+            pending.append((i, item, None))
         else:
             recorded = sha256 or meta.sha256
             if recorded is None and local_hash:
-                pending.append((item, meta))
+                pending.append((i, item, meta))
             else:
-                artifacts.append(_resolve_meta(item, meta))
+                by_position[i] = _resolve_meta(item, meta)
 
     if pending:
         head_futures = {
-            pool.submit(_head, store, item[1]): (item, meta)
-            for item, meta in pending
+            pool.submit(_head, store, item[1]): (i, item, meta)
+            for i, item, meta in pending
         }
         for fut in head_futures:
-            item, meta = head_futures[fut]
+            i, item, meta = head_futures[fut]
             head = fut.result()
             if head is None:
                 continue    # genuinely absent — the skip a hole deserves
             kind, key, sha256 = item
             recorded = sha256 or head.sha256
-            artifacts.append(ArtifactOut(
+            by_position[i] = ArtifactOut(
                 kind=kind, key=key, url=_sign_strict(store, key),
                 size_bytes=(meta.size_bytes if meta is not None
                             else head.size_bytes),
-                sha256=recorded))
-    return artifacts
+                sha256=recorded)
+    return [a for a in by_position if a is not None]
 
 
 def _scene_ids_for(store: ProjectStore, project_id: str, timeline) -> List[Optional[str]]:

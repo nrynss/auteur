@@ -1402,6 +1402,15 @@ def test_dossier_lists_every_artifact_kind(client, store):
         assert a["size_bytes"] > 0
     assert body["total_bytes"] == sum(a["size_bytes"]
                                        for a in body["artifacts"])
+    # The list is in candidate (creation) order even on a local backend,
+    # where the hash-HEAD path resolves most items — a resolution mechanism
+    # must not reorder the screen (7.19 review). Source first, a timeline
+    # before its run's mix, the export pointer last.
+    kinds = [a["kind"] for a in body["artifacts"]]
+    assert kinds[0] == "source"
+    assert kinds.index("timeline") < kinds.index("mix")
+    assert kinds.index("stems") < kinds.index("stem")
+    assert kinds[-1] == "export_pointer"
 
 
 def test_dossier_carries_recorded_hashes_not_recomputed_ones(client, store):
@@ -1588,6 +1597,8 @@ def test_dossier_serves_a_b2_shaped_backend_with_zero_heads(client, store,
 
     monkeypatch.setattr(store.backend, "list_objects", _b2_like_list)
     monkeypatch.setattr(store.backend, "head", _no_hash_head)
+    monkeypatch.setattr(store.backend, "head_supplies_sha256",
+                        lambda: False)
     body = client.get(f"{API_PREFIX}/projects/{project.id}/dossier").json()
     assert body["artifact_count"] >= 13
     assert all(a["size_bytes"] > 0 for a in body["artifacts"])
