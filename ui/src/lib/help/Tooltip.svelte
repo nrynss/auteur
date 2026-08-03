@@ -15,8 +15,19 @@
    * never covers what it explains (below the anchor, flipped above when the
    * viewport would clip it). The definition text comes from the glossary —
    * one source, so a term cannot be defined two ways. */
-  import { tooltipTip } from "./tooltip";
+  import { clampTipPosition, tooltipTip } from "./tooltip";
   import type { Snippet } from "svelte";
+
+  /** Teleport the tip to <body> so no ancestor can clip it or re-base its
+   * fixed positioning (the clipped-help-tip class of bugs). */
+  const portal = (node: HTMLElement): { destroy: () => void } => {
+    document.body.appendChild(node);
+    return {
+      destroy() {
+        node.remove();
+      },
+    };
+  };
 
   interface Props {
     text?: string;
@@ -29,19 +40,18 @@
   let open = $state(false);
   let anchor = $state<HTMLSpanElement | null>(null);
   let box = $state<HTMLDivElement | null>(null);
-  // Position after the tip is in the DOM, and again on open.
+  // Position after the tip is in the DOM, and again on open. The geometry
+  // is the pure clampTipPosition (unit-tested; jsdom cannot measure layout).
   $effect(() => {
     if (!open || !anchor || !box) return;
     const r = anchor.getBoundingClientRect();
-    const w = box.offsetWidth;
-    const h = box.offsetHeight;
-    const vw = window.innerWidth || 0;
-    const vh = window.innerHeight || 0;
-    let top = r.bottom + 6;
-    if (top + h > vh) top = Math.max(6, r.top - h - 6); // flip above
-    const left = Math.min(Math.max(r.left, 8), Math.max(8, vw - w - 8));
-    box.style.top = `${top}px`;
-    box.style.left = `${left}px`;
+    const pos = clampTipPosition(
+      { top: r.top, bottom: r.bottom, left: r.left },
+      { width: box.offsetWidth, height: box.offsetHeight },
+      { width: window.innerWidth || 0, height: window.innerHeight || 0 },
+    );
+    box.style.top = `${pos.top}px`;
+    box.style.left = `${pos.left}px`;
   });
 </script>
 
@@ -61,7 +71,14 @@
 </span>
 
 {#if open && text}
-  <div bind:this={box} id={tipId} role="tooltip" class="tooltip" data-tooltip>
+  <div
+    bind:this={box}
+    id={tipId}
+    role="tooltip"
+    class="tooltip"
+    data-tooltip
+    use:portal
+  >
     {text}
   </div>
 {/if}
@@ -71,12 +88,19 @@
     display: inline;
   }
 
+  /* The tip is portaled to <body> (use:portal): no ancestor can clip it or
+   * re-base its fixed positioning (a transform/filter/backdrop-filter on an
+   * ancestor would otherwise make `position: fixed` relative to THAT box,
+   * and an overflow ancestor would clip it — the clipped-help-tip class of
+   * bugs this exists to rule out). Viewport clamping happens in the
+   * position effect; this layer keeps it inside the viewport horizontally
+   * and lets long definitions wrap instead of overflowing an edge. */
   .tooltip {
     position: fixed;
-    z-index: 60;
-    max-width: 260px;
+    z-index: 60; /* above the dialog scrim (--z-dialog) and the help overlay */
+    max-width: min(280px, calc(100vw - 16px));
     padding: 6px 9px;
-    font-size: var(--text-11);
+    font-size: var(--text-12);
     line-height: 1.45;
     color: var(--text);
     background: var(--raised);

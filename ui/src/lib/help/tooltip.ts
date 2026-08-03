@@ -111,3 +111,28 @@ export function tooltipTip(
   };
   return cleanup;
 }
+
+/** Viewport-clamp the tip so it never leaves the screen (and never covers
+ * what it explains). Pure so the geometry is unit-testable; jsdom cannot
+ * measure layout, so this is the piece that must not depend on it.
+ *
+ * Preferred placement is below the anchor; when that would clip the bottom
+ * edge it flips above, and the horizontal position is clamped to the
+ * viewport with a small gutter. */
+export function clampTipPosition(
+  anchor: { top: number; bottom: number; left: number },
+  tipSize: { width: number; height: number },
+  viewport: { width: number; height: number },
+  gutter = 6,
+  edgePad = 8,
+): { top: number; left: number } {
+  let top = anchor.bottom + gutter;
+  if (top + tipSize.height > viewport.height) {
+    top = Math.max(edgePad, anchor.top - tipSize.height - gutter);
+  }
+  const left = Math.min(
+    Math.max(anchor.left, edgePad),
+    Math.max(edgePad, viewport.width - tipSize.width - edgePad),
+  );
+  return { top, left };
+}

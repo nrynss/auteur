@@ -128,14 +128,18 @@ it("Tooltip opens on focus, wires aria-describedby, closes on Escape", async () 
   const anchor = target.querySelector(".tt-anchor") as HTMLElement;
   anchor.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
   await new Promise((r) => setTimeout(r, 0));
-  const tip = target.querySelector('[role="tooltip"]');
+  // The tip is PORTALED to <body> — it must never render inside the anchor's
+  // container, where an overflow or transformed ancestor could clip it
+  // (the clipped-help-tip class of bugs).
+  const tip = document.body.querySelector('[role="tooltip"]');
   expect(tip).toBeTruthy();
+  expect(target.querySelector('[role="tooltip"]')).toBeNull();
   expect(tip?.textContent).toContain("onset of a one-shot sound");
   expect(btn.getAttribute("aria-describedby")).toBe(tip?.id);
   // Escape dismisses.
   btn.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   await new Promise((r) => setTimeout(r, 0));
-  expect(target.querySelector('[role="tooltip"]')).toBeNull();
+  expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
   unmount(app);
 });
 
