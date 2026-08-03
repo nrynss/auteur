@@ -28,12 +28,15 @@ const BASE_URL = (
   process.env.DEMO_BASE_URL || inventory.defaultBaseUrl
 ).replace(/\/$/, "");
 
+/** Mirrors config.ts: env override for primary, defaults from inventory only. */
 const PROJECTS = {
   primary: process.env.DEMO_PROJECT_ID || inventory.defaultProjects.primary,
 };
 
+const knownProjectKeys = new Set(Object.keys(PROJECTS));
+
 /** Clip list — loaded from inventory.json, same file as the Playwright specs. */
-const CLIPS = inventory.clips;
+const CLIPS = loadClips(inventory.clips);
 
 const args = process.argv.slice(2);
 const listOnly = args.includes("--list") || args.includes("-l");
@@ -49,6 +52,38 @@ await main(clipArg);
 
 // ---------------------------------------------------------------------------
 
+function loadClips(raw) {
+  const out = [];
+  for (const c of raw) {
+    if (!knownProjectKeys.has(c.project)) {
+      console.error(
+        `inventory.json: clip ${c.id} has unknown project key "${c.project}". ` +
+          `Known: ${[...knownProjectKeys].join(", ")}`,
+      );
+      process.exit(1);
+    }
+    if (c.free !== true) {
+      console.error(
+        `inventory.json: clip ${c.id} has free=${JSON.stringify(c.free)}. ` +
+          `This harness only captures free beats — set free: true or remove the row.`,
+      );
+      process.exit(1);
+    }
+    out.push(c);
+  }
+  return out;
+}
+
+function projectIdFor(clip) {
+  const id = PROJECTS[clip.project];
+  if (!id) {
+    throw new Error(
+      `No project id for key "${clip.project}" (clip ${clip.id})`,
+    );
+  }
+  return id;
+}
+
 async function main(only) {
   const selected = selectClips(only);
   console.log("Demo capture harness");
@@ -63,9 +98,7 @@ async function main(only) {
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
 
-  const projectIds = [
-    ...new Set(selected.map((c) => PROJECTS[c.project] || PROJECTS.primary)),
-  ];
+  const projectIds = [...new Set(selected.map((c) => projectIdFor(c)))];
 
   let before = null;
   if (!skipLedger) {
@@ -202,7 +235,7 @@ function printList(only) {
   console.log("");
   console.log("id\tproject\tfree\ttitle");
   for (const c of selected) {
-    const pid = PROJECTS[c.project] || PROJECTS.primary;
+    const pid = projectIdFor(c);
     console.log(
       `${c.id}\t${c.project} (${pid})\t${c.free ? "yes" : "NO"}\t${c.title}`,
     );

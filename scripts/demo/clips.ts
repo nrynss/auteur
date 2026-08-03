@@ -9,7 +9,7 @@
  * preview, scrub, help. Never Mix / Export / Regenerate / director send /
  * cost confirm.
  */
-import type { ProjectKey } from "./config.ts";
+import { PROJECTS, type ProjectKey } from "./config.ts";
 import inventory from "./inventory.json" with { type: "json" };
 
 export interface Clip {
@@ -24,20 +24,42 @@ export interface Clip {
    * longer than the VO budget; never shorter.
    */
   holdMs: number;
-  /** Whether this clip is free against the paid service (all of these are). */
-  free: true;
+  /** Whether this clip is free against the paid service. */
+  free: boolean;
   /** Notes for --list / README. */
   notes: string;
 }
 
-export const CLIPS: Clip[] = inventory.clips.map((c) => ({
-  id: c.id,
-  title: c.title,
-  project: c.project as ProjectKey,
-  holdMs: c.holdMs,
-  free: true as const,
-  notes: c.notes,
-}));
+const knownProjectKeys = new Set(Object.keys(PROJECTS));
+
+function loadClips(): Clip[] {
+  const out: Clip[] = [];
+  for (const c of inventory.clips) {
+    if (!knownProjectKeys.has(c.project)) {
+      throw new Error(
+        `inventory.json: clip ${c.id} has unknown project key "${c.project}". ` +
+          `Known: ${[...knownProjectKeys].join(", ")}`,
+      );
+    }
+    if (c.free !== true) {
+      throw new Error(
+        `inventory.json: clip ${c.id} has free=${JSON.stringify(c.free)}. ` +
+          `This harness only captures free beats — set free: true or remove the row.`,
+      );
+    }
+    out.push({
+      id: c.id,
+      title: c.title,
+      project: c.project as ProjectKey,
+      holdMs: c.holdMs,
+      free: c.free,
+      notes: c.notes,
+    });
+  }
+  return out;
+}
+
+export const CLIPS: Clip[] = loadClips();
 
 export function clipById(id: string): Clip | undefined {
   return CLIPS.find((c) => c.id === id);
@@ -53,4 +75,15 @@ export function filterClips(only: string | undefined): Clip[] {
     );
   }
   return ids.map((id) => clipById(id)!);
+}
+
+/** Resolve a clip's project id; fails if the inventory key is unknown. */
+export function projectIdFor(clip: Clip): string {
+  const id = PROJECTS[clip.project];
+  if (!id) {
+    throw new Error(
+      `No project id for key "${clip.project}" (clip ${clip.id})`,
+    );
+  }
+  return id;
 }

@@ -16,12 +16,16 @@ import {
   BASE_URL,
   COLOR_SCHEME,
   OUT_DIR,
-  PROJECTS,
   REDUCED_MOTION,
   VIDEO_SIZE,
   VIEWPORT,
 } from "./config.ts";
-import { CLIPS, filterClips, type Clip } from "./clips.ts";
+import {
+  CLIPS,
+  filterClips,
+  projectIdFor,
+  type Clip,
+} from "./clips.ts";
 import { installSafety, type Safety } from "./safety.ts";
 
 const ONLY = process.env.DEMO_CLIP; // comma-separated ids, optional
@@ -50,7 +54,12 @@ for (const clip of filterClips(ONLY)) {
 // ---------------------------------------------------------------------------
 
 async function runClip(browser: Browser, clip: Clip): Promise<void> {
-  const projectId = PROJECTS[clip.project];
+  if (!clip.free) {
+    throw new Error(
+      `${clip.id}: free=false — this harness never runs billable beats`,
+    );
+  }
+  const projectId = projectIdFor(clip);
   const dest = path.join(OUT_DIR, `${clip.id}.webm`);
   const failedDest = path.join(OUT_DIR, ".tmp", `${clip.id}.failed.webm`);
 
@@ -69,6 +78,8 @@ async function runClip(browser: Browser, clip: Clip): Promise<void> {
   let page: Page | null = null;
   let safety: Safety | null = null;
   let beatError: unknown = null;
+  let safetyError: Error | null = null;
+  let ioError: Error | null = null;
   let success = false;
 
   try {
@@ -81,61 +92,124 @@ async function runClip(browser: Browser, clip: Clip): Promise<void> {
     beatError = e;
   } finally {
     // Money-guard trips must surface even when the beat already failed.
-    let safetyError: Error | null = null;
     try {
       safety?.assertClean();
     } catch (e) {
       safetyError = e instanceof Error ? e : new Error(String(e));
     }
 
-    // Video file is written when the context closes — not when the page does.
-    const video = page?.video() ?? null;
-    await context.close();
+    // Video I/O must not mask safety/beat errors if rename/stat flops.
+    try {
+      // Video file is written when the context closes — not when the page does.
+      const video = page?.video() ?? null;
+      await context.close();
 
-    if (video) {
-      const tmpPath = await video.path();
-      if (success && !safetyError) {
-        await fs.rename(tmpPath, dest);
-        const st = await fs.stat(dest);
-        if (st.size < MIN_VIDEO_BYTES) {
-          // Undersized "success" is still a bad take — demote so we don't
-          // leave a soft film over a previous good file without notice.
-          await fs.rename(dest, failedDest).catch(() => undefined);
-          beatError = new Error(
-            `${clip.id}: output too small (${st.size} bytes) — capture may have failed`,
-          );
-          success = false;
+      if (video) {
+        const tmpPath = await video.path();
+        const promote = success && !safetyError;
+        if (promote) {
+          try {
+            await promoteOrDiscard(tmpPath, dest, failedDest, clip.id);
+          } catch (e) {
+            // Undersized takes are quality failures (beat), not I/O noise.
+            if (
+              e instanceof Error &&
+              (e as Error & { kind?: string }).kind === "undersize"
+            ) {
+              beatError = e;
+              success = false;
+            } else {
+              throw e;
+            }
+          }
         } else {
-          console.log(
-            `[demo] wrote ${dest} (${(st.size / 1024 / 1024).toFixed(2)} MiB)`,
+          await discardTake(tmpPath, failedDest);
+          console.error(
+            `[demo] discarded failed take for ${clip.id}` +
+              (success ? " (safety)" : " (beat)") +
+              ` → ${failedDest}`,
           );
         }
-      } else {
-        // Never overwrite a previous good dest with a partial/failed take.
-        await fs.rename(tmpPath, failedDest).catch(async () => {
-          await fs.unlink(tmpPath).catch(() => undefined);
-        });
-        console.error(
-          `[demo] discarded failed take for ${clip.id}` +
-            (success ? " (safety)" : " (beat)") +
-            ` → ${failedDest}`,
-        );
+      } else if (success && !safetyError) {
+        beatError = new Error(`No video recorded for ${clip.id}`);
+        success = false;
       }
-    } else if (success && !safetyError) {
-      beatError = new Error(`No video recorded for ${clip.id}`);
-      success = false;
+    } catch (e) {
+      ioError = e instanceof Error ? e : new Error(String(e));
+      // Best-effort close if video handling threw before close completed.
+      await context.close().catch(() => undefined);
     }
-
-    if (safetyError && beatError) {
-      throw new Error(
-        `${clip.id}: beat failed and safety violated.\n` +
-          `Beat: ${beatError instanceof Error ? beatError.message : String(beatError)}\n` +
-          `Safety: ${safetyError.message}`,
-      );
-    }
-    if (safetyError) throw safetyError;
-    if (beatError) throw beatError;
   }
+
+  // Priority: safety (money) → beat → I/O. Never drop a safety trip.
+  throwCombined(clip.id, safetyError, beatError, ioError);
+}
+
+/**
+ * Size-check the temp recording *before* touching dest. A previous good
+ * WebM is never overwritten by an undersized take.
+ */
+async function promoteOrDiscard(
+  tmpPath: string,
+  dest: string,
+  failedDest: string,
+  clipId: string,
+): Promise<void> {
+  const st = await fs.stat(tmpPath);
+  if (st.size < MIN_VIDEO_BYTES) {
+    await discardTake(tmpPath, failedDest);
+    // Quality failure, not I/O — surface as beatError via caller path.
+    const err = new Error(
+      `${clipId}: output too small (${st.size} bytes) — previous good file left intact` +
+        (await pathExists(dest) ? ` at ${dest}` : ""),
+    );
+    (err as Error & { kind?: string }).kind = "undersize";
+    throw err;
+  }
+  await fs.rename(tmpPath, dest);
+  console.log(
+    `[demo] wrote ${dest} (${(st.size / 1024 / 1024).toFixed(2)} MiB)`,
+  );
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function discardTake(tmpPath: string, failedDest: string): Promise<void> {
+  try {
+    await fs.rename(tmpPath, failedDest);
+  } catch {
+    await fs.unlink(tmpPath).catch(() => undefined);
+  }
+}
+
+function throwCombined(
+  clipId: string,
+  safetyError: Error | null,
+  beatError: unknown,
+  ioError: Error | null,
+): void {
+  const parts: string[] = [];
+  if (safetyError) parts.push(`Safety: ${safetyError.message}`);
+  if (beatError) {
+    parts.push(
+      `Beat: ${beatError instanceof Error ? beatError.message : String(beatError)}`,
+    );
+  }
+  if (ioError) parts.push(`I/O: ${ioError.message}`);
+  if (parts.length === 0) return;
+  if (parts.length === 1) {
+    if (safetyError) throw safetyError;
+    if (ioError) throw ioError;
+    throw beatError instanceof Error ? beatError : new Error(String(beatError));
+  }
+  throw new Error(`${clipId}:\n${parts.join("\n")}`);
 }
 
 async function openProject(page: Page, projectId: string): Promise<void> {

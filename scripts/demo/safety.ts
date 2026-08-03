@@ -91,23 +91,24 @@ export async function installSafety(page: Page): Promise<Safety> {
       );
     };
 
-    /** Director submit is a form button labelled "⏎", not "Send". */
-    const isDirectorComposerControl = (el: EventTarget | null): boolean => {
+    /**
+     * Director submit is labelled "⏎", not "Send". Match only the submit
+     * control — not the text input or the whole form (input clicks must stay free).
+     */
+    const isDirectorSubmitControl = (el: EventTarget | null): boolean => {
       if (!(el instanceof Element)) return false;
       const director = el.closest('[aria-label="Director mode"]');
       if (!director) return false;
-      return Boolean(
-        el.closest("form.composer") ||
-          el.closest("form") ||
-          (el instanceof HTMLButtonElement && el.type === "submit") ||
-          el.closest('button[type="submit"]'),
+      const submit = el.closest(
+        'button[type="submit"], input[type="submit"]',
       );
+      return Boolean(submit && director.contains(submit));
     };
 
     document.addEventListener(
       "click",
       (e) => {
-        if (isDirectorComposerControl(e.target)) {
+        if (isDirectorSubmitControl(e.target)) {
           e.preventDefault();
           e.stopImmediatePropagation();
           // @ts-expect-error injected

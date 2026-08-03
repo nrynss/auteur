@@ -127,7 +127,8 @@ done
 ```
 
 Failed takes land under `demo/product/.tmp/{id}.failed.webm` and **do not**
-overwrite a previous good `demo/product/{id}.webm`.
+overwrite a previous good `demo/product/{id}.webm`. Size is checked on the
+temp file **before** any rename onto the final path.
 
 
 ## What it will not do
