@@ -179,6 +179,36 @@ def _repair_mix_tier(previous_tier: Optional[str], event_kind: str) -> str:
     return previous if order[previous] >= order[need] else need
 
 
+def _sfx_cap_gate() -> None:
+    """Refuse billable work against the paid SFX tier when its daily hard cap
+    is reached (429 spend_cap_reached, resets at next UTC midnight).
+
+    Only the paid tier's endpoint is gated: the free local tier never
+    escalates to it by design, and the fal fallback bills its own gateway.
+    The check is one cached analytics query; when the analytics endpoint is
+    down, the ledger's own estimates keep the gate closed.
+    """
+    from foleyflow import elevenlabs
+    from foleyflow.tiers import TierError, active_tier_name, get_tier
+
+    active = active_tier_name()
+    if not active:
+        return
+    try:
+        tier = get_tier(active)
+    except TierError:
+        return
+    if tier.endpoint != elevenlabs.PAID_SFX_MODEL:
+        return
+    status = elevenlabs.cap_status()
+    if status["capped"]:
+        raise err.SpendCapReached(
+            elevenlabs.PAID_SFX_MODEL,
+            cap_usd=status["cap_usd"],
+            spend_usd=status["spend_usd"],
+            resets_at=status["resets_at"])
+
+
 def create_app(store: Optional[ProjectStore] = None,
                runner: Optional[JobRunner] = None) -> FastAPI:
     """Build the app.
@@ -489,6 +519,10 @@ def create_app(store: Optional[ProjectStore] = None,
         timeline = store.load_timeline(project_id, version)
         duration = (state.duration_s or state.project.duration_s
                     or timeline.duration)
+        # The paid tier's daily hard cap is a gate, not a projection: a mix
+        # that bills the paid SFX model is refused past the cap even though
+        # the advisory budget never refuses work.
+        _sfx_cap_gate()
         # Null fields mean "unknown" — never lie with $0.00 on a probe miss.
         projection: dict = {"projected_cost_usd": None, "hits": None,
                             "misses": None, "stem_count": None}
@@ -669,6 +703,11 @@ def create_app(store: Optional[ProjectStore] = None,
         # "r" + run-id hex), and any fresh nonce probes as a miss anyway.
         repair_tier = _repair_mix_tier(
             (state.latest_mix or {}).get("tier"), event.kind)
+        # The paid tier's daily hard cap is a gate, not a projection: a
+        # repair that bills the paid SFX model is refused past the cap even
+        # with consent — the cap is the demo's stop, the consent is the
+        # user's.
+        _sfx_cap_gate()
         duration = (state.duration_s or state.project.duration_s
                     or timeline.duration)
         target = (request.endpoint, request.prompt,

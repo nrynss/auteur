@@ -191,8 +191,9 @@ class SpendCapReached(ApiError):
     def __init__(self, model_id: str, *, cap_usd: Optional[float] = None,
                  spend_usd: Optional[float] = None,
                  resets_at: Optional[str] = None):
+        when = (f" (resets {resets_at})" if resets_at else "")
         super().__init__(
-            f"Daily spend cap for {model_id} is reached",
+            f"Daily spend cap for {model_id} is reached{when}",
             detail={"model_id": model_id, "cap_usd": cap_usd,
                     "spend_usd": spend_usd, "resets_at": resets_at},
         )

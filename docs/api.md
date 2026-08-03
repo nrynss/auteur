@@ -66,6 +66,7 @@ optional structured context. Clients branch on `code`, never on `message`.
 | 409 | `immutable_conflict` | An attempt to overwrite a completed artifact |
 | 422 | `precondition_failed` | Valid request, wrong state (e.g. export before analysis) |
 | 429 | `quota_exhausted` | The provider's daily budget is spent — includes `resets_at` |
+| 429 | `spend_cap_reached` | The paid SFX tier's daily dollar cap (workspace analytics) is spent — includes `resets_at`; a hard stop, unlike the advisory project budget |
 | 502 | `provider_error` | An upstream provider failed |
 | 503 | `storage_unavailable` | B2 unreachable |
 
@@ -705,6 +706,14 @@ ledger and can drift — a shared key, or a request that failed after the server
 counted it. The UI must present them as a guide, never as an authoritative
 balance.
 
+The one exception is the paid SFX tier (`eleven_text_to_sound_v2`): it declares
+`requests_per_day` and `usage_source = "elevenlabs"`, so its `used` count and
+`per_day.cost_usd` come from the **ElevenLabs workspace usage report** (real
+requests and real dollars on the key, UTC day), not the ledger — and its day
+window rolls over at the same UTC midnight as the hard cap. When that report is
+unreachable the row falls back to the ledger count and carries no dollar figure
+rather than a guessed one.
+
 ---
 
 ### 3.11 Budget
@@ -712,6 +721,14 @@ balance.
 The project budget is **advisory**: set a figure whenever you like, get told
 when spend approaches or passes it. Nothing is refused on budget grounds.
 Billable repair still requires `confirm_cost_usd` (explicit per-action consent).
+
+**The paid SFX tier has one hard stop that is not advisory**: `hard_cap_usd` on
+`eleven_text_to_sound_v2` (providers.toml, `$15/day` by default, `0` to
+disable). Once the *workspace usage report* shows the UTC day's spend at or
+past the cap, billable regenerate and mix work against the paid tier is refused
+with `429 spend_cap_reached` until the next UTC midnight — free navigation,
+the advisory budget and the free local tier are unaffected. The ledger's own
+day estimates keep the gate closed during a usage-report outage.
 
 ```
 GET /api/v1/projects/{id}/budget

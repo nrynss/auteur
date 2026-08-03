@@ -1869,6 +1869,69 @@ def test_regenerate_of_a_continuous_stem_raises_a_discrete_mix_to_full(
     assert captured["tier"] == "full"
 
 
+def test_regenerate_is_refused_when_the_paid_daily_cap_is_reached(
+        client, store, project, monkeypatch):
+    """The hard cap is a gate, not a projection: past it, billable paid-tier
+    work is refused with 429 spend_cap_reached even with consent — the cap is
+    the demo's stop, the consent is the user's."""
+    from foleyflow import elevenlabs
+
+    store.save_timeline(project.id, _timeline())
+    _stub_repair_work(store, project, monkeypatch, {})
+    monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
+    monkeypatch.setattr(
+        elevenlabs, "cap_status",
+        lambda **k: {"capped": True, "cap_usd": 15.0, "spend_usd": 16.0,
+                     "resets_at": "2026-08-04T00:00:00+00:00",
+                     "source": "analytics"})
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+                    json={"confirm_cost_usd": 0.90})
+    assert r.status_code == 429, r.text
+    body = r.json()["error"]
+    assert body["code"] == "spend_cap_reached"
+    assert body["detail"]["cap_usd"] == pytest.approx(15.0)
+    assert body["detail"]["spend_usd"] == pytest.approx(16.0)
+    assert body["detail"]["resets_at"].startswith("2026-08-04")
+
+
+def test_mix_is_refused_when_the_paid_daily_cap_is_reached(
+        client, store, project, monkeypatch):
+    from foleyflow import elevenlabs
+
+    store.save_timeline(project.id, _timeline())
+    monkeypatch.setenv("FOLEYFLOW_SFX_TIER", "paid")
+    monkeypatch.setattr(
+        elevenlabs, "cap_status",
+        lambda **k: {"capped": True, "cap_usd": 15.0, "spend_usd": 15.1,
+                     "resets_at": "2026-08-04T00:00:00+00:00",
+                     "source": "analytics"})
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/mixes", json={})
+    assert r.status_code == 429, r.text
+    assert r.json()["error"]["code"] == "spend_cap_reached"
+
+
+def test_the_cap_never_gates_the_free_local_tier(
+        client, store, project, monkeypatch):
+    """A crossed cap must not refuse work on the free tier: the gate only
+    applies when the active tier's endpoint is the paid SFX model."""
+    from foleyflow import elevenlabs
+
+    store.save_timeline(project.id, _timeline())
+    _stub_repair_work(store, project, monkeypatch, {})
+    # Default tier is the free local one; the cap is crossed but irrelevant.
+    monkeypatch.setattr(
+        elevenlabs, "cap_status",
+        lambda **k: {"capped": True, "cap_usd": 15.0, "spend_usd": 20.0,
+                     "resets_at": "2026-08-04T00:00:00+00:00",
+                     "source": "analytics"})
+
+    r = client.post(f"{API_PREFIX}/projects/{project.id}/events/2/regenerate",
+                    json={})
+    assert r.status_code == 202, r.text
+
+
 def test_repair_projection_ignores_stale_files_in_the_cli_scratch(
         client, store, project, monkeypatch):
     """The consent probe must see backend truth, not stale local files in the
