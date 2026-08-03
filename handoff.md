@@ -145,7 +145,7 @@ timeline write, signed project URLs, waveform peaks). **7.6 landed**: Svelte 5
 schema, `api/dashboard.py` serves the built SPA with a deep-link catch-all and
 an explicit "UI not built" page, Dockerfile gains a Node stage (no Node ships
 in the runtime image), CI gains a UI build job, the throwaway `index.html` is
-deleted. **7.7 landed**: design tokens per `docs/design/control-room.md`
+deleted. **7.7 landed**: design tokens per `docs/design/development/archives/control-room.md`
 (`theme.css`, light/dark/system with explicit-toggle wins, theme persistence
 + pre-paint script) and twelve primitives in `ui/src/lib/components/` — Chip
 (glyph+word, colour never alone), Evidence (source required structurally),
@@ -467,7 +467,7 @@ to one modality, and it fights `docs/roadmap.md`'s position that the design
 reaches dialogue, ADR, voiceover, music beds, localisation and audio
 description. **Auteur** is a film term rather than a coined one, it is
 modality-neutral, and it matches how the product has described itself since
-`docs/design/control-room.md`: a director's tool.
+`docs/design/development/archives/control-room.md`: a director's tool.
 
 **This is a defaults change, not new machinery — hence S.** Task 19 already
 made the name, the title template and the favicon build-time configuration,
@@ -662,7 +662,7 @@ always 200s with the outage visible as blocked rows).
 **Depends on:** 20 (the rename, so copy is written once) and 21 (the
 configuration view is a screen this pass covers). **Files:** every route and
 component under `ui/src`, a new tooltip component and a glossary module,
-`docs/design/control-room.md`, CI.
+`docs/design/development/archives/control-room.md`, CI.
 
 **Sized L, not M.** It began as a pass over existing surfaces; it now also
 builds two things that do not exist — a real tooltip/popover and the glossary
@@ -690,7 +690,7 @@ map, makes it reachable (`?` is the convention), and adds the hint line the
 component was designed for. A binding that is not in the map is a bug in one
 of the two.
 
-**Focus order.** `docs/design/control-room.md` §9 lists it as open, and it has
+**Focus order.** `docs/design/development/archives/control-room.md` §9 lists it as open, and it has
 stayed open. Tab through each route: the order must follow the visual order,
 nothing interactive may be unreachable, and nothing may trap focus except a
 dialog that means to.

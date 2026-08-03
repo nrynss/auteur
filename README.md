@@ -2,7 +2,7 @@
 
 > An AI post-production copilot that turns a rough video into an auditable, production-ready deliverable.
 
-Built for the **Backblaze Generative AI Media Hackathon**. See [SPEC.md](SPEC.md) for the full build specification and [docs/api.md](docs/api.md) for the HTTP contract.
+Built for the **Backblaze Generative AI Media Hackathon**. See [auteur.md](auteur.md) for what the product is and where it goes, and [docs/api.md](docs/api.md) for the HTTP contract.
 
 Auteur analyzes a video, generates and mixes synchronized Foley, runs technical
 post-production checks, and preserves the full production record in Backblaze B2.
@@ -119,8 +119,9 @@ escalate to a paid API. The default is `test`, which is also what keeps the
 shared B2 stem cache warm — the cache is keyed on the endpoint, so switching
 tiers means generating fresh clips under fresh keys.
 
-See SPEC.md §9.1 for why routing is "free local vs paid hero sound" rather than
-"which paid API", and §8.2 for what Genblaze actually orchestrates.
+See the archived spec ([`docs/design/development/archives/SPEC.md`](docs/design/development/archives/SPEC.md))
+§9.1 for why routing is "free local vs paid hero sound" rather than "which paid
+API", and §8.2 for what Genblaze actually orchestrates.
 
 ### Self-hosted SFX worker
 
