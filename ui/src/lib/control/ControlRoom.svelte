@@ -7,6 +7,7 @@
 
   import BudgetChip from "./BudgetChip.svelte";
   import DossierPanel from "./DossierPanel.svelte";
+  import SpendPanel from "./SpendPanel.svelte";
   import EvidencePanel from "./EvidencePanel.svelte";
   import HistoryPanel from "./HistoryPanel.svelte";
   import Meter from "../components/Meter.svelte";
@@ -26,12 +27,14 @@
     getMixPeaks,
     getProject,
     getQa,
+    getQuota,
     getRun,
     getRuns,
     getScenes,
     getTimeline,
     getTimelineVersions,
     type BudgetResponse,
+    type QuotaResponse,
     type DossierResponse,
     type EventOut,
     type PeaksResponse,
@@ -59,7 +62,7 @@
 
   let { id }: Props = $props();
 
-  type Tab = "readiness" | "evidence" | "history" | "dossier";
+  type Tab = "readiness" | "evidence" | "spend" | "history" | "dossier";
 
   let project = $state<ProjectDetail | null>(null);
   let scenes = $state<SceneOut[]>([]);
@@ -72,6 +75,7 @@
   // Whether the (slow) dossier fetch has been kicked off for this load.
   let dossierRequested = $state(false);
   let budget = $state<BudgetResponse | null>(null);
+  let quota = $state<QuotaResponse | null>(null);
   let mixPeaks = $state<PeaksResponse | null>(null);
 
   let status = $state<"loading" | "ready" | "error">("loading");
@@ -141,6 +145,9 @@
     });
     void quiet(getBudget(id), onAncillaryFailure).then((r) => {
       budget = r;
+    });
+    void quiet(getQuota(), onAncillaryFailure).then((r) => {
+      quota = r;
     });
 
     if (project.mix_run_id) {
@@ -328,6 +335,7 @@
   const tabs: { key: Tab; label: string }[] = [
     { key: "readiness", label: "Readiness" },
     { key: "evidence", label: "Evidence" },
+    { key: "spend", label: "Spend" },
     { key: "history", label: "History" },
     { key: "dossier", label: "Dossier" },
   ];
@@ -438,6 +446,9 @@
         </div>
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-evidence" id="tab-evidence" hidden={tab !== "evidence"}>
           <EvidencePanel {qa} {scenes} />
+        </div>
+        <div class="panel" role="tabpanel" aria-labelledby="tabbtn-spend" id="tab-spend" hidden={tab !== "spend"}>
+          <SpendPanel {budget} {quota} failed={ancillaryFailed} />
         </div>
         <div class="panel" role="tabpanel" aria-labelledby="tabbtn-history" id="tab-history" hidden={tab !== "history"}>
           <HistoryPanel {versions} runs={displayRuns} {events} {mixPeaks} mixRunId={project.mix_run_id ?? null} />

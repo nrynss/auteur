@@ -24,6 +24,7 @@ export type QaReportResponse = Schema["QaReportResponse"];
 export type DossierResponse = Schema["DossierResponse"];
 export type BudgetResponse = Schema["BudgetResponse"];
 export type PeaksResponse = Schema["PeaksResponse"];
+export type QuotaResponse = Schema["QuotaResponse"];
 
 const P = "/api/v1/projects";
 
@@ -57,6 +58,11 @@ export function getQa(id: string): Promise<QaReportResponse> {
 
 export function getDossier(id: string): Promise<DossierResponse> {
   return api<DossierResponse>(`${P}/${id}/dossier`);
+}
+
+/** Model quota is global, not per project (docs/api.md §3.10). */
+export function getQuota(): Promise<QuotaResponse> {
+  return api<QuotaResponse>("/api/v1/quota");
 }
 
 export function getBudget(id: string): Promise<BudgetResponse> {
