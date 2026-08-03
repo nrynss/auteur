@@ -14,7 +14,7 @@ export function timelineGrip(node: HTMLElement, opts: GripOptions) {
   node.setAttribute("role", "separator");
   node.setAttribute("aria-orientation", "horizontal");
   node.setAttribute("tabindex", "0");
-  node.setAttribute("aria-label", "Resize timeline — arrow keys to adjust");
+  node.setAttribute("aria-label", "Resize timeline: arrow keys to adjust");
   node.setAttribute("aria-valuemin", String(opts.min));
   node.setAttribute("aria-valuenow", String(opts.value));
 

@@ -1,16 +1,16 @@
-"""`foleyflow` — the single Auteur command.
+"""`auteur` — the single Auteur command.
 
 Project verbs talk to the HTTP API (the contract test against `docs/api.md`).
 File verbs (`render`, `direct`) call the media core directly — no server, no
 `Client`.
 
-    foleyflow health
-    foleyflow doctor [--timeline PATH]
-    foleyflow create clip.mp4 --title "Western standoff" --analyze --wait
-    foleyflow show proj_01K…
-    foleyflow timeline proj_01K… --json
-    foleyflow render clip.mp4 --from-timeline samples/timelines/clip_1.json
-    foleyflow direct timeline.json --notes "…"
+    auteur health
+    auteur doctor [--timeline PATH]
+    auteur create clip.mp4 --title "Western standoff" --analyze --wait
+    auteur show proj_01K…
+    auteur timeline proj_01K… --json
+    auteur render clip.mp4 --from-timeline samples/timelines/clip_1.json
+    auteur direct timeline.json --notes "…"
 
 ## Exit codes
 
@@ -130,7 +130,7 @@ def _human_bytes(n: int) -> str:
     return f"{n}B"
 
 
-# Where `foleyflow use` remembers the current project. User-scoped, not
+# Where `auteur use` remembers the current project. User-scoped, not
 # repo-scoped: the CLI talks to a deployed API, so a per-directory default
 # would make sense only if every checkout pointed at the same service.
 # Resolved at call time (not import) so $HOME is honoured when it changes.
@@ -149,7 +149,7 @@ def _persisted_project() -> Optional[str]:
 
 def _resolve_current_project(args) -> Optional[str]:
     """The project a verb acts on, in precedence order: positional id, the
-    --project flag, $FOLEYFLOW_PROJECT, then the `foleyflow use` default."""
+    --project flag, $FOLEYFLOW_PROJECT, then the `auteur use` default."""
     if getattr(args, "project_id", None):
         return args.project_id
     if getattr(args, "project", None):
@@ -192,7 +192,7 @@ def _report_run(run: dict) -> int:
 def cmd_health(client: Client, args) -> int:
     # Always ask for the worker probe: the API leaves it off so a platform
     # liveness check does not depend on someone else's GPU, but an operator
-    # running `foleyflow health` is asking exactly that question.
+    # running `auteur health` is asking exactly that question.
     data = client.get("/health", params={"worker": "true"})
 
     def render(d):
@@ -580,7 +580,7 @@ def _doctor_timeline_cache(timeline_path: str,
         summary += f"  projected ${cost:.4f}"
     return _doctor_check(
         "cache", "warn", label,
-        f"{summary} — run `foleyflow prewarm` before the demo{remote_note}")
+        f"{summary} — run `auteur prewarm` before the demo{remote_note}")
 
 
 def cmd_use(args) -> int:
@@ -701,7 +701,7 @@ def cmd_regenerate(client: Client, args) -> int:
     cost = f"  (${estimated:.2f} estimated)" if estimated else ""
     print(f"repair run {accepted['run_id']}{cost}")
     if not args.wait:
-        print(f"poll: foleyflow run {args.project_id} {accepted['run_id']}")
+        print(f"poll: auteur run {args.project_id} {accepted['run_id']}")
         return EXIT_OK
 
     run = _poll_run(client, args.project_id, accepted["run_id"],
@@ -711,7 +711,7 @@ def cmd_regenerate(client: Client, args) -> int:
         print(f"  event {meta.get('event_index')} "
               f"({meta.get('event_name')}) regenerated  "
               f"(${meta.get('ledger_delta_usd', 0):.4f} this run)")
-        print(f"\nnext: foleyflow export {args.project_id} --wait")
+        print(f"\nnext: auteur export {args.project_id} --wait")
     return _report_run(run)
 
 
@@ -775,7 +775,7 @@ def cmd_create(client: Client, args) -> int:
         return _analyze(client, project_id, model=args.model, force=False,
                         wait=args.wait, as_json=args.json)
 
-    print(f"\nnext: foleyflow analyze {project_id} --wait")
+    print(f"\nnext: auteur analyze {project_id} --wait")
     return EXIT_OK
 
 
@@ -794,7 +794,7 @@ def _analyze(client: Client, project_id: str, *, model: Optional[str],
     print(f"analysis run {accepted['run_id']}"
           + (f"  (est. ${est:.4f})" if est else ""))
     if not wait:
-        print(f"poll: foleyflow run {project_id} {accepted['run_id']}")
+        print(f"poll: auteur run {project_id} {accepted['run_id']}")
         return EXIT_OK
 
     return _report_run(_poll_run(client, project_id, accepted["run_id"],
@@ -839,7 +839,7 @@ def cmd_mix(client: Client, args) -> int:
             line += f" (already spent ${spent:.2f})"
         print(line)
     if not args.wait:
-        print(f"poll: foleyflow run {args.project_id} {accepted['run_id']}")
+        print(f"poll: auteur run {args.project_id} {accepted['run_id']}")
         return EXIT_OK
 
     run = _poll_run(client, args.project_id, accepted["run_id"], quiet=args.json)
@@ -851,7 +851,7 @@ def cmd_mix(client: Client, args) -> int:
               f"{meta.get('stem_count', 0)} stems generated  "
               f"(${meta.get('ledger_delta_usd', 0):.4f} this run)")
         print(f"  QA: {meta.get('qa_status') or 'unknown'}")
-        print(f"\nnext: foleyflow export {args.project_id} --wait")
+        print(f"\nnext: auteur export {args.project_id} --wait")
     return _report_run(run)
 
 
@@ -866,7 +866,7 @@ def cmd_export(client: Client, args) -> int:
 
     print(f"export run {accepted['run_id']}")
     if not args.wait:
-        print(f"poll: foleyflow run {args.project_id} {accepted['run_id']}")
+        print(f"poll: auteur run {args.project_id} {accepted['run_id']}")
         return EXIT_OK
 
     run = _poll_run(client, args.project_id, accepted["run_id"], quiet=args.json)
@@ -1038,7 +1038,7 @@ def run_render(args: argparse.Namespace) -> int:
                 cache_dir=args.cache_dir,
             )
     except Exception as e:
-        print(f"foleyflow render: error: {e}", file=sys.stderr)
+        print(f"auteur render: error: {e}", file=sys.stderr)
         return 1
     return 0
 
@@ -1048,7 +1048,7 @@ def run_direct(args: argparse.Namespace) -> int:
     out_path = args.out or default_output_path(args.timeline)
     if os.path.normcase(os.path.abspath(out_path)) == os.path.normcase(
             os.path.abspath(args.timeline)):
-        print(f"foleyflow direct: error: refusing to overwrite the input "
+        print(f"auteur direct: error: refusing to overwrite the input "
               f"timeline ({args.timeline!r}); pass a different -o.",
               file=sys.stderr)
         return 1
@@ -1062,7 +1062,7 @@ def run_direct(args: argparse.Namespace) -> int:
         )
         save_timeline(new_timeline, out_path)
     except Exception as e:
-        print(f"foleyflow direct: error: {e}", file=sys.stderr)
+        print(f"auteur direct: error: {e}", file=sys.stderr)
         return 1
 
     print(f"[direct] notes applied via {args.model}")
@@ -1195,7 +1195,7 @@ def cmd_direct(args) -> int:
 
 def _build_render_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="foleyflow render",
+        prog="auteur render",
         description="AI Foley: silent AI video -> VLM event timeline -> "
                      "per-event generated SFX -> synced soundtrack.",
         add_help=add_help,
@@ -1228,7 +1228,7 @@ def _build_render_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         "--cache-dir", default=DEFAULT_CACHE_DIR,
         help=f"SFX cache directory (default: {DEFAULT_CACHE_DIR}).",
     )
-    # No --project here: the top-level flag (`foleyflow --project <id>
+    # No --project here: the top-level flag (`auteur --project <id>
     # render …`) must survive into args.project. A subparser default would
     # clobber it and silently drop the attribution.
     return parser
@@ -1236,7 +1236,7 @@ def _build_render_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
 
 def _build_direct_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="foleyflow direct",
+        prog="auteur direct",
         description="Apply plain-language director's notes to an existing "
                      "timeline JSON via a text-only LLM edit.",
         add_help=add_help,
@@ -1269,7 +1269,7 @@ def _build_direct_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="foleyflow",
+        prog="auteur",
         description="Auteur CLI: project verbs talk to the API; "
                     "render and direct run locally with no server.")
     parser.add_argument("--api", default=DEFAULT_BASE_URL,
@@ -1280,13 +1280,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--project", default=None,
         help="project id for verbs that omit it (else $FOLEYFLOW_PROJECT or "
-             "the `foleyflow use` default)")
+             "the `auteur use` default)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def project_arg(p):
         p.add_argument("project_id", nargs="?",
                        help="project id; omit to use --project, "
-                            "$FOLEYFLOW_PROJECT, or the `foleyflow use` default")
+                            "$FOLEYFLOW_PROJECT, or the `auteur use` default")
         return p
 
     sub.add_parser("health", help="API and storage reachability").set_defaults(
@@ -1456,7 +1456,7 @@ def main(argv: Optional[list] = None, client: Optional[Client] = None) -> int:
             if resolved is None:
                 return _fail(
                     "no project given — pass a project id, --project <id>, "
-                    "set $FOLEYFLOW_PROJECT, or run `foleyflow use <id>`",
+                    "set $FOLEYFLOW_PROJECT, or run `auteur use <id>`",
                     EXIT_USAGE)
             args.project_id = resolved
         if getattr(args, "needs_client", True):

@@ -40,7 +40,7 @@ export function presentStatus(status: string): StatusPresentation {
 
 /** Relative-ish created_at for the index list. ISO from the API. */
 export function formatCreatedAt(iso: string): string {
-  if (!iso) return "—";
+  if (!iso) return "n/a";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleString(undefined, {

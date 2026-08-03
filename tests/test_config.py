@@ -55,12 +55,19 @@ def test_config_shape_and_check_keys(client):
         assert c["label"]
 
 
-def test_healthy_deployment_is_ok(client):
+def test_healthy_deployment_is_ok(client, monkeypatch):
+    # The worker probe MUST be stubbed. Left real, `_worker_health` opens a
+    # socket to the configured SFX worker, so this test passed on a developer
+    # machine with a worker running and a token in .env, and failed in CI where
+    # neither exists — the aggregate `ok` then went False on the worker row.
+    # The offline suite makes no network calls and needs no credentials; every
+    # other worker case in this file already stubs the same seam.
+    from foleyflow.api import app as app_mod
+    monkeypatch.setattr(
+        app_mod, "_worker_health",
+        lambda: WorkerHealth(status="ok", tier="test", device="stub"))
     body = _config(client)
-    # Offline suite: local backend up, no worker tier to probe (test tier is
-    # the local worker — reachable check is adapter-level and absent here, so
-    # the verdict is whatever the adapter says; the aggregate must still
-    # resolve), ledger writable, quota green.
+    # Local backend up, worker healthy, ledger writable, quota green.
     assert body["ok"] is True, body
     by_key = {c["key"]: c for c in body["checks"]}
     assert by_key["storage"]["state"] == "ok"
@@ -157,7 +164,13 @@ def test_quota_any_blocked_model_is_a_stop(client, monkeypatch):
 
 def test_quota_warn_when_nearing_the_limit(client, monkeypatch):
     from foleyflow import quota as quota_mod
+    from foleyflow.api import app as app_mod
     from foleyflow.quota import ModelQuota, QuotaWindow
+    # Same reason as test_healthy_deployment_is_ok: this asserts the aggregate
+    # stays ok, so the worker row must not depend on a live worker.
+    monkeypatch.setattr(
+        app_mod, "_worker_health",
+        lambda: WorkerHealth(status="ok", tier="test", device="stub"))
     monkeypatch.setattr(quota_mod, "get_all_quotas", lambda: [
         ModelQuota(model_id="gemini-2.5-flash",
                    per_minute=QuotaWindow(2, 5),

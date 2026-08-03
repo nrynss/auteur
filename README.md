@@ -232,7 +232,6 @@ just catching crashes:
 | `a11y.test.ts` | axe over all six screens; no native `title=` attribute survives anywhere; no positive `tabindex` (control room only) |
 | `help.test.ts` | Every non-craft glossary term renders somewhere, and every rendered term resolves to an entry. The keyboard map is checked against a fixed list of assertions, so a new binding added without one can still drift |
 | `layout.spec.ts` | Real-browser layout: no horizontal overflow at 1280/768/480, ten screenshot baselines across light and dark, spend figures visible at 480px |
-| `copy.test.ts` | No em dashes in any `.svelte` under `src/lib/`, plus five named copy modules. Other `.ts` modules are not scanned |
 
 The browser gate exists because jsdom has no layout engine. It has already
 caught bugs the unit suite could not see, including a panel that crashed on a

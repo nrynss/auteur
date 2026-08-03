@@ -192,7 +192,7 @@ def test_cli_error_exits_1(monkeypatch, capsys):
     assert foleyflow_main(["render", "clip.mp4"], client=None) == 1
     err = capsys.readouterr().err
     assert "boom" in err
-    assert "foleyflow render:" in err
+    assert "auteur render:" in err
 
 
 # -- mux(): one REAL local-ffmpeg test ($0, no network) --

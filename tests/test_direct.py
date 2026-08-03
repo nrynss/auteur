@@ -276,7 +276,7 @@ def test_cli_direct_refuses_to_overwrite_input(monkeypatch, tmp_path, capsys):
     assert code == 1
     err = capsys.readouterr().err
     assert "overwrite" in err
-    assert "foleyflow direct:" in err
+    assert "auteur direct:" in err
 
 
 def test_cli_direct_default_naming_bumps_for_already_directed_input(monkeypatch, tmp_path):
@@ -301,7 +301,7 @@ def test_cli_direct_error_from_apply_notes_exits_1(monkeypatch, tmp_path, capsys
     assert foleyflow_main(["direct", str(in_path), "--notes", "x"], client=None) == 1
     err = capsys.readouterr().err
     assert "boom" in err
-    assert "foleyflow direct:" in err
+    assert "auteur direct:" in err
 
 
 def test_cli_direct_requires_notes_flag(monkeypatch, tmp_path):

@@ -32,8 +32,8 @@ describe("presentStatus", () => {
 });
 
 describe("formatCreatedAt", () => {
-  it("returns a dash for empty, and keeps invalid ISO as-is", () => {
-    expect(formatCreatedAt("")).toBe("—");
+  it("returns n/a for empty, and keeps invalid ISO as-is", () => {
+    expect(formatCreatedAt("")).toBe("n/a");
     expect(formatCreatedAt("not-a-date")).toBe("not-a-date");
   });
 

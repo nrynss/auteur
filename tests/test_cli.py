@@ -581,7 +581,7 @@ def test_analyze_without_wait_returns_a_pollable_run(client, store, project,
     assert run(client, "analyze", project.id) == EXIT_OK
     out = capsys.readouterr().out
     assert "analysis run run_" in out
-    assert "foleyflow run" in out, "it must tell the user how to poll"
+    assert "auteur run" in out, "it must tell the user how to poll"
 
 
 def test_analyze_with_wait_blocks_until_terminal(client, store, project,
@@ -634,7 +634,7 @@ def test_mix_reports_spend_and_qa(client, store, project, capsys, monkeypatch):
     assert "1 of 4 stems generated" in out
     assert "$0.0200" in out
     assert "QA: ok" in out
-    assert "foleyflow export" in out, "it must name the next step"
+    assert "auteur export" in out, "it must name the next step"
 
 
 def test_regenerate_waits_and_reports_the_repaired_event(
@@ -733,7 +733,7 @@ def test_render_missing_clip_exits_nonzero(monkeypatch, capsys):
 
     monkeypatch.setattr(foley_cli, "run", failing_run)
     assert main(["render", "does/not/exist.mp4"], client=None) == 1
-    assert "foleyflow render:" in capsys.readouterr().err
+    assert "auteur render:" in capsys.readouterr().err
 
 
 def test_render_unknown_flag_exits_nonzero():

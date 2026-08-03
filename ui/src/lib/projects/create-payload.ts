@@ -100,7 +100,7 @@ export function buildCreatePayload(input: CreateFormInput): CreatePayloadResult 
     return {
       ok: false,
       error:
-        "Unrecognized video type — use mp4, mov, mkv, or webm (or a file whose browser type is one of those).",
+        "Unrecognized video type. Use mp4, mov, mkv, or webm (or a file whose browser type is one of those).",
     };
   }
 
