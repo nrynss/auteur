@@ -16,6 +16,10 @@ work/
 sfx_cache/
 ledger.jsonl
 
+# Demo recording plan and local media (VO, cards, clips, renders).
+demoplan.md
+demo/
+
 # Built SPA output and codegen inputs (decision 8: never committed). The UI
 # build writes into the package's static dir; the schema and generated types
 # are build intermediates of ui/.
