@@ -517,7 +517,7 @@ title and the UI-not-built page follow automatically). The CI rebrand job is
 `VITE_BRAND_NAME=FoleyFlow` must contain zero `Auteur`, and the default build
 must carry `Auteur` in the title and the bundle), so the guarantee points at
 the current default. Product references swept in `README.md`, `SPEC.md`,
-`docs/*.md` (incl. the §3.17 example), `foleyflow.md`, the mockup,
+`docs/*.md` (incl. the §3.17 example), `auteur.md` (formerly `foleyflow.md`), the mockup,
 `ui/README.md`, `providers.toml`, the Dockerfile comment, the deploy/seed
 scripts, and every code docstring/comment that named the product — plus the
 two user-visible code surfaces: the CLI's argparse description and the
