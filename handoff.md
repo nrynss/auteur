@@ -16,7 +16,10 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   `docs/api.md` is written ahead of the code and treated as source of truth;
   every endpoint in it is live and covered by tests.
 - Task numbers are the current queue; DONE items keep their titles. Remaining:
-  **7 (control-room UI)** last. Tasks **9–17** are **DONE**.
+  **7 (control-room UI)**, then **18–20** (roadmap enablers). Tasks **9–17**
+  are **DONE**. `docs/roadmap.md` is the product document describing the two
+  futures 18–20 enable; it is not an engineering plan and carries no task
+  numbers.
 - CI (10), build identity (11), post-deploy smoke (12), doctor (13), live paid
   + fallback SFX (14), demo evidence (15), and Secret Manager (16) are in place.
 - `uv run pytest -q` → **750 passed, 1 skipped**. No provider credentials
@@ -321,6 +324,112 @@ secrets are refs, not values.
 `project_spend` scan, not the process-local running total). Same-value re-PUT
 is a no-op. Clear/raise silent; lower beneath spend emits once per threshold
 with `reason: "budget_set"`. Alert failures never fail the PUT.
+
+---
+
+Tasks 18–20 enable the two futures `docs/roadmap.md` describes —
+self-hosted/white-label and multi-tenant SaaS, both bring-your-own-keys. These
+three are the only enablers that **earn their place today**: each is deployable
+now and useful now, independent of whether either option is ever taken.
+
+**Deliberately not pulled forward** (internal reasoning; the roadmap is a
+product document and does not carry it):
+
+- *Routing store access through a single accessor.* The highest-leverage seam
+  for multi-tenancy, but pure churn across every route with no present
+  benefit. Do it when authentication lands, not before.
+- *Writing `tenant_id` onto ledger rows and run records.* Under one tenant
+  every row belongs to that tenant, so the field is dead weight and
+  retroactive attribution is trivial anyway.
+- *A tenant prefix in the key space.* Bring-your-own-storage makes the
+  customer's bucket the boundary; the prefix scheme is moot.
+- *Per-tenant quota reset timezone.* Arrives with tenant configuration.
+
+## 18. Key the ledger's process caches by backend scope — S
+
+**Depends on:** nothing. **Files:** `storage/base.py`, `storage/b2.py`,
+`storage/local.py`, `ledger.py`, `tests/conftest.py`, tests.
+
+`_row_cache`, `_attr_cache` and the quota/spend aggregates are module globals
+holding rows read from **one** backend. Nothing distinguishes which. Today that
+is merely invisible; it has already cost real bugs.
+
+Every test fixture that swaps a backend must hand-invalidate each cache
+(`tests/conftest.py`, `tests/test_ledger_storage.py`), and a missed one poisons
+later tests — exactly what happened when `_attr_cache` was added and the
+`conftest` fixture was not updated with it. Every new cache repeats the
+obligation, and the compiler cannot help.
+
+Add `scope_id()` to the `Backend` protocol: `B2Backend` returns bucket plus
+prefix (it already holds `self.bucket`), `LocalBackend` returns its root
+directory. Key the caches by it. One scope exists today, so behaviour is
+unchanged; a second backend gets its own entry instead of another backend's
+rows. Fixtures can then stop hand-invalidating, because a fresh temp-dir
+backend is a fresh scope.
+
+This is also the prerequisite that makes multi-tenancy safe later: serving one
+tenant from another's cached ledger rows is disclosure, not a stale read.
+
+**Acceptance:** two backends alive in one process never see each other's cached
+rows; the storage fixtures drop their manual invalidation and the suite still
+passes.
+
+## 19. Externalise the brand — S
+
+**Depends on:** nothing. **Files:** `ui/index.html`, `ui/src/App.svelte`,
+`ui/src/lib/control/ControlRoom.svelte`,
+`ui/src/lib/projects/ProjectsIndex.svelte`,
+`ui/src/lib/projects/CreateProject.svelte`, `ui/vite.config.ts`.
+
+The whole brand surface is eight `FoleyFlow` strings: one internal error
+message (`main.ts`), three `document.title` variants (`App.svelte:16-19`), two
+chrome wordmarks (`ControlRoom.svelte:639`, `ProjectsIndex.svelte:81`), one
+back-link (`CreateProject.svelte:432`), and the `<title>` plus inline SVG
+favicon in `ui/index.html`.
+
+Move the product name, title template and favicon behind build-time
+configuration with the current values as defaults, so a deployment can rebrand
+without a patch. Colours already need nothing: `ui/src/lib/theme.css` defines
+97 tokens on `:root` and components consume tokens rather than raw values
+(unit 7.7), so an accent override is a variable file.
+
+Leave internals alone — the CLI (`foleyflow`), the package, `FOLEYFLOW_*` env
+vars and the storage key space (`projects/`, `ledger/`, `cache/`) are
+brand-neutral or never rendered. Externalise only what a user sees.
+
+**Acceptance:** a build with the branding variables set renders no occurrence
+of the default name anywhere in the served UI, and the default build is
+byte-identical in appearance to today.
+
+## 20. Read-only configuration view — M
+
+**Depends on:** nothing. **Files:** `docs/api.md` first, `api/schemas.py`,
+`api/app.py`, a UI route. Builds on the existing component layer and design
+tokens (`Chip`, `StageRow`, `Panel`, `ui/src/lib/theme.css`) — the checklist
+rows this needs are the ones readiness already renders.
+
+`foleyflow doctor` (task 13) already computes exactly what an operator needs to
+know — API reachable, storage reachable, worker probed, `ledger_writable`,
+blocked quota models, `git_sha` against local HEAD, optional SFX cache coverage
+— and it exists only as a terminal command. Nothing in the UI answers "is this
+deployment wired up correctly?", which is the first question after any deploy
+and the first question a self-hosting partner will ask.
+
+Surface the same checks as a screen: which integrations are configured
+(present/absent and which source — Secret Manager reference, env var — **never
+a value**), worker reachability and whether it wants a token this deployment
+lacks, deployed `git_sha` and build time from `/health`, and ledger writability
+with the §3.10 fail-closed consequence stated where it is read.
+
+**Read-only, and that is the point.** Writing credentials through the API is
+out of scope and stays out: the service deploys `--allow-unauthenticated`
+(`scripts/deploy.sh:143`) with no authentication anywhere in the app, so a
+mutation route would be an open credential endpoint. Rotation stays a Secret
+Manager operation (task 16), and stays that way until authentication exists.
+
+**Acceptance:** every check `foleyflow doctor` performs is visible in the UI
+with the same verdict, and no credential value appears in any response or in
+the rendered page.
 
 ## Out of scope
 
