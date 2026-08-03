@@ -2340,8 +2340,10 @@ def test_ledger_rows_returns_project_transactions(client, store, budget_ledger):
     assert body["rows"][0]["cost_source"] == "actual"
     assert body["rows"][1]["cost_estimate"] == pytest.approx(0.10)
     assert body["next_cursor"] is None  # all rows fit on one page
-    assert body["estimate"] is True
     assert body["ledger_writable"] is True
+    # Every row names its own cost_source, so there is no aggregate estimate
+    # flag to drift from it (unlike /quota and /budget).
+    assert "estimate" not in body
 
 
 def test_ledger_rows_paginates(client, store, budget_ledger):

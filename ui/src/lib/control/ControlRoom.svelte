@@ -97,6 +97,10 @@
   let ledgerRequested = $state(false);
   let ledgerLoading = $state(false);
   let ledgerCursor = $state(0);
+  /** The cursors of pages left behind by "older" — "newer" walks back one
+   * page (the last page may be short, so a fixed step cannot reconstruct it). */
+  let ledgerStack = $state<number[]>([]);
+  const canGoNewer = $derived(ledgerStack.length > 0 || ledgerCursor > 0);
 
   let status = $state<"loading" | "ready" | "error">("loading");
   let error = $state("");
@@ -148,7 +152,7 @@
   const displayEvents = $derived<TimelineEventOut[]>(
     viewing === "draft"
       ? draft
-        ? (draft.events as unknown as TimelineEventOut[])
+        ? draft.events
         : (timeline?.events ?? [])
       : (historyTimeline?.events ?? timeline?.events ?? []),
   );
@@ -261,13 +265,14 @@
   }
 
   function ledgerNewer() {
-    if (ledgerCursor <= 0) return;
-    ledgerCursor = 0;
+    if (ledgerStack.length === 0 && ledgerCursor <= 0) return;
+    ledgerCursor = ledgerStack.pop() ?? 0;
     void refreshLedger();
   }
 
   function ledgerOlder() {
     if (ledger?.next_cursor == null) return;
+    ledgerStack.push(ledgerCursor);
     ledgerCursor = ledger.next_cursor;
     void refreshLedger();
   }
@@ -341,6 +346,8 @@
       ledger = null;
       ledgerRequested = false;
       ledgerCursor = 0;
+      ledgerStack = [];
+      if (tab === "spend") void ensureLedger();
       // Keep statusLine if it still names a projection; clear only blanks.
       // (Mix projection is set via onRunAccepted's optional line.)
     } catch (e) {
@@ -397,7 +404,11 @@
     if (next === base) return;
     draft = next;
     commitError = null;
-    draftStaleCount = 0;
+    // Staleness is a property of baseVersion vs the latest timeline and the
+    // freezes it records — an edit does not change it, so recompute rather
+    // than clear (a stale draft stays stale and the merge affordance must not
+    // vanish just because the director nudged an event).
+    checkDraftStale();
     scheduleDraftSave();
   }
 
@@ -489,7 +500,7 @@
     commitError = null;
     statusLine =
       `Undo to v${v}: the draft now starts from that version's document. ` +
-      `Commit writes it as v${(timeline?.version ?? v) + 1} beside the others.`;
+      `Commit writes it as the next version beside the others.`;
   }
 
   function requestDiscard() {
@@ -733,6 +744,8 @@
             failed={ancillaryFailed}
             ledger={ledger}
             ledgerLoading={ledgerLoading}
+            canGoNewer={canGoNewer}
+            canGoOlder={ledger?.next_cursor != null}
             onLedgerNewer={ledgerNewer}
             onLedgerOlder={ledgerOlder}
           />

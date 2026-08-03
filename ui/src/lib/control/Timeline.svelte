@@ -121,7 +121,9 @@
           version: draft.baseVersion,
           duration: draft.duration,
           ambience: draft.ambience,
-          events: draft.events as unknown as TimelineEventOut[],
+          // DraftEvent is structurally TimelineEventOut — no cast, so adding
+          // a field to TimelineEventOut breaks this assignment at build time.
+          events: draft.events,
         }
       : timeline,
   );

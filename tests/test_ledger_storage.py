@@ -705,6 +705,39 @@ def test_attribution_rescue_invalidates_spend_aggregate(storage_ledger):
     assert spend["total"] == pytest.approx(0.30)
 
 
+def test_attr_cache_epoch_discards_a_scan_that_raced_a_rescue(storage_ledger,
+                                                            monkeypatch):
+    """A reader whose LIST completes just before a rescue PUT lands must not
+    install its pre-rescue snapshot with a fresh TTL (the row cache's epoch
+    contract, applied to the attribution cache). Simulated by racing the
+    writer inside the reader's LIST."""
+    import time as _time
+
+    backend = storage_ledger
+    real_list = backend.list_keys
+    state = {"raced": False}
+
+    def racing_list(prefix):
+        keys = real_list(prefix)
+        if prefix == ledger.ATTR_PREFIX and not state["raced"]:
+            state["raced"] = True
+            # The rescue lands between this reader's LIST and its cache
+            # install: record_attribution writes AND bumps the epoch.
+            ledger.record_attribution("proj_A", before=_time.time() - 10)
+        return keys
+
+    monkeypatch.setattr(backend, "list_keys", racing_list)
+    atts = ledger.iter_attributions()
+    # The race was hit, the stale snapshot discarded, the re-read sees the
+    # rescue that landed mid-flight.
+    assert state["raced"] is True
+    assert any(a["project_id"] == "proj_A" for a in atts)
+
+    # Steady state: the cache now holds the post-rescue list.
+    assert any(a["project_id"] == "proj_A"
+               for a in ledger.iter_attributions())
+
+
 def test_spend_no_overcount_when_reseeded_during_write_gap(storage_ledger, monkeypatch):
     """Invalidate + reseed mid-write must not double-count the new row.
 

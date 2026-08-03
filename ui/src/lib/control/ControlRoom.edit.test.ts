@@ -374,6 +374,102 @@ it("version chips switch to a read-only historical view and back", async () => {
   unmount(app);
 });
 
+it("ledger pagination never traps the user: newer returns from the last page", async () => {
+  // Regression for the review finding: `next_cursor` names the OLDER page, so
+  // deriving "at start" from it inverted both boundaries — page 1 got a dead
+  // "newer" button and the last page disabled both, stranding the user.
+  const ledgerPages: Record<string, unknown> = {
+    "0": {
+      project_id: "proj_EDIT",
+      total_count: 62,
+      rows: Array.from({ length: 50 }, (_, i) => ({
+        timestamp: 1753305781 - i,
+        endpoint: "gemini-2.5-flash",
+        cost_estimate: 0.01,
+        cost_source: "estimate",
+        success: true,
+        error: null,
+        project_id: "proj_EDIT",
+        params_hash: `h${i}`,
+      })),
+      next_cursor: 50,
+      ledger_writable: true,
+    },
+    "50": {
+      project_id: "proj_EDIT",
+      total_count: 62,
+      rows: Array.from({ length: 12 }, (_, i) => ({
+        timestamp: 1753305730 - i,
+        endpoint: "eleven_text_to_sound_v2",
+        cost_estimate: 0.3,
+        cost_source: "actual",
+        success: true,
+        error: null,
+        project_id: "proj_EDIT",
+        params_hash: `p${i}`,
+      })),
+      next_cursor: null,
+      ledger_writable: true,
+    },
+  };
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      const tail = url.split("/proj_EDIT")[1] ?? "";
+      const [path, query] = tail.split("?");
+      if (path === "/ledger") {
+        const params = new URLSearchParams(query ?? "");
+        return jsonResponse(ledgerPages[params.get("cursor") ?? "0"]);
+      }
+      if (path === "") return jsonResponse(PROJECT);
+      if (path === "/timeline") return jsonResponse(TIMELINE);
+      if (path === "/timeline/versions") return jsonResponse({ versions: [1], latest: 1 });
+      if (path === "/scenes") return jsonResponse({ scenes: [] });
+      if (path === "/events") return jsonResponse({ events: [] });
+      if (path === "/runs") return jsonResponse({ runs: [] });
+      if (path === "/budget")
+        return jsonResponse({ configured_usd: 5, spent_usd: 0, estimate: true, ledger_writable: true });
+      return jsonResponse({ error: { code: "not_found" } }, 404);
+    }),
+  );
+
+  const { target, app } = await mountRoom();
+  const spendTab = [...target.querySelectorAll("button")].find((b) =>
+    (b.textContent ?? "").trim() === "Spend",
+  )!;
+  spendTab.click();
+  await settle();
+
+  const btn = (label: string) =>
+    [...target.querySelectorAll(".ledger-foot button.mini")].find(
+      (b) => (b.textContent ?? "").trim() === label,
+    ) as HTMLButtonElement | undefined;
+
+  // Page 1: 50 of 62; older works, newer is correctly disabled.
+  expect(target.textContent).toContain("50 of 62");
+  expect(btn("newer")?.disabled).toBe(true);
+  expect(btn("older")?.disabled).toBe(false);
+
+  // Page 2 (the short last page): both controls must be alive — older off,
+  // newer on, so the user can always walk back.
+  btn("older")!.click();
+  await settle();
+  expect(target.textContent).toContain("12 of 62");
+  expect(btn("older")?.disabled).toBe(true);
+  expect(btn("newer")?.disabled).toBe(false);
+
+  // Back to page 1.
+  btn("newer")!.click();
+  await settle();
+  expect(target.textContent).toContain("50 of 62");
+  expect(btn("newer")?.disabled).toBe(true);
+  expect(btn("older")?.disabled).toBe(false);
+
+  unmount(app);
+});
+
 it("editing is disabled while a run is in flight", async () => {
   // A live run locks the timeline: no commit, no drag.
   vi.stubGlobal(

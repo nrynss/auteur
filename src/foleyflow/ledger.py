@@ -126,9 +126,17 @@ _row_cache_epoch: int = 0
 # ledger endpoint from paying a backend LIST + multi-get on every page fetch
 # (7.18's dossier lesson: don't pay a LIST per request when the data is
 # append-only and bounded).
+# Attribution overrides are few and written only by record_attribution, so a
+# short TTL cache (same contract as the row cache) keeps the per-project
+# ledger endpoint from paying a backend LIST + multi-get on every page fetch
+# (7.18's dossier lesson: don't pay a LIST per request when the data is
+# append-only and bounded). The epoch has the row cache's job: a reader whose
+# LIST completed before a rescue PUT landed must not install the stale list
+# with a fresh timestamp after record_attribution invalidated.
 _ATTR_CACHE_TTL_S = 10.0
 _attr_cache: Optional[List[dict]] = None
 _attr_cache_at: float = 0.0
+_attr_cache_epoch: int = 0
 # Single-flight: concurrent _read_storage_rows callers share one in-flight
 # list+multi-get rather than stampeding the backend.
 _row_sf_lock = threading.Lock()
@@ -1144,7 +1152,7 @@ def iter_attributions() -> List[dict]:
     endpoint — which folds attributions into every page — does not pay a
     backend LIST per request. Staleness is bounded by the TTL, the same
     contract the row cache already has."""
-    global _attr_cache, _attr_cache_at
+    global _attr_cache, _attr_cache_at, _attr_cache_epoch
     if _file_ledger_path() is not None:
         return []          # file mode keeps no attributions
 
@@ -1154,36 +1162,45 @@ def iter_attributions() -> List[dict]:
 
     from foleyflow.storage import get_backend, get_bytes_many
 
-    backend = get_backend()
-    keys = list(backend.list_keys(ATTR_PREFIX))
-    if not keys:
-        _attr_cache = []
-        _attr_cache_at = time.monotonic()
-        return []
-    blobs = get_bytes_many(backend, keys, skip_missing=True)
-    out: List[dict] = []
-    for key in keys:
-        raw = blobs.get(key)
-        if raw is None:
-            continue
-        try:
-            data = json.loads(raw)
-        except (TypeError, json.JSONDecodeError):
-            continue
-        if (isinstance(data, dict) and data.get("project_id")
-                and isinstance(data.get("before"), (int, float))):
-            out.append(data)
-    out.sort(key=lambda a: float(a["before"]))
-    _attr_cache = out
-    _attr_cache_at = time.monotonic()
+    # A rescue landing mid-read must not install a pre-rescue snapshot with a
+    # fresh TTL. record_attribution (the only writer) is rare, so a bounded
+    # re-read closes the window; the final fallback serves the freshest scan
+    # to THIS caller without caching it (correct answer, no poisoned cache).
+    for _ in range(3):
+        epoch_at_start = _attr_cache_epoch
+        backend = get_backend()
+        keys = list(backend.list_keys(ATTR_PREFIX))
+        if not keys:
+            out: List[dict] = []
+        else:
+            blobs = get_bytes_many(backend, keys, skip_missing=True)
+            out = []
+            for key in keys:
+                raw = blobs.get(key)
+                if raw is None:
+                    continue
+                try:
+                    data = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if (isinstance(data, dict) and data.get("project_id")
+                        and isinstance(data.get("before"), (int, float))):
+                    out.append(data)
+            out.sort(key=lambda a: float(a["before"]))
+        if _attr_cache_epoch == epoch_at_start:
+            _attr_cache = out
+            _attr_cache_at = time.monotonic()
+            return out
     return out
 
 
 def _invalidate_attr_cache() -> None:
-    """The one writer (record_attribution) drops the cached override list."""
-    global _attr_cache, _attr_cache_at
+    """The one writer (record_attribution) drops the cached override list and
+    bumps the epoch so a scan in flight discards its stale result."""
+    global _attr_cache, _attr_cache_at, _attr_cache_epoch
     _attr_cache = None
     _attr_cache_at = 0.0
+    _attr_cache_epoch += 1
 
 
 def _attribution_owner(row: dict, attributions: List[dict]) -> Optional[str]:

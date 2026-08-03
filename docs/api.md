@@ -893,7 +893,6 @@ to a specific call.
     }
   ],
   "next_cursor": 50,
-  "estimate": true,
   "ledger_writable": true
 }
 ```
@@ -908,8 +907,12 @@ to a specific call.
 | `rows[].cost_source` | str | `"estimate"` or `"actual"` — whether the value came from the response |
 | `rows[].project_id` | str\|null | The project the row was written for; null when it was claimed by a rescue override (§3.11) rather than tagged at write time |
 | `rows[].params_hash` | str\|null | Hash of the call's arguments for deduplication visibility |
-| `estimate` | bool | Same flag as `/quota` — true, never false |
 | `ledger_writable` | bool | `/quota`'s flag: false means figures are fiction |
+
+There is deliberately **no `estimate` flag**: unlike `/quota` and `/budget`
+(totals priced from providers.toml), every row names its own `cost_source`, and
+an aggregate "these are estimates" claim would be false the moment any row is
+actual.
 
 **Failed rows are included.** A request that failed may still have consumed
 provider quota, and excluding it would produce a subset that does not reconcile
@@ -923,11 +926,12 @@ same override so they are visible here as well. Rows that belong to no project
 
 **Pagination** is index-based on the sorted list. `cursor=0` is the first page.
 The response's `next_cursor` is the index one past the last returned row; pass
-it as `cursor` on the next request. Newer rows written between page fetches may
-shift results (the same bound as any pagination over append-only data where the
-cursor is not a stable key), but the full ledger is re-fetched from the backend
-at most every 10 s (the row cache TTL), so the window is bounded. The totals
-in `/budget` are always the authoritative figures.
+it as `cursor` on the next request. Rows are newest-first, so new writes land
+at index 0 — paging while writes arrive shifts every subsequent page
+(duplicates and skips are possible). A timestamp cursor would be stable, but
+rows are append-only with no unique id exposed, and the ledger is re-fetched
+from the backend at most every 10 s (the row cache TTL), so the window is
+bounded. The totals in `/budget` are always the authoritative figures.
 
 | Status | When |
 |---|---|

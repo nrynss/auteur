@@ -804,6 +804,33 @@ with /budget, 404) + 2 SpendPanel render tests.
 (the per-project view is what the Spend tab needs; a bucket-wide one belongs
 to the explorer's LIST-metadata pagination).
 
+**Review fixes (8c02541 → ):**
+
+- **Pagination no longer traps the user.** `next_cursor` names the *older*
+  page, so the original "at start" derivation inverted both boundaries (page 1
+  got a dead "newer" button; the short last page disabled both). "Newer" now
+  walks back exactly one page via a cursor stack owned by ControlRoom, and the
+  button states come from that stack, not from a page payload.
+- **The Spend tab refetches after a run completes** — the reset in
+  `refreshAfterRun` re-opens the ledger when the tab is open, so the moment
+  new rows exist is no longer the moment the table blanks.
+- **Editing re-checks staleness instead of clearing it** — `applyEdit` calls
+  `checkDraftStale()`; a stale draft stays stale (and keeps its merge
+  affordance) when the director nudges an unrelated event.
+- **`_attr_cache` gets the row cache's epoch contract** — `record_attribution`
+  bumps an epoch and a reader whose LIST raced the write discards and
+  re-reads rather than installing a pre-rescue snapshot (tested by racing the
+  writer inside the reader's LIST). The global `conftest` storage fixture now
+  invalidates the attribution cache too, closing the same poisoning class the
+  unit fixtures already fixed.
+- **`LedgerRowsResponse.estimate` dropped** — it was never set by the endpoint
+  and never read by the UI; unlike `/quota` and `/budget`, every row names its
+  own `cost_source`, so an aggregate "estimates" claim would be false. The
+  docs say so instead.
+- **Cursor instability documented** — the index cursor shifts when rows land
+  at index 0 mid-paging; the bound (10 s row-cache TTL) and the tradeoff are
+  stated in §3.14.
+
 ## 7.17 Archive explorer — M
 
 **Depends on:** 7.16 for the ledger section; otherwise nothing.

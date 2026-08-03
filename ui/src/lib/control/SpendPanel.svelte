@@ -27,6 +27,11 @@
     /** Per-transaction audit trail (§3.14); null until first loaded. */
     ledger?: LedgerRowsResponse | null;
     ledgerLoading?: boolean;
+    /** Navigation state lives with the cursor owner (ControlRoom) — "newer"
+     * means a previous page exists, which no single page's payload can tell
+     * (next_cursor is the OLDER page, and the newest page is index 0). */
+    canGoNewer?: boolean;
+    canGoOlder?: boolean;
     onLedgerNewer?: () => void;
     onLedgerOlder?: () => void;
   }
@@ -37,6 +42,8 @@
     failed = false,
     ledger = null,
     ledgerLoading = false,
+    canGoNewer = false,
+    canGoOlder = false,
     onLedgerNewer,
     onLedgerOlder,
   }: Props = $props();
@@ -78,7 +85,6 @@
   }
 
   const ledgerShown = $derived(ledger != null && !ledgerBroken);
-  const ledgerAtStart = $derived(ledger == null || (ledger?.next_cursor ?? 0) <= 0);
 </script>
 
 <div class="panel-body">
@@ -234,8 +240,8 @@
           {#if ledgerLoading}<span class="dim">loading…</span>{/if}
         </span>
         <span class="spacer"></span>
-        <button class="mini" disabled={ledgerAtStart || ledgerLoading} onclick={onLedgerNewer}>newer</button>
-        <button class="mini" disabled={ledger.next_cursor == null || ledgerLoading} onclick={onLedgerOlder}>older</button>
+        <button class="mini" disabled={!canGoNewer || ledgerLoading} onclick={onLedgerNewer}>newer</button>
+        <button class="mini" disabled={!canGoOlder || ledgerLoading} onclick={onLedgerOlder}>older</button>
       </div>
       <p class="note">
         Failed calls are included — they may still have consumed provider

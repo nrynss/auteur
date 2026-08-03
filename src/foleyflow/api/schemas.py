@@ -533,7 +533,9 @@ class LedgerRowsResponse(BaseModel):
     total_count: int
     rows: List[LedgerRowOut]
     next_cursor: Optional[int] = None
-    estimate: bool = True
+    # No `estimate` flag here: unlike /quota and /budget (totals priced from
+    # providers.toml), every row names its own cost_source — an aggregate
+    # "these are estimates" claim would be a lie the moment any row is actual.
     ledger_writable: bool = True
 
 

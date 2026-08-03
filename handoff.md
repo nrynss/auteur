@@ -19,7 +19,7 @@ repo visibility, deleting cloud resources — is deliberately out of scope.
   **7 (control-room UI)** last. Tasks **9–17** are **DONE**.
 - CI (10), build identity (11), post-deploy smoke (12), doctor (13), live paid
   + fallback SFX (14), demo evidence (15), and Secret Manager (16) are in place.
-- `uv run pytest -q` → **730 passed, 1 skipped**. No provider credentials
+- `uv run pytest -q` → **731 passed, 1 skipped**. No provider credentials
   required for tests: the billed calls are stubbed at two seams,
   `stems.generate_many` and `sfx_cache.generate_canonical_wav`. Everything else
   — ffmpeg, the mix, the shared cache, storage, the Genblaze pipelines — runs
@@ -175,7 +175,7 @@ actually used for rhythmic events, so a nudge translates instead of
 re-rolling the texture. Renames on frozen content are refused at commit with
 the server's own explanation; a draft whose base went stale under a newer
 version offers to merge the latest's recorded freezes. The browser preview
-follows the draft, so the edit loop is free and instant. npm test 186,
+follows the draft, so the edit loop is free and instant. npm test 189,
 svelte-check 0/0. **7.18 landed** (phase-2): write-through exact ledger
 aggregates for spend/quota, event-log state checkpoint, shared I/O thread
 pool; harness `scripts/latency_bench.py`. Earlier: concurrent multi-get,
