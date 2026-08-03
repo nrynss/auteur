@@ -7,7 +7,8 @@
    * A.2.1); a historical view is read-only with an explicit "Edit from here".
    * 7.11: locked prop + selected index + regenerate slot. */
   import EnvelopeCanvas from "./EnvelopeCanvas.svelte";
-  import { groupLanes, placeEvent } from "./helpers";
+  import { envelopeSeed, groupLanes, placeEvent } from "./helpers";
+  import { resizeHandle } from "./resize-handle";
   import { timelineGrip } from "./timeline-grip";
   import { transientOffset } from "./preview";
   import {
@@ -207,6 +208,39 @@
 
   function endGesture() {
     gesture = null;
+  }
+
+  // A pointer capture failure (jsdom, exotic browsers) means the pointerup
+  // that ends the drag can land outside the block. A window-level fallback
+  // closes the gesture wherever the release happens; the effect's cleanup
+  // removes it as soon as the gesture is over.
+  $effect(() => {
+    if (!gesture) return;
+    window.addEventListener("pointerup", endGesture);
+    return () => window.removeEventListener("pointerup", endGesture);
+  });
+
+  /** Keyboard resize on a focused handle (the separator pattern from
+   * timeline-grip.ts, per-event): ←/→ move the edge 10 ms, Shift 100 ms,
+   * Alt 1 ms — the same grid as pointer resize. Reads the draft's CURRENT
+   * position (not the closure's) so a fast repeat never double-applies. The
+   * handler must stop propagation: the block underneath also nudges on
+   * arrows, and a focused handle must resize, not translate. */
+  function onResizeKey(e: KeyboardEvent, ev: TimelineEventOut, side: "start" | "end") {
+    if (!canEdit || !onEdit) return;
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    e.stopPropagation();
+    const step = e.altKey ? NUDGE_FINE_S : e.shiftKey ? NUDGE_COARSE_S : NUDGE_S;
+    const dir = e.key === "ArrowLeft" ? -1 : 1;
+    const idx = ev.index;
+    onEdit((d) => {
+      const cur = d.events.find((x) => x.index === idx);
+      if (!cur) return d;
+      return side === "end"
+        ? resizeEnd(d, idx, cur.start_time + cur.duration + dir * step, { snap: false })
+        : resizeStart(d, idx, cur.start_time + dir * step, { snap: false });
+    });
   }
 
   /** Arrow-key nudge on the selected block: ←/→ 10 ms, Shift 100 ms,
@@ -448,26 +482,34 @@
                   onkeydown={(e) => onBlockKey(e, ev)}
                   onclick={() => select(ev.index)}
                 >
-                  <EnvelopeCanvas kind={ev.kind} seed={ev.index} />
+                  <EnvelopeCanvas kind={ev.kind} seed={envelopeSeed(ev)} />
                   <span class="bname">{ev.name}</span>
                   {#if canEdit}
                     <span
                       class="handle h-l"
-                      role="separator"
-                      aria-label={`Resize ${ev.name} start — drag, ⌥ to override snap`}
-                      onpointerdown={(e) => beginResize(e, ev, "start")}
-                      onpointermove={onGestureMove}
-                      onpointerup={endGesture}
-                      onpointercancel={endGesture}
+                      aria-label={`Resize ${ev.name} start — arrow keys to adjust, ⌥ for 1 ms`}
+                      use:resizeHandle={{
+                        value: ev.start_time,
+                        min: 0,
+                        max: display?.duration ?? 0,
+                        onKey: (e) => onResizeKey(e, ev, "start"),
+                        onDown: (e) => beginResize(e, ev, "start"),
+                        onMove: onGestureMove,
+                        onUp: endGesture,
+                      }}
                     ></span>
                     <span
                       class="handle h-r"
-                      role="separator"
-                      aria-label={`Resize ${ev.name} end — drag, ⌥ to override snap`}
-                      onpointerdown={(e) => beginResize(e, ev, "end")}
-                      onpointermove={onGestureMove}
-                      onpointerup={endGesture}
-                      onpointercancel={endGesture}
+                      aria-label={`Resize ${ev.name} end — arrow keys to adjust, ⌥ for 1 ms`}
+                      use:resizeHandle={{
+                        value: ev.start_time + ev.duration,
+                        min: 0,
+                        max: display?.duration ?? 0,
+                        onKey: (e) => onResizeKey(e, ev, "end"),
+                        onDown: (e) => beginResize(e, ev, "end"),
+                        onMove: onGestureMove,
+                        onUp: endGesture,
+                      }}
                     ></span>
                   {/if}
                 </div>

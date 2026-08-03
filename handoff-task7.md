@@ -691,6 +691,31 @@ points at Regenerate.
 (7.14), and "reroll variation" UI. Intensity/kind edits are not surfaced
 (kind changes are free per 7.3 but the mockup's inspector does not show them).
 
+**Second review round (a11y + stability, fixed):**
+
+- **Resize is keyboard-reachable.** The per-event edge handles get the grip's
+  machinery via a `resizeHandle` action — role=separator, tabindex,
+  aria-valuemin/max/now and a keydown listener (←/→ move the focused edge
+  10 ms, Shift 100 ms, Alt 1 ms), with stopPropagation so the block's own
+  arrow-nudge does not also translate the event (WCAG 2.1.1 on a primary
+  editing operation).
+- **Envelopes are stable under renumbering.** `EnvelopeCanvas` used the event
+  index as its deterministic seed, so deleting one event redrew every later
+  one — read as "those sounds changed". It now seeds from the frozen mix seed
+  when present, else a stable name hash: an event's envelope depends on the
+  event, never its position.
+- **The preview debounces its reschedule.** Dragging while the preview plays
+  fired stop+schedule per pointermove (a full BufferSource/GainNode rebuild
+  ~60×/sec). The schedule swap is still immediate (cheap, buffer cache
+  intact); the audible restart is trailing-debounced to once per gesture.
+- **A failed pointer capture cannot strand a gesture** — a window-level
+  pointerup fallback closes the drag wherever the release lands.
+- **Coverage for the gaps the first review found:** last-page navigation
+  states (next_cursor null), the stale-draft merge affordance surviving an
+  edit end-to-end (fake-timer poll), explicit discard, keyboard resize, and
+  `/ledger` under an unwritable ledger (rows still served, flag false so the
+  UI fails closed).
+
 ## 7.11 Spend paths and run locking — M — **DONE**
 
 **Depends on:** 7.8.

@@ -470,6 +470,180 @@ it("ledger pagination never traps the user: newer returns from the last page", a
   unmount(app);
 });
 
+it("a stale draft keeps its merge affordance through edits, and merge fixes it", async () => {
+  // The underlying timeline moves (a mix elsewhere stamps a freeze) while a
+  // draft is open; the merge affordance appears. Editing must NOT clear it
+  // (it is a property of baseVersion vs latest, not of the edits), and Merge
+  // must import the recorded freezes and re-base the draft.
+  vi.useFakeTimers();
+  try {
+    const V2_BELL = {
+      ...TIMELINE.events[0],
+      source_duration_s: 1.75,
+      seed: legacySeed(
+        "rhythmic church bell tolling, a deep resonant bronze church bell striking steadily",
+        6.65,
+      ),
+      stem_key: "cache/legacy.wav",
+    };
+    let runDone = false;
+    let timelineVersion = 1;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL, init?: RequestInit) => {
+        const url = String(input);
+        const tail = url.split("/proj_EDIT")[1] ?? "";
+        const [path] = tail.split("?");
+        if (path === "") return jsonResponse({ ...PROJECT, latest_run_id: "run_1" });
+        if (path === "/runs/run_1") {
+          return jsonResponse(
+            runDone
+              ? { id: "run_1", kind: "mix", status: "completed", created_at: "2026-08-02T10:00:10Z", stages: [] }
+              : { id: "run_1", kind: "mix", status: "running", created_at: "2026-08-02T10:00:00Z", stages: [] },
+          );
+        }
+        if (path === "/timeline") {
+          return jsonResponse(
+            timelineVersion === 2
+              ? { version: 2, duration: 15.0, ambience: "desert wind", events: [V2_BELL, ...TIMELINE.events.slice(1)] }
+              : TIMELINE,
+          );
+        }
+        if (path === "/timeline/versions") {
+          return jsonResponse(timelineVersion === 2 ? { versions: [1, 2], latest: 2 } : { versions: [1], latest: 1 });
+        }
+        if (path === "/scenes") return jsonResponse({ scenes: [] });
+        if (path === "/events") return jsonResponse({ events: [] });
+        if (path === "/runs") return jsonResponse({ runs: [] });
+        if (path === "/budget")
+          return jsonResponse({ configured_usd: 5, spent_usd: 0, estimate: true, ledger_writable: true });
+        return jsonResponse({ error: { code: "not_found" } }, 404);
+      }),
+    );
+
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(ControlRoom, { target, props: { id: "proj_EDIT" } });
+    for (let i = 0; i < 6; i += 1) await vi.advanceTimersByTimeAsync(0);
+
+    // A draft exists and the run lock is on (the seeded run is live).
+    const bell = [...target.querySelectorAll(".block")].find((b) =>
+      (b.textContent ?? "").includes("church bell"),
+    )!;
+    dragBlock(bell, 40);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(target.textContent).toContain("draft +1");
+
+    // The mix completes and stamps v2 underneath the draft.
+    runDone = true;
+    timelineVersion = 2;
+    await vi.advanceTimersByTimeAsync(300); // debounced draft save
+    await vi.advanceTimersByTimeAsync(2000); // one poll tick → refreshAfterRun
+    for (let i = 0; i < 8; i += 1) await vi.advanceTimersByTimeAsync(0);
+
+    // The stale-draft warning is visible with the merge affordance.
+    expect(target.textContent).toContain("timeline moved underneath");
+    const mergeBtn = [...target.querySelectorAll("button")].find((b) =>
+      (b.textContent ?? "").includes("Merge recorded freezes"),
+    )!;
+    expect(mergeBtn).toBeTruthy();
+
+    // An edit must NOT clear the warning — the draft is still based on v1.
+    const bell2 = [...target.querySelectorAll(".block")].find((b) =>
+      (b.textContent ?? "").includes("church bell"),
+    )!;
+    bell2.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(target.textContent).toContain("timeline moved underneath");
+    expect(
+      [...target.querySelectorAll("button")].some((b) =>
+        (b.textContent ?? "").includes("Merge recorded freezes")),
+    ).toBe(true);
+
+    // Merge imports the recorded freeze and re-bases the draft.
+    mergeBtn.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(target.textContent).not.toContain("timeline moved underneath");
+    // The headline now names the new base.
+    expect(target.textContent).toContain("Unsaved changes to v2");
+    expect(target.textContent).toContain("Commit v3");
+
+    unmount(app);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("resize is reachable by keyboard: arrows move the focused edge, not the block", async () => {
+  // WCAG 2.1.1: resize is a primary editing operation and must not be
+  // pointer-only. The edge handles are real separators (tabindex + aria
+  // valuemin/max/now via the resizeHandle action), and ←/→ resize the
+  // focused edge — while stopPropagation keeps the block's own arrow-nudge
+  // from also translating the event.
+  const { target, app } = await mountRoom();
+  const bell = [...target.querySelectorAll(".block")].find((b) =>
+    (b.textContent ?? "").includes("church bell"),
+  )!;
+  const endHandle = bell.querySelector(".handle.h-r") as HTMLElement | null;
+  expect(endHandle).toBeTruthy();
+  // The action attached the separator machinery.
+  expect(endHandle!.getAttribute("role")).toBe("separator");
+  expect(endHandle!.getAttribute("tabindex")).toBe("0");
+  expect(endHandle!.getAttribute("aria-valuenow")).toBe("8.65");
+  expect(endHandle!.getAttribute("aria-valuemax")).toBe("15");
+
+  endHandle!.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+  );
+  await settle();
+
+  const commitBtn = [...target.querySelectorAll("button")].find((b) =>
+    (b.textContent ?? "").includes("Commit"),
+  )!;
+  commitBtn.click();
+  await settle();
+
+  const body = committedBodies[0] as { events: Array<{ start_time: number; duration: number }> };
+  const bellInBody = body.events.find((e) => e.start_time === 6.65)!;
+  // Only the edge moved: the span grew 10 ms, the start stayed put (the
+  // block's nudge handler must not have fired through the handle).
+  expect(bellInBody.duration).toBeCloseTo(2.01, 9);
+  expect(bellInBody.start_time).toBe(6.65);
+
+  unmount(app);
+});
+
+it("discarding a draft is explicit and leaves the committed versions untouched", async () => {
+  const { target, app } = await mountRoom();
+  const bell = [...target.querySelectorAll(".block")].find((b) =>
+    (b.textContent ?? "").includes("church bell"),
+  )!;
+  dragBlock(bell, 40);
+  await new Promise((r) => setTimeout(r, 250)); // debounced save
+  expect(target.textContent).toContain("draft +1");
+
+  // Discard needs a confirm (it is destructive); the dialog names it.
+  const discard = [...target.querySelectorAll("button")].find((b) =>
+    (b.textContent ?? "").trim() === "Discard",
+  )!;
+  discard.click();
+  await settle();
+  const confirmBtn = [...target.querySelectorAll("button")].find((b) =>
+    (b.textContent ?? "").trim() === "Discard draft",
+  )!;
+  expect(confirmBtn).toBeTruthy();
+  confirmBtn.click();
+  await settle();
+
+  expect(target.textContent).not.toContain("draft +1");
+  expect(localStorage.getItem("ff:draft:proj_EDIT")).toBeNull();
+  // The committed version is untouched and still selectable.
+  expect(target.textContent).toContain("v1");
+  expect(target.textContent).toContain("Draft discarded — the committed versions are untouched.");
+
+  unmount(app);
+});
+
 it("editing is disabled while a run is in flight", async () => {
   // A live run locks the timeline: no commit, no drag.
   vi.stubGlobal(

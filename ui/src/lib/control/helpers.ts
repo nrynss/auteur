@@ -49,6 +49,28 @@ export interface EventPlacement {
   widthPx: number;
 }
 
+/** A stable non-cryptographic string hash (djb2) — the envelope seed for
+ * events without a frozen mix seed. Stable across renumbering: deleting or
+ * reordering events must not redraw every later event's envelope, which would
+ * read as "those sounds changed" (unit 7.10 review). */
+export function stableHash(s: string): number {
+  let h = 5381;
+  for (let i = 0; i < s.length; i += 1) {
+    h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  }
+  return h;
+}
+
+/** The deterministic shape-seed for an event's structural envelope. Prefers
+ * the frozen mix seed (for rhythmic events it IS the variation the sound was
+ * rendered with); falls back to a name hash — two events with the same name
+ * are the same sound, so identical envelopes are the honest read. */
+export function envelopeSeed(
+  ev: Pick<TimelineEventOut, "name" | "seed">,
+): number {
+  return ev.seed ?? stableHash(ev.name);
+}
+
 /** Position an event on a lane. `minWidthPx` keeps a 50 ms click audible as a
  * visible block (honest placement, honest minimum). */
 export function placeEvent(

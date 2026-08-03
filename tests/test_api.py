@@ -2452,6 +2452,25 @@ def test_ledger_rows_404_on_unknown_project(client):
     assert r.json()["error"]["code"] == "project_not_found"
 
 
+def test_ledger_rows_report_an_unwritable_ledger_without_hiding_rows(
+        client, store, budget_ledger, monkeypatch):
+    """The endpoint still serves the rows it CAN read, but says the ledger is
+    unwritable so the UI fails closed (§3.10's fiction rule: a UI must stop
+    presenting the numbers when nothing is being recorded)."""
+    import foleyflow.ledger as ledger_mod
+
+    project = store.create_project(title="U", input_key="k", source_sha256="",
+                                   source_filename="u.mp4")
+    _spend(budget_ledger, project.id, "gemini-2.5-flash", 0.05)
+
+    monkeypatch.setattr(ledger_mod, "ledger_writable", lambda *a, **k: False)
+    body = client.get(
+        f"{API_PREFIX}/projects/{project.id}/ledger").json()
+    assert body["total_count"] == 1
+    assert body["rows"][0]["cost_estimate"] == pytest.approx(0.05)
+    assert body["ledger_writable"] is False
+
+
 # -- waveform peaks (unit 7.5) ----------------------------------------------
 
 def _put_canonical_wav(backend, key, duration_s=0.05, amp=0.4):

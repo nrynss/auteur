@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { friendlyEventType, groupLanes, loudnessDelta, placeEvent } from "./helpers";
+import { envelopeSeed, friendlyEventType, groupLanes, loudnessDelta, placeEvent, stableHash } from "./helpers";
 import type { TimelineEventOut } from "../api/projects";
 
 const ev = (partial: Partial<TimelineEventOut> & { index: number }): TimelineEventOut => ({
@@ -79,5 +79,28 @@ describe("friendlyEventType", () => {
 
   it("passes through types without dots", () => {
     expect(friendlyEventType("started")).toBe("started");
+  });
+});
+
+describe("envelopeSeed", () => {
+  it("is stable across renumbering — deleting an event must not redraw its neighbours", () => {
+    // The 7.10 review finding: index-based seeds shifted every later event's
+    // envelope on delete. The seed is the name hash (or the frozen mix seed),
+    // so an event's envelope depends on the event, never on its position.
+    const at2 = ev({ index: 2, name: "gunshot blast" });
+    const at7 = ev({ index: 7, name: "gunshot blast" });
+    expect(envelopeSeed(at2)).toBe(envelopeSeed(at7));
+    expect(stableHash("gunshot blast")).toBe(envelopeSeed(at2));
+  });
+
+  it("prefers the frozen mix seed when present", () => {
+    expect(envelopeSeed(ev({ index: 0, seed: 12345 }))).toBe(12345);
+    expect(envelopeSeed(ev({ index: 0, seed: 0 }))).toBe(0); // 0 is frozen, not absent
+  });
+
+  it("distinguishes different sounds", () => {
+    expect(envelopeSeed(ev({ index: 0, name: "gunshot" }))).not.toBe(
+      envelopeSeed(ev({ index: 0, name: "church bell" })),
+    );
   });
 });

@@ -123,7 +123,6 @@ const LEDGER = {
     },
   ],
   next_cursor: 2,
-  estimate: true,
   ledger_writable: true,
 };
 
@@ -160,4 +159,43 @@ it("withholds ledger rows too when the ledger is unwritable", () => {
   expect(body).toContain("figures withheld");
   expect(body).not.toContain("individual transactions");
   expect(body).not.toContain("eleven_text_to_sound_v2");
+});
+
+it("navigation states are explicit props, not inferred from next_cursor", () => {
+  // next_cursor names the OLDER page, so a page payload cannot answer "can I
+  // go newer" — that lives with the cursor owner. The last page (next_cursor
+  // null) must leave "newer" enabled when a previous page exists, and the
+  // first page must disable it. The old derivation inverted both.
+  const last = render(SpendPanel, {
+    props: {
+      budget: BUDGET,
+      quota: QUOTA,
+      ledger: { ...LEDGER, next_cursor: null, rows: [LEDGER.rows[0]] },
+      canGoNewer: true,
+      canGoOlder: false,
+    } as never,
+  });
+  const lastBody = last.body;
+  expect(lastBody).toContain("1 of 3");
+  const newerBtn = (body: string) =>
+    body.match(/<button class="mini[^"]*"[^>]*>newer<\/button>/)?.[0] ?? "";
+  const olderBtn = (body: string) =>
+    body.match(/<button class="mini[^"]*"[^>]*>older<\/button>/)?.[0] ?? "";
+  // "newer" must be alive on the last page — the trap this regression pins;
+  // "older" is correctly dead there.
+  expect(newerBtn(lastBody)).not.toContain("disabled");
+  expect(olderBtn(lastBody)).toContain("disabled");
+
+  const first = render(SpendPanel, {
+    props: {
+      budget: BUDGET,
+      quota: QUOTA,
+      ledger: LEDGER,
+      canGoNewer: false,
+      canGoOlder: true,
+    } as never,
+  });
+  // First page: newer disabled (no previous page), older enabled.
+  expect(newerBtn(first.body)).toContain("disabled");
+  expect(olderBtn(first.body)).not.toContain("disabled");
 });
