@@ -40,7 +40,7 @@ goes. [docs/api.md](docs/api.md) is the HTTP contract.
 
 ## Status
 
-**Live: <https://auteur.nryn.dev>** · **Demo: <https://www.youtube.com/watch?v=_e2xdmZS_hU>**
+**No longer hosted.** `auteur.nryn.dev` was taken down on 25 Nov 2026. · **Demo: <https://www.youtube.com/watch?v=_e2xdmZS_hU>**
 
 A silent clip goes in and a B2-backed Foley export comes out, over the API, on
 the deployed app. One package (`src/foleyflow`), one command (`auteur`, still
@@ -183,7 +183,7 @@ escalate to a paid API. `providers.toml` ships `test` as the default, which is
 also what keeps the shared B2 stem cache warm — the cache is keyed on the
 endpoint, so switching tiers means generating fresh clips under fresh keys.
 
-**The deployed service is not on that default.** `env.public.yaml` sets
+**The deployed service (taken down 25 Nov 2026) was not on that default.** `env.public.yaml` sets
 `FOLEYFLOW_SFX_TIER: "paid"`, so <https://auteur.nryn.dev> generates hero foley
 through ElevenLabs and bills for it. The env var wins over the TOML, and the
 free `test` tier is the right default for local work and the offline suite —
